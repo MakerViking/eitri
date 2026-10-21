@@ -1,0 +1,26 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Compressed RAM swap. The eMMC is never used for swap: it would wear out and
+# stall Klipper. Half of RAM becomes a zstd-compressed zram device.
+set -eu
+
+case "${1:-}" in
+start)
+	kb=$(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo)
+	dev=$(zramctl --find --size "$((kb / 2))K" --algorithm zstd)
+	mkswap -L zram0 "$dev" >/dev/null
+	swapon --discard --priority 100 "$dev"
+	echo "$dev" >/run/eitri/zram.dev
+	;;
+stop)
+	[ -r /run/eitri/zram.dev ] || exit 0
+	dev=$(cat /run/eitri/zram.dev)
+	swapoff "$dev" || true
+	zramctl --reset "$dev" || true
+	rm -f /run/eitri/zram.dev
+	;;
+*)
+	echo "usage: $0 start|stop" >&2
+	exit 2
+	;;
+esac

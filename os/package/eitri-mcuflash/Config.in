@@ -1,0 +1,10 @@
+config BR2_PACKAGE_EITRI_MCUFLASH
+	bool "eitri-mcuflash"
+	select BR2_PACKAGE_PYTHON3
+	select BR2_PACKAGE_PYTHON_SERIAL
+	select BR2_PACKAGE_EITRI_KATAPULT
+	help
+	  The MCU probe, backup, flash and verify tool (eitri-mcuflash).
+	  Built from installer/mcuflash in this repository. It has no
+	  third-party Python dependencies; pyserial is only needed for
+	  the Katapult flashtool path.

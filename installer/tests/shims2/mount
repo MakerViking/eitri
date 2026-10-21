@@ -1,0 +1,7 @@
+#!/bin/sh
+echo "mount $*" >>"$FAKE_LOG"
+case "$*" in *remount*) exit 0 ;; esac
+for last; do :; done
+[ -n "$FAKE_FAIL_MOUNT" ] && case "$*" in *"$FAKE_FAIL_MOUNT"*) exit 32 ;; esac
+echo "$last" >>"$FAKE_MOUNTS"
+exit 0

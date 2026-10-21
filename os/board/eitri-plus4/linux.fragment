@@ -1,0 +1,297 @@
+# Eitri OS kernel configuration for Linux 6.18 LTS, applied on top of the
+# arm64 defconfig (BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG).
+#
+# The upstream defconfig is a multi-platform kernel with over a thousand
+# modules. This fragment (1) turns on what the QIDI X-Plus 4 board needs,
+# (2) builds everything that has to work before userspace as built-in, because
+# the image has no initramfs, and (3) removes the platform and driver families
+# that cannot exist on this hardware, which cuts build time and rootfs size.
+#
+# scripts/check-kernel-fragment.sh verifies that every line below survives
+# Kconfig dependency resolution. A line that silently reverts is a bug here.
+
+# ---------------------------------------------------------------------------
+# Identity
+# ---------------------------------------------------------------------------
+CONFIG_LOCALVERSION="-eitri"
+# CONFIG_LOCALVERSION_AUTO is not set
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
+
+# ---------------------------------------------------------------------------
+# SoC: RK3328 only
+# ---------------------------------------------------------------------------
+CONFIG_ARCH_ROCKCHIP=y
+# CONFIG_ARCH_ACTIONS is not set
+# CONFIG_ARCH_AIROHA is not set
+# CONFIG_ARCH_SUNXI is not set
+# CONFIG_ARCH_ALPINE is not set
+# CONFIG_ARCH_APPLE is not set
+# CONFIG_ARCH_ARTPEC is not set
+# CONFIG_ARCH_AXIADO is not set
+# CONFIG_ARCH_BCM2835 is not set
+# CONFIG_ARCH_BCM_IPROC is not set
+# CONFIG_ARCH_BCMBCA is not set
+# CONFIG_ARCH_BRCMSTB is not set
+# CONFIG_ARCH_BERLIN is not set
+# CONFIG_ARCH_BITMAIN is not set
+# CONFIG_ARCH_BLAIZE is not set
+# CONFIG_ARCH_CIX is not set
+# CONFIG_ARCH_EXYNOS is not set
+# CONFIG_ARCH_K3 is not set
+# CONFIG_ARCH_LG1K is not set
+# CONFIG_ARCH_HISI is not set
+# CONFIG_ARCH_KEEMBAY is not set
+# CONFIG_ARCH_MEDIATEK is not set
+# CONFIG_ARCH_MESON is not set
+# CONFIG_ARCH_MICROCHIP is not set
+# CONFIG_ARCH_LAN969X is not set
+# CONFIG_ARCH_SPARX5 is not set
+# CONFIG_ARCH_MMP is not set
+# CONFIG_ARCH_MVEBU is not set
+# CONFIG_ARCH_LAYERSCAPE is not set
+# CONFIG_ARCH_MXC is not set
+# CONFIG_ARCH_S32 is not set
+# CONFIG_ARCH_MA35 is not set
+# CONFIG_ARCH_NPCM is not set
+# CONFIG_ARCH_PENSANDO is not set
+# CONFIG_ARCH_QCOM is not set
+# CONFIG_ARCH_REALTEK is not set
+# CONFIG_ARCH_RENESAS is not set
+# CONFIG_ARCH_SEATTLE is not set
+# CONFIG_ARCH_INTEL_SOCFPGA is not set
+# CONFIG_ARCH_SOPHGO is not set
+# CONFIG_ARCH_STM32 is not set
+# CONFIG_ARCH_SYNQUACER is not set
+# CONFIG_ARCH_TEGRA is not set
+# CONFIG_ARCH_TESLA_FSD is not set
+# CONFIG_ARCH_SPRD is not set
+# CONFIG_ARCH_THUNDER is not set
+# CONFIG_ARCH_THUNDER2 is not set
+# CONFIG_ARCH_UNIPHIER is not set
+# CONFIG_ARCH_VEXPRESS is not set
+# CONFIG_ARCH_VISCONTI is not set
+# CONFIG_ARCH_XGENE is not set
+# CONFIG_ARCH_ZYNQMP is not set
+CONFIG_COMMON_CLK_ROCKCHIP=y
+CONFIG_CLK_RK3328=y
+CONFIG_PINCTRL_ROCKCHIP=y
+CONFIG_GPIO_ROCKCHIP=y
+CONFIG_ROCKCHIP_IODOMAIN=y
+CONFIG_ROCKCHIP_THERMAL=y
+CONFIG_ROCKCHIP_TIMER=y
+CONFIG_PL330_DMA=y
+CONFIG_ROCKCHIP_MBOX=y
+CONFIG_I2C_RK3X=y
+CONFIG_I2C_CHARDEV=m
+CONFIG_SPI_ROCKCHIP=y
+CONFIG_SPI_SPIDEV=m
+CONFIG_PWM_ROCKCHIP=y
+CONFIG_ROCKCHIP_SARADC=m
+# Power management IC (RK805) and its RTC. The RTC has no battery, so it only
+# keeps time while the printer is powered; chrony supplies the real time.
+CONFIG_MFD_RK8XX_I2C=y
+CONFIG_REGULATOR_RK808=y
+CONFIG_RTC_DRV_RK808=y
+CONFIG_CPUFREQ_DT=y
+
+# ---------------------------------------------------------------------------
+# Serial: the MCUs (ttyS0, ttyS2) and the display (ttyS1 in the stock software; unconfirmed) are on the
+# SoC's DesignWare 8250 UARTs. The console driver stays compiled in so that a
+# bench build can opt in with console=ttyS2,... on the kernel command line, but
+# the device tree selects no stdout-path and the boot script passes no
+# console=, because uart2 is wired to an MCU.
+# ---------------------------------------------------------------------------
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_DMA=y
+CONFIG_SERIAL_8250_NR_UARTS=4
+CONFIG_SERIAL_8250_RUNTIME_UARTS=4
+CONFIG_SERIAL_8250_EXTENDED=y
+CONFIG_SERIAL_8250_DW=y
+CONFIG_SERIAL_DEV_BUS=y
+
+# ---------------------------------------------------------------------------
+# Storage and filesystems. Root is on eMMC and there is no initramfs, so
+# everything on the path to the root filesystem is built in.
+# ---------------------------------------------------------------------------
+CONFIG_MMC=y
+CONFIG_MMC_BLOCK=y
+CONFIG_MMC_DW=y
+CONFIG_MMC_DW_PLTFM=y
+CONFIG_MMC_DW_ROCKCHIP=y
+CONFIG_PARTITION_ADVANCED=y
+CONFIG_EFI_PARTITION=y
+CONFIG_EXT4_FS=y
+CONFIG_EXT4_FS_POSIX_ACL=y
+CONFIG_EXT4_FS_SECURITY=y
+CONFIG_VFAT_FS=y
+CONFIG_FAT_DEFAULT_IOCHARSET="ascii"
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+CONFIG_TMPFS=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_TMPFS_XATTR=y
+# /etc is an overlay (read-only rootfs below, writable layer on /data).
+CONFIG_OVERLAY_FS=y
+CONFIG_AUTOFS_FS=y
+# RAUC verity bundles: squashfs on a loop device behind dm-verity.
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_ZSTD=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_BLK_DEV_LOOP=y
+CONFIG_BLK_DEV_DM=y
+CONFIG_DM_VERITY=y
+CONFIG_CRYPTO_SHA256=y
+CONFIG_CRYPTO_ZSTD=y
+# Unused filesystems and network filesystems.
+# CONFIG_NFS_FS is not set
+# CONFIG_BTRFS_FS is not set
+# CONFIG_XFS_FS is not set
+# CONFIG_F2FS_FS is not set
+# CONFIG_NETWORK_FILESYSTEMS is not set
+
+# ---------------------------------------------------------------------------
+# Memory: zram swap (compressed RAM) instead of swapping to the eMMC.
+# ---------------------------------------------------------------------------
+CONFIG_ZRAM=y
+CONFIG_ZRAM_BACKEND_ZSTD=y
+CONFIG_ZRAM_DEF_COMP_ZSTD=y
+CONFIG_SWAP=y
+
+# ---------------------------------------------------------------------------
+# Watchdog and entropy
+# ---------------------------------------------------------------------------
+CONFIG_WATCHDOG=y
+CONFIG_DW_WATCHDOG=y
+CONFIG_HW_RANDOM=y
+CONFIG_HW_RANDOM_ROCKCHIP=y
+
+# ---------------------------------------------------------------------------
+# Wired network: the internal 100 Mbit PHY behind the GMAC (gmac2phy)
+# ---------------------------------------------------------------------------
+CONFIG_NET_VENDOR_STMICRO=y
+CONFIG_STMMAC_ETH=y
+CONFIG_STMMAC_PLATFORM=y
+CONFIG_DWMAC_ROCKCHIP=y
+CONFIG_ROCKCHIP_PHY=y
+CONFIG_REALTEK_PHY=y
+
+# ---------------------------------------------------------------------------
+# Wireless: optional USB dongle (Realtek RTL8710BU, 0bda:b711) via the
+# in-tree rtl8xxxu. RTL8XXXU_UNTESTED is required to bind this chip. Wired
+# stays the supported path until the dongle has been measured.
+# ---------------------------------------------------------------------------
+CONFIG_WLAN=y
+CONFIG_CFG80211=m
+CONFIG_MAC80211=m
+CONFIG_RFKILL=y
+CONFIG_WLAN_VENDOR_REALTEK=y
+CONFIG_RTL8XXXU=m
+CONFIG_RTL8XXXU_UNTESTED=y
+# CONFIG_WLAN_VENDOR_ADMTEK is not set
+# CONFIG_WLAN_VENDOR_ATH is not set
+# CONFIG_WLAN_VENDOR_ATMEL is not set
+# CONFIG_WLAN_VENDOR_BROADCOM is not set
+# CONFIG_WLAN_VENDOR_INTEL is not set
+# CONFIG_WLAN_VENDOR_INTERSIL is not set
+# CONFIG_WLAN_VENDOR_MARVELL is not set
+# CONFIG_WLAN_VENDOR_MEDIATEK is not set
+# CONFIG_WLAN_VENDOR_MICROCHIP is not set
+# CONFIG_WLAN_VENDOR_PURELIFI is not set
+# CONFIG_WLAN_VENDOR_RALINK is not set
+# CONFIG_WLAN_VENDOR_RSI is not set
+# CONFIG_WLAN_VENDOR_SILABS is not set
+# CONFIG_WLAN_VENDOR_ST is not set
+# CONFIG_WLAN_VENDOR_TI is not set
+# CONFIG_WLAN_VENDOR_ZYDAS is not set
+# CONFIG_WLAN_VENDOR_QUANTENNA is not set
+# CONFIG_BT is not set
+
+# ---------------------------------------------------------------------------
+# Packet filtering for NetworkManager's shared (hotspot) mode: nftables NAT.
+# ---------------------------------------------------------------------------
+CONFIG_NETFILTER=y
+CONFIG_NF_CONNTRACK=y
+CONFIG_NF_TABLES=y
+CONFIG_NF_TABLES_INET=y
+CONFIG_NF_TABLES_IPV4=y
+CONFIG_NF_TABLES_IPV6=y
+CONFIG_NF_NAT=y
+CONFIG_NFT_CT=y
+CONFIG_NFT_NAT=y
+CONFIG_NFT_MASQ=y
+
+# ---------------------------------------------------------------------------
+# USB: all host controllers on the RK3328 (EHCI/OHCI/DWC2/DWC3 host mode).
+# ---------------------------------------------------------------------------
+CONFIG_USB=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_USB_EHCI_HCD_PLATFORM=y
+CONFIG_USB_OHCI_HCD=y
+CONFIG_USB_OHCI_HCD_PLATFORM=y
+CONFIG_USB_XHCI_HCD=y
+CONFIG_USB_DWC2=y
+CONFIG_USB_DWC2_HOST=y
+CONFIG_USB_DWC3=y
+CONFIG_USB_DWC3_HOST=y
+CONFIG_PHY_ROCKCHIP_INNO_USB2=y
+# CONFIG_USB_GADGET is not set
+
+# ---------------------------------------------------------------------------
+# USB serial adapters, for accessories that talk Klipper over USB.
+# ---------------------------------------------------------------------------
+CONFIG_USB_ACM=m
+CONFIG_USB_SERIAL=m
+CONFIG_USB_SERIAL_CH341=m
+CONFIG_USB_SERIAL_CP210X=m
+CONFIG_USB_SERIAL_FTDI_SIO=m
+
+# ---------------------------------------------------------------------------
+# Camera: UVC (Sunplus 1bcf:0b09) through V4L2, plus the Hantro VPU.
+# ---------------------------------------------------------------------------
+CONFIG_MEDIA_SUPPORT=y
+CONFIG_MEDIA_SUPPORT_FILTER=y
+CONFIG_MEDIA_CAMERA_SUPPORT=y
+CONFIG_MEDIA_PLATFORM_SUPPORT=y
+CONFIG_MEDIA_USB_SUPPORT=y
+CONFIG_USB_VIDEO_CLASS=m
+CONFIG_USB_VIDEO_CLASS_INPUT_EVDEV=y
+CONFIG_V4L_MEM2MEM_DRIVERS=y
+CONFIG_VIDEO_HANTRO=m
+CONFIG_VIDEO_HANTRO_ROCKCHIP=y
+# CONFIG_MEDIA_ANALOG_TV_SUPPORT is not set
+# CONFIG_MEDIA_DIGITAL_TV_SUPPORT is not set
+# CONFIG_MEDIA_RADIO_SUPPORT is not set
+# CONFIG_MEDIA_SDR_SUPPORT is not set
+# CONFIG_MEDIA_TEST_SUPPORT is not set
+# CONFIG_RC_CORE is not set
+# CONFIG_DRM is not set
+# CONFIG_SOUND is not set
+
+# ---------------------------------------------------------------------------
+# Not present on this board
+# ---------------------------------------------------------------------------
+# No display on this printer.
+# CONFIG_FB is not set
+# CONFIG_PCI is not set
+# CONFIG_ACPI is not set
+# CONFIG_VIRTUALIZATION is not set
+# CONFIG_MTD is not set
+# CONFIG_STAGING is not set
+# CONFIG_NET_VENDOR_ALACRITECH is not set
+# CONFIG_NET_VENDOR_AMAZON is not set
+# CONFIG_NET_VENDOR_AQUANTIA is not set
+# CONFIG_NET_VENDOR_BROADCOM is not set
+# CONFIG_NET_VENDOR_CADENCE is not set
+# CONFIG_NET_VENDOR_FREESCALE is not set
+# CONFIG_NET_VENDOR_HISILICON is not set
+# CONFIG_NET_VENDOR_INTEL is not set
+# CONFIG_NET_VENDOR_MARVELL is not set
+# CONFIG_NET_VENDOR_MEDIATEK is not set
+# CONFIG_NET_VENDOR_MICROCHIP is not set
+# CONFIG_NET_VENDOR_QUALCOMM is not set
+# CONFIG_NET_VENDOR_RENESAS is not set
+# CONFIG_NET_VENDOR_SAMSUNG is not set
+# CONFIG_NET_VENDOR_SOCIONEXT is not set
+# CONFIG_NET_VENDOR_SYNOPSYS is not set

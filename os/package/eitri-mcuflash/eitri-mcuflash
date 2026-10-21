@@ -1,0 +1,9 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: Apache-2.0
+"""Launcher for the Eitri MCU flasher (installed by the eitri-mcuflash package)."""
+import sys
+
+from eitri_mcuflash.cli import main
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,13 @@
+Driver Info:
+	Driver name      : hantro-vpu
+	Card type        : hantro-vpu
+	Bus info         : platform:ff650000.video-codec
+	Driver version   : 6.18.57
+	Capabilities     : 0x84204000
+		Video Memory-to-Memory Multiplanar
+		Streaming
+		Extended Pix Format
+	Device Caps      : 0x04204000
+		Video Memory-to-Memory Multiplanar
+		Streaming
+		Extended Pix Format

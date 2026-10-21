@@ -1,0 +1,10 @@
+config BR2_PACKAGE_EITRI_CAMERA
+	bool "eitri-camera"
+	select BR2_PACKAGE_EITRI_USTREAMER
+	select BR2_PACKAGE_LIBV4L
+	select BR2_PACKAGE_LIBV4L_UTILS
+	help
+	  The Eitri camera layer (L3): systemd units, the /dev/eitri-cam
+	  udev rule, the exposure helper, and the factory nginx,
+	  Moonraker and go2rtc snippets. Built from the camera/
+	  directory of this repository.

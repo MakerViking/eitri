@@ -1,0 +1,27 @@
+config BR2_PACKAGE_EITRI_USTREAMER
+	bool "ustreamer (Eitri pin)"
+	depends on BR2_TOOLCHAIN_HEADERS_AT_LEAST_3_16 # V4L2_EVENT_SOURCE_CHANGE
+	depends on BR2_TOOLCHAIN_HAS_THREADS # libbsd
+	depends on !BR2_STATIC_LIBS # libbsd
+	depends on BR2_PACKAGE_LIBBSD_ARCH_SUPPORTS # libbsd
+	depends on BR2_USE_WCHAR # libbsd
+	depends on !BR2_PACKAGE_USTREAMER
+	select BR2_PACKAGE_JPEG
+	select BR2_PACKAGE_LIBBSD
+	select BR2_PACKAGE_LIBEVENT
+	help
+	  Lightweight MJPEG-over-HTTP streamer for the UVC camera.
+
+	  Buildroot ships an older ustreamer (6.52 in the 2026.02 LTS).
+	  Eitri pins the version in release.lock, so this package builds
+	  the pinned release instead. Select either this package or the
+	  stock one, not both.
+
+	  https://github.com/pikvm/ustreamer
+
+comment "ustreamer (Eitri pin) needs a toolchain w/ headers >= 3.16, threads, dynamic library, wchar"
+	depends on BR2_PACKAGE_LIBBSD_ARCH_SUPPORTS
+	depends on !BR2_TOOLCHAIN_HEADERS_AT_LEAST_3_16 || \
+		!BR2_TOOLCHAIN_HAS_THREADS || \
+		BR2_STATIC_LIBS || \
+		!BR2_USE_WCHAR

@@ -1,0 +1,6 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# RAUC "custom" bootloader backend (see docs/BOOT.md): configure
+#   [handlers] bootloader-custom-backend=/usr/libexec/eitri/eitri-bootctl
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+exec python3 -I -c 'import sys; sys.path[:0] = [sys.argv[1], sys.argv[2]]; from eitri_update.bootctl import main; sys.exit(main(sys.argv[3:]))' "$HERE/eitri-update" "$HERE/mcuflash" "$@"

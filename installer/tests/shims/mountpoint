@@ -1,0 +1,3 @@
+#!/bin/sh
+# /boot is "mounted" read-write in the fake root
+exit 1

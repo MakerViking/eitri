@@ -1,0 +1,13 @@
+Bundled fonts, all licensed under the SIL Open Font License 1.1
+(https://openfontlicense.org), served from this directory so the configurator
+works with no internet connection:
+
+  Instrument Serif   Copyright 2022 The Instrument Serif Project Authors
+                     https://github.com/Instrument/instrument-serif
+  Schibsted Grotesk  Copyright 2022 The Schibsted Grotesk Project Authors
+                     https://github.com/schibsted/schibsted-grotesk
+  Martian Mono       Copyright 2022 The Martian Mono Project Authors
+                     https://github.com/evilmartians/mono
+
+Latin subsets taken from the Fontsource packages (@fontsource/instrument-serif,
+@fontsource-variable/schibsted-grotesk, @fontsource-variable/martian-mono).

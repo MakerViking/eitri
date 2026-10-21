@@ -1,0 +1,15 @@
+# RAUC bundle manifest template. post-bundle.sh substitutes the @...@ fields and
+# signs the result. The rootfs image carries the kernel and device tree in
+# /boot, so installing it updates all of them together.
+
+[update]
+compatible=eitri-plus4
+version=@VERSION@
+description=Eitri OS @VERSION@
+build=@BUILD@
+
+[bundle]
+format=verity
+
+[image.rootfs]
+filename=rootfs.ext4

@@ -1,0 +1,6 @@
+#!/bin/sh
+case "$1" in
+  --getsz) echo "${FAKE_DISK_SECTORS:-60621824}" ;;
+  --getsize64) echo $(( ${FAKE_DISK_SECTORS:-60621824} * 512 )) ;;
+  *) exit 0 ;;
+esac

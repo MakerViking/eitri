@@ -1,0 +1,6 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Run eitri-mcuflash from a source checkout / unpacked installer (no pip install needed).
+# Python runs isolated (-I): no current-directory imports, no PYTHON* variables, no user site.
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+exec python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); from eitri_mcuflash.cli import main; sys.exit(main(sys.argv[2:]))' "$HERE/mcuflash" "$@"

@@ -1,0 +1,523 @@
+# Eitri printer.cfg for the QIDI X-Plus 4 (Klipper or Kalico, rendered from
+# config/printer.cfg.tmpl by scripts/render-config.py).
+#
+# Hardware constants and calibrated values come from the stock QIDI Plus 4
+# configuration (QIDITECH/QIDI_PLUS4 and the reference unit's printer.cfg);
+# the Qidi Box / AMS sections, T0-T15 tool-change macros and every fork-only
+# option were dropped. See klipper-layer/config/README.md for attribution.
+#
+# After the first render this file is yours. Calibration results (SAVE_CONFIG)
+# are appended below the marker at the very end; keep it there.
+
+[include eitri-flavor.cfg]
+[include eitri/macros.cfg]
+# Optional: KAMP adaptive meshing/purging. Absent KAMP is fine; PRINT_START
+# falls back to Klipper's built-in ADAPTIVE=1 mesh.
+[include KAMP_Settings*.cfg]
+
+#####################################################################
+# MCUs. Which UART is which board is established by probing at install
+# time; the serial paths are variables (eitri-variables.toml).
+#####################################################################
+
+[mcu]
+# toolhead board: extruder, hotend sensor, ADXL345, part fan, offset probe
+serial: @@mcu_toolhead_serial@@
+restart_method: command
+baud: @@mcu_baud@@
+
+[mcu U_1]
+# mainboard: X/Y/Z, bed, chamber, fans, lights
+serial: @@mcu_mainboard_serial@@
+restart_method: command
+baud: @@mcu_baud@@
+
+# Object name kept from the stock config for display software (it reads the
+# toolhead MCU's internal temperature).
+[temperature_sensor GD32]
+sensor_type: temperature_mcu
+sensor_mcu: mcu
+
+#####################################################################
+# Core
+#####################################################################
+
+[printer]
+kinematics: corexy
+max_velocity: @@max_velocity@@
+max_accel: @@max_accel@@
+minimum_cruise_ratio: @@minimum_cruise_ratio@@
+max_z_velocity: 20
+max_z_accel: 500
+square_corner_velocity: @@square_corner_velocity@@
+
+[respond]
+default_type: echo
+
+[pause_resume]
+
+[display_status]
+
+[exclude_object]
+
+[gcode_arcs]
+resolution: 0.5
+
+[force_move]
+# needed by SET_KINEMATIC_POSITION (homing_override, power-loss recovery)
+enable_force_move: True
+
+[save_variables]
+filename: @@printer_data@@/config/saved_variables.cfg
+
+[virtual_sdcard]
+path: @@printer_data@@/gcodes
+
+[idle_timeout]
+timeout: @@idle_timeout_s@@
+gcode:
+    _QD_IDLE_OFF
+
+[qd_zoffset_var]
+variable: z_offset
+max_offset: 1.0
+
+#@if plr_enabled
+[qd_plr]
+# Power-loss recovery: records progress, rebuilds a resume file on request.
+save_interval: 10
+z_lift: 10
+fan: fan_generic cooling_fan
+purge_macro: QD_PURGE LEN=15
+#@endif
+
+#####################################################################
+# Extruder
+#####################################################################
+
+[extruder]
+step_pin: PB9
+dir_pin: PB8
+enable_pin: !PC15
+rotation_distance: @@extruder_rotation_distance@@
+gear_ratio: @@extruder_gear_ratio@@
+microsteps: 16
+full_steps_per_rotation: 200
+nozzle_diameter: 0.400
+filament_diameter: 1.75
+min_temp: 0
+max_temp: 380
+min_extrude_temp: 175
+heater_pin: PB3
+sensor_type: MAX6675
+sensor_pin: PB12
+spi_speed: 100000
+spi_software_sclk_pin: PB13
+spi_software_mosi_pin: PA11
+spi_software_miso_pin: PB14
+max_power: 1
+control: pid
+pid_Kp: @@extruder_pid_kp@@
+pid_Ki: @@extruder_pid_ki@@
+pid_Kd: @@extruder_pid_kd@@
+pressure_advance: @@extruder_pressure_advance@@
+pressure_advance_smooth_time: @@extruder_pressure_advance_smooth_time@@
+max_extrude_cross_section: 500
+instantaneous_corner_velocity: @@extruder_instantaneous_corner_velocity@@
+max_extrude_only_distance: 1000.0
+max_extrude_only_velocity: 5000
+max_extrude_only_accel: 5000
+step_pulse_duration: 0.000002
+
+[tmc2209 extruder]
+uart_pin: PC13
+sense_resistor: 0.110
+interpolate: True
+run_current: @@extruder_run_current@@
+stealthchop_threshold: 0
+
+[heater_fan hotend_fan]
+pin: PB5
+max_power: 1.0
+shutdown_speed: 1.0
+kick_start_time: 0.5
+heater: extruder
+heater_temp: 50.0
+fan_speed: 1.0
+off_below: 0
+
+[heater_fan hotend_fan2]
+pin: PB4
+max_power: 1.0
+shutdown_speed: 1.0
+kick_start_time: 0.5
+heater: extruder
+heater_temp: 50.0
+fan_speed: 1.0
+off_below: 0
+
+[heater_fan hotend_fan3]
+pin: PB10
+max_power: 1.0
+shutdown_speed: 1.0
+kick_start_time: 0.5
+heater: extruder
+heater_temp: 50.0
+fan_speed: 1.0
+off_below: 0
+
+[fan_generic cooling_fan]
+pin: PA8
+max_power: 1.0
+shutdown_speed: 0
+cycle_time: 0.010
+hardware_pwm: False
+kick_start_time: 0.100
+off_below: 0.0
+tachometer_pin: PA9
+tachometer_ppr: 2
+tachometer_poll_interval: 0.0015
+
+# Presence/runout sensor only: flow compensation must stay off (the Klipper
+# flavor file disables it; max_difference: 0 keeps Kalico's at 100%).
+[hall_filament_width_sensor]
+adc1: PA2
+adc2: PA3
+cal_dia1: 1.50
+cal_dia2: 2.0
+raw_dia1: 14197
+raw_dia2: 15058
+default_nominal_filament_diameter: 1.75
+max_difference: 0
+measurement_delay: 50
+enable: false
+measurement_interval: 10
+logging: False
+min_diameter: 0.3
+use_current_dia_while_delay: False
+pause_on_runout: True
+runout_gcode:
+    RESPOND MSG="Filament run out"
+event_delay: 3.0
+pause_delay: 0.5
+
+#@if adxl_enabled
+[adxl345]
+cs_pin: PA4
+spi_software_sclk_pin: PA5
+spi_software_mosi_pin: PA7
+spi_software_miso_pin: PA6
+axes_map: -x, z, -y
+
+[resonance_tester]
+accel_chip: adxl345
+accel_per_hz: 150
+probe_points:
+    150, 150, 10
+#@endif
+
+# Input shaper: LEFT FOR CALIBRATION. Run G28, then SHAPER_CALIBRATE, then
+# SAVE_CONFIG; Klipper writes an [input_shaper] section into the autosave
+# block at the end of this file. For reference the stock unit measured X mzv
+# ~51 Hz and Y mzv ~38 Hz; those are not carried over because they depend on
+# belt tension and the individual machine. Do not raise max_accel above what
+# the result supports.
+
+#####################################################################
+# XY (CoreXY, TMC2240, sensorless homing)
+#####################################################################
+
+[stepper_x]
+step_pin: U_1:PB4
+dir_pin: !U_1:PB3
+enable_pin: !U_1:PB5
+microsteps: 32
+rotation_distance: @@xy_rotation_distance@@
+full_steps_per_rotation: 200
+endstop_pin: tmc2240_stepper_x:virtual_endstop
+position_min: -1.5
+position_endstop: -1.5
+position_max: 307
+homing_speed: 50
+homing_retract_dist: 0
+homing_positive_dir: False
+step_pulse_duration: 0.0000001
+
+[stepper_y]
+step_pin: U_1:PC14
+dir_pin: !U_1:PC13
+enable_pin: !U_1:PC15
+microsteps: 32
+rotation_distance: @@xy_rotation_distance@@
+full_steps_per_rotation: 200
+endstop_pin: tmc2240_stepper_y:virtual_endstop
+position_min: -2
+position_endstop: -2
+position_max: 325
+homing_speed: 50
+homing_retract_dist: 0
+homing_positive_dir: False
+step_pulse_duration: 0.0000001
+
+[tmc2240 stepper_x]
+cs_pin: U_1:PD2
+spi_software_sclk_pin: U_1:PA5
+spi_software_mosi_pin: U_1:PA7
+spi_software_miso_pin: U_1:PA6
+spi_speed: 200000
+rref: 12000
+run_current: @@xy_run_current@@
+interpolate: True
+stealthchop_threshold: 0
+diag0_pin: !U_1:PB8
+driver_SGT: @@xy_sgt@@
+
+[tmc2240 stepper_y]
+cs_pin: U_1:PB9
+spi_software_sclk_pin: U_1:PA5
+spi_software_mosi_pin: U_1:PA7
+spi_software_miso_pin: U_1:PA6
+spi_speed: 200000
+rref: 12000
+run_current: @@xy_run_current@@
+interpolate: True
+stealthchop_threshold: 0
+diag0_pin: !U_1:PC0
+driver_SGT: @@xy_sgt@@
+
+#####################################################################
+# Z (two lead screws; homes on the offset probe)
+#####################################################################
+
+[stepper_z]
+step_pin: U_1:PB1
+dir_pin: U_1:PB6
+enable_pin: !U_1:PB0
+microsteps: 128
+rotation_distance: @@z_rotation_distance@@
+full_steps_per_rotation: 200
+endstop_pin: probe:z_virtual_endstop
+position_max: 285
+position_min: -4
+homing_speed: 10
+second_homing_speed: 5
+homing_retract_dist: 5.0
+homing_positive_dir: False
+
+[stepper_z1]
+step_pin: U_1:PC10
+dir_pin: U_1:PA15
+enable_pin: !U_1:PC11
+microsteps: 128
+rotation_distance: @@z_rotation_distance@@
+full_steps_per_rotation: 200
+
+# StallGuard wiring is kept for the future sensorless reverse homing
+# (qd_reverse_home stub); nothing uses the DIAG pins today.
+[tmc2209 stepper_z]
+uart_pin: U_1:PB7
+sense_resistor: 0.110
+run_current: @@z_run_current@@
+interpolate: True
+stealthchop_threshold: 9999999999
+diag_pin: ^U_1:PA13
+driver_SGTHRS: @@z_sgthrs@@
+
+[tmc2209 stepper_z1]
+uart_pin: U_1:PC5
+sense_resistor: 0.110
+run_current: @@z_run_current@@
+interpolate: True
+stealthchop_threshold: 9999999999
+diag_pin: ^U_1:PC12
+driver_SGTHRS: @@z_sgthrs@@
+
+[z_tilt]
+z_positions:
+    @@z_tilt_left_x@@, @@z_tilt_y@@
+    @@z_tilt_right_x@@, @@z_tilt_y@@
+points:
+    @@z_tilt_point_left_x@@, @@z_tilt_y@@
+    @@z_tilt_point_right_x@@, @@z_tilt_y@@
+speed: 150
+horizontal_move_z: 5
+retries: 2
+retry_tolerance: 0.05
+
+[bed_screws]
+screw1: 25, 21
+screw1_name: Front left
+screw2: 285, 21
+screw2_name: Front right
+screw3: 285, 281
+screw3_name: Rear right
+screw4: 25, 281
+screw4_name: Rear left
+
+#####################################################################
+# Probe and bed mesh
+#####################################################################
+
+# Single offset probe (design: see extras/qd_probe.py). Finite retries, and a
+# probe that is already triggered before it moves is an error, as in
+# upstream. Calibrate z_offset with PROBE_CALIBRATE before printing.
+[probe]
+pin: !PA10
+x_offset: @@probe_x_offset@@
+y_offset: @@probe_y_offset@@
+z_offset: @@probe_z_offset@@
+speed: 5
+lift_speed: 5
+samples: @@probe_samples@@
+samples_result: median
+sample_retract_dist: 5
+samples_tolerance: 0.05
+samples_tolerance_retries: 5
+
+[bed_mesh]
+speed: 150
+horizontal_move_z: 5
+mesh_min: @@mesh_min@@
+mesh_max: @@mesh_max@@
+probe_count: @@mesh_probe_count@@
+algorithm: bicubic
+bicubic_tension: 0.4
+mesh_pps: 2, 2
+
+#####################################################################
+# Heaters. Extruder and bed use Klipper's default runaway protection (add
+# [verify_heater ...] overrides only to make them stricter). The chamber keeps
+# QIDI's slower, looser limits because a 0.4 max_power air heater cannot meet
+# the extruder-style defaults; it is still an active [verify_heater].
+#####################################################################
+
+[heater_bed]
+heater_pin: U_1:PB10
+sensor_type: NTC 100K MGB18-104F39050L32
+sensor_pin: U_1:PA0
+max_power: 1.0
+control: pid
+pid_Kp: @@bed_pid_kp@@
+pid_Ki: @@bed_pid_ki@@
+pid_Kd: @@bed_pid_kd@@
+pwm_cycle_time: @@bed_pwm_cycle_time@@
+min_temp: -60
+max_temp: 125
+
+#@if chamber_enabled
+# Chamber heater. It shares the bed's power budget: qd_power_interlock only
+# lets it draw power while the bed is at temperature, and QD_SET_CHAMBER
+# (used by M141/M191) raises the bed first. [verify_heater chamber] below is
+# a normal Klipper check and is never bypassed.
+[heater_generic chamber]
+heater_pin: U_1:PC8
+max_power: @@chamber_max_power@@
+sensor_type: NTC 100K MGB18-104F39050L32
+sensor_pin: U_1:PA1
+control: pid
+pid_Kp: @@chamber_pid_kp@@
+pid_Ki: @@chamber_pid_ki@@
+pid_Kd: @@chamber_pid_kd@@
+min_temp: -100
+max_temp: 70
+
+[verify_heater chamber]
+max_error: @@chamber_verify_max_error@@
+check_gain_time: @@chamber_verify_check_gain_time@@
+hysteresis: 5
+heating_gain: 2
+
+# Independent over-temperature backstop on a second sensor: the MCU shuts
+# down if it reads above max_temp.
+[temperature_sensor Chamber_Thermal_Protection_Sensor]
+sensor_type: NTC 100K MGB18-104F39050L32
+sensor_pin: U_1:PC2
+min_temp: -100
+max_temp: 140
+
+[qd_power_interlock]
+chamber_heater: chamber
+bed_heater: heater_bed
+bed_min_target: 70
+bed_tolerance: 2
+bed_offset: 25
+chamber_min_target: @@chamber_min_target@@
+chamber_max_target: @@chamber_max_target@@
+
+[qd_chamber_fan chamber_fan]
+pin: U_1:PA4
+max_power: 1.0
+shutdown_speed: 0
+kick_start_time: 0.5
+heater: chamber
+fan_speed: 1.0
+off_below: 0
+idle_timeout: 60
+idle_speed: 1.0
+#@endif
+
+#####################################################################
+# Fans, lights and misc outputs
+#####################################################################
+
+[fan_generic auxiliary_cooling_fan]
+pin: U_1:PA8
+shutdown_speed: 0.0
+cycle_time: 0.0100
+hardware_pwm: False
+kick_start_time: 0.100
+off_below: 0.0
+
+[fan_generic chamber_circulation_fan]
+pin: U_1:PC9
+shutdown_speed: 0.0
+cycle_time: 0.0100
+hardware_pwm: False
+kick_start_time: 0.100
+off_below: 0.0
+
+[controller_fan board_fan]
+pin: U_1:PC4
+max_power: 1.0
+shutdown_speed: 1.0
+cycle_time: 0.01
+fan_speed: 1.0
+#@if chamber_enabled
+heater: chamber
+#@else
+heater: heater_bed
+#@endif
+stepper: stepper_x, stepper_y
+
+[output_pin caselight]
+pin: U_1:PC7
+pwm: False
+shutdown_value: 1
+value: 1
+
+[output_pin beeper]
+pin: U_1:PA2
+pwm: False
+shutdown_value: 0
+value: 0
+
+# Vibration actuator used by the Z_VIBRATE macro
+[output_pin ctlyd]
+pin: U_1:PA14
+pwm: False
+shutdown_value: 0
+value: 0
+
+# Sound enable flag/pin read by the BEEP macro
+[output_pin sound]
+pin: PA1
+value: 0
+
+# Tangle / jam sensor on the mainboard
+[filament_switch_sensor fila]
+pause_on_runout: True
+runout_gcode:
+    RESPOND MSG="Filament tangle detected"
+event_delay: 3.0
+pause_delay: 0.5
+switch_pin: U_1:PC3

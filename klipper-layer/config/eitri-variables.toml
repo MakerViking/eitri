@@ -1,0 +1,107 @@
+# Eitri printer.cfg variables (rendered into printer.cfg.tmpl by
+# scripts/render-config.py). Override any of these in a second TOML file
+# passed with --vars, never by editing this file in place on a device.
+#
+# Hardware constants and tuning values below are the calibrated values of the
+# reference X-Plus 4 unit, taken from the stock QIDI Plus 4 configuration
+# (QIDITECH/QIDI_PLUS4, see config/README.md for attribution). Treat them as
+# starting points for your own printer.
+
+[vars]
+# --- where things live (Eitri OS layout) -----------------------------------
+printer_data = "/data/printer_data"
+
+# --- MCU serial ports --------------------------------------------------------
+# TBD: which UART carries which board is established by probing at install
+# time (installer/configurator rewrite these two values). The defaults are the
+# assignment of the reference unit's stock config: the board on /dev/ttyS2
+# drives the toolhead (extruder, hotend sensor, ADXL345, part fan, offset
+# probe) and the board on /dev/ttyS0 is the mainboard (X/Y/Z, bed, chamber).
+mcu_toolhead_serial = "/dev/ttyS2"
+mcu_mainboard_serial = "/dev/ttyS0"
+mcu_baud = 500000
+
+# --- optional hardware ---------------------------------------------------------
+# The chamber heater is off by default. Enabling it adds the [heater_generic
+# chamber], its [verify_heater chamber], the independent over-temperature
+# sensor and the bed<->chamber power interlock (qd_power_interlock) to the
+# rendered printer.cfg.
+chamber_enabled = false
+# Power-loss recovery (qd_plr) and the toolhead ADXL345 used by SHAPER_CALIBRATE.
+# Both are fitted/enabled on a stock printer; the configurator can turn them off.
+plr_enabled = true
+adxl_enabled = true
+
+# --- motion limits -------------------------------------------------------------
+max_velocity = 600
+# Factory value is 20000, which the input shaper results below cannot support
+# (about 5500-6800 mm/s^2 is the useful range for the measured resonances).
+# Raise it only after SHAPER_CALIBRATE on your unit.
+max_accel = 10000
+minimum_cruise_ratio = 0.5
+square_corner_velocity = 8
+idle_timeout_s = 3600
+
+# --- X/Y (CoreXY, TMC2240 sensorless) ------------------------------------------
+xy_rotation_distance = 38.82
+xy_run_current = 1.07
+# StallGuard threshold for sensorless homing (higher = more sensitive)
+xy_sgt = 1
+
+# --- Z (two lead screws, TMC2209) -----------------------------------------------
+z_rotation_distance = 4
+z_run_current = 1.07
+# Only used by the future sensorless reverse homing (qd_reverse_home stub)
+z_sgthrs = 100
+
+# --- extruder -------------------------------------------------------------------
+extruder_rotation_distance = 53.7
+extruder_gear_ratio = "1517:170"
+extruder_run_current = 0.714
+extruder_pressure_advance = 0.032
+extruder_pressure_advance_smooth_time = 0.03
+# Stock value is 10 (Klipper default 1); it affects corner behaviour, tune it.
+extruder_instantaneous_corner_velocity = 10.0
+extruder_pid_kp = 33.555
+extruder_pid_ki = 4.76
+extruder_pid_kd = 59.141
+
+# --- bed heater -----------------------------------------------------------------
+# 1 kHz suits a DC MOSFET. If your bed is switched by an AC SSR use >= 0.1.
+bed_pwm_cycle_time = 0.001
+bed_pid_kp = 63.418
+bed_pid_ki = 1.342
+bed_pid_kd = 749.125
+
+# --- chamber heater (only used when chamber_enabled = true) ---------------------
+chamber_max_power = 0.4
+chamber_min_target = 45
+chamber_max_target = 65
+# UNTUNED: stock copied the bed's PID. Run PID_CALIBRATE HEATER=chamber
+# TARGET=55 (bed at 80 C first) and SAVE_CONFIG before relying on it.
+chamber_pid_kp = 63.418
+chamber_pid_ki = 1.342
+chamber_pid_kd = 749.125
+# verify_heater limits stay LIVE; these keep the stock chamber tolerances
+chamber_verify_max_error = 400
+chamber_verify_check_gain_time = 600
+
+# --- probe (the PA10 offset probe on the toolhead MCU) -----------------------------
+probe_x_offset = 25.0
+probe_y_offset = 1.3
+# UNCALIBRATED PLACEHOLDER. Run PROBE_CALIBRATE and SAVE_CONFIG before the
+# first print; PRINT_START refuses to run while this is exactly 0.
+probe_z_offset = 0.0
+probe_samples = 3
+
+# --- bed mesh (probe coordinates) -------------------------------------------------
+mesh_min = "25, 10"
+mesh_max = "295, 295"
+mesh_probe_count = "10, 10"
+
+# --- Z tilt (nozzle positions) --------------------------------------------------------
+z_tilt_left_x = -17.5
+z_tilt_right_x = 335.7
+z_tilt_y = 138.5
+z_tilt_point_left_x = 0
+z_tilt_point_right_x = 255

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Deterministic numbers instead of whatever the host's /tmp happens to look like.
+case "$*" in
+  *--output=used*)   printf 'Used\n%s\n'       "${FAKE_ROOT_USED:-7600000000}" ;;
+  *--output=avail*)  printf 'Avail\n%s\n'      "${FAKE_AVAIL:-21474836480}" ;;
+  *--output=target*) printf 'Mounted on\n/mnt\n' ;;
+  *--output=source*) printf 'Filesystem\n%s\n' "${FAKE_USB_DEV:-/dev/sda1}" ;;
+  *) /usr/bin/df "$@" ;;
+esac

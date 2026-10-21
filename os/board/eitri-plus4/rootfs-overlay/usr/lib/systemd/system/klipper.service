@@ -1,0 +1,28 @@
+[Unit]
+Description=Klipper 3D printer firmware (host)
+Documentation=https://www.klipper3d.org/
+After=local-fs.target eitri-data-init.service
+Wants=eitri-data-init.service
+# Nothing starts until the installer or configurator has put a Klipper clone, its
+# virtual environment and a printer.cfg on /data.
+ConditionPathExists=/data/firmware/klipper/klippy/klippy.py
+ConditionPathExists=/data/venv/klippy/bin/python
+ConditionPathExists=/data/printer_data/config/printer.cfg
+
+[Service]
+Type=simple
+User=eitri
+Group=eitri
+WorkingDirectory=/data/firmware/klipper
+ExecStart=/data/venv/klippy/bin/python /data/firmware/klipper/klippy/klippy.py \
+    /data/printer_data/config/printer.cfg \
+    -I /data/printer_data/comms/klippy.serial \
+    -l /data/printer_data/logs/klippy.log \
+    -a /data/printer_data/comms/klippy.sock
+Restart=always
+RestartSec=10
+# Klipper keeps the heaters safe; make it the last process the OOM killer picks.
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target

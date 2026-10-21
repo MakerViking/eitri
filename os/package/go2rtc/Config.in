@@ -1,0 +1,13 @@
+config BR2_PACKAGE_GO2RTC
+	bool "go2rtc"
+	depends on BR2_aarch64
+	help
+	  Camera gateway: republishes the ustreamer MJPEG stream as RTSP
+	  (and WebRTC when the source is H.264).
+
+	  This installs the project's prebuilt, statically linked
+	  linux_arm64 release binary. Buildroot has no go2rtc package
+	  and no Go module vendoring is done here, so the binary is
+	  pinned by SHA-256 in go2rtc.hash and in release.lock.
+
+	  https://github.com/AlexxIT/go2rtc

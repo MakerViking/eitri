@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+# The parts of /etc/rauc/system.conf that tie RAUC to Eitri's boot selection (see docs/BOOT.md).
+# Slot definitions, compatible string and keyring belong to the OS image.
+[system]
+bootloader=custom
+
+[handlers]
+bootloader-custom-backend=/usr/libexec/eitri/eitri-bootctl

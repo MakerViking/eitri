@@ -1,0 +1,3 @@
+#!/bin/sh
+echo "e2fsck $*" >>"$FAKE_LOG"
+exit "${FAKE_E2FSCK_RC:-0}"

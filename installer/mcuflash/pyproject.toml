@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eitri-mcuflash"
+version = "0.1.0"
+description = "Probe, back up, flash and verify the QIDI X-Plus 4 MCUs over their UARTs (Eitri installer component)"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+# Runs on the stock Debian 10 image (Python 3.7) during the in-place install as
+# well as on the Eitri OS (3.14), and has no third-party dependencies.
+requires-python = ">=3.7"
+dependencies = []
+
+[project.scripts]
+eitri-mcuflash = "eitri_mcuflash.cli:main"
+
+[tool.setuptools]
+packages = ["eitri_mcuflash"]
+
+[tool.setuptools.package-data]
+eitri_mcuflash = ["boards.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

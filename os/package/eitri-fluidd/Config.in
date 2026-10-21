@@ -1,0 +1,8 @@
+config BR2_PACKAGE_EITRI_FLUIDD
+	bool "fluidd"
+	help
+	  Fluidd web interface for Klipper/Moonraker, installed as
+	  static files under /usr/share/eitri/ui/fluidd. nginx serves it
+	  when it is the active UI (see /data/eitri/ui).
+
+	  https://github.com/fluidd-core/fluidd

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# Runs on every boot AFTER Klipper and Moonraker started: if this slot is not yet confirmed, check that the
+# system is healthy and either commit it (RAUC mark-good) or roll back to the previous system.
+[Unit]
+Description=Eitri: verify the running system and commit or roll back
+After=klipper.service moonraker.service eitri-prepare.service
+Wants=klipper.service moonraker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/eitri-update --json --events-file /data/eitri/logs/update.jsonl post-boot --stage verify
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=multi-user.target

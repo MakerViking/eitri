@@ -1,0 +1,5 @@
+#!/bin/sh
+echo "umount $*" >>"$FAKE_LOG"
+for last; do :; done
+grep -vxF "$last" "$FAKE_MOUNTS" >"$FAKE_MOUNTS.tmp"; mv "$FAKE_MOUNTS.tmp" "$FAKE_MOUNTS"
+exit 0

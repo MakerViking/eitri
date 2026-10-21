@@ -1,0 +1,17 @@
+config BR2_PACKAGE_UV
+	bool "uv"
+	depends on BR2_aarch64
+	depends on BR2_TOOLCHAIN_USES_GLIBC
+	help
+	  Fast Python package and virtual environment manager. Eitri
+	  creates the Klipper and Moonraker virtual environments under
+	  /data/venv with it.
+
+	  This installs the project's prebuilt aarch64-unknown-linux-gnu
+	  release binaries (uv and uvx), pinned by SHA-256.
+
+	  https://github.com/astral-sh/uv
+
+comment "uv needs a glibc toolchain"
+	depends on BR2_aarch64
+	depends on !BR2_TOOLCHAIN_USES_GLIBC

@@ -1,0 +1,23 @@
+Eitri OS: third-party material specific to the image
+(see also the NOTICE file at the repository root, which lists the rest)
+
+The image is built by Buildroot, which records the exact licences and sources of
+every package in it: run "make -C os legal-info".
+
+Items that are not obvious from the defconfig:
+
+linux-firmware (Wi-Fi: rtl8710bu / rtl8xxxu blobs)
+  Redistributable firmware under the licences in the linux-firmware tree.
+  Only the files for the adapters the board uses are installed.
+
+Rockchip rkbin DDR blob (optional)
+  Proprietary. Only used when the image is configured with
+  "make -C os ddrbin-config"; the default image uses U-Boot's open TPL and does
+  not contain it. A build that includes it must not be redistributed unless
+  Rockchip's terms allow it.
+
+Trusted Firmware-A (BL31), U-Boot, Linux, RAUC, ustreamer, Katapult, Fluidd,
+Mainsail, go2rtc (MIT), uv (Apache-2.0 OR MIT): see the root NOTICE.
+
+Files in this directory tree are Apache-2.0 unless a file says otherwise;
+kernel and U-Boot patches and fragments are GPL-2.0.

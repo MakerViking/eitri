@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "mke2fs $*" >>"$FAKE_LOG"

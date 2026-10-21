@@ -1,0 +1,12 @@
+[Unit]
+Description=Mark the running OS slot good once the system is healthy
+Documentation=file:///usr/share/doc/eitri/os/README.md
+After=network.target rauc.service
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/eitri/mark-good
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

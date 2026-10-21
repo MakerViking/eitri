@@ -1,0 +1,19 @@
+# OPTIONAL profile: software H.264 for clients that cannot take MJPEG (WebRTC,
+# browsers without an MJPEG reader, low-bandwidth remote viewing).
+#
+# NOT loaded by default, and NOT expected to keep up at 1080p on the RK3328:
+# software x264 on four Cortex-A53 cores is unlikely to hold 1080p30 realtime
+# alongside Klipper and Moonraker. This is a hypothesis, not a measurement:
+# benchmark on the device before relying on it. Use the MJPEG passthrough for the
+# main stream and treat this as a secondary, lower-quality feed.
+#
+# To enable: copy to /data/printer_data/config/go2rtc.yaml (merging the
+# streams block below into the default config), and install ffmpeg with
+# libx264. Keep the CPU governor and nice level in mind: this is a background
+# transcode, so it must not starve the printer's MCU and host threads.
+#
+# Requires ffmpeg. go2rtc runs the transcode through its ffmpeg source.
+
+streams:
+  eitri_cam_h264:
+    - ffmpeg:eitri_cam#video=h264

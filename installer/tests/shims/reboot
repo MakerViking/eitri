@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "reboot $*" >>"${FAKE_LOG:?}"

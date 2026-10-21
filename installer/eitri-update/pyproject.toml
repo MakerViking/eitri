@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eitri-update"
+version = "0.1.0"
+description = "Eitri release-channel client: signed manifests, RAUC installs, rollback, upstream mode"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.7"
+dependencies = ["eitri-mcuflash"]
+
+[project.scripts]
+eitri-update = "eitri_update.cli:main"
+eitri-bootctl = "eitri_update.bootctl:main"
+
+[tool.setuptools]
+packages = ["eitri_update"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

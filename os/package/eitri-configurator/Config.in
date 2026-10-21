@@ -1,0 +1,12 @@
+config BR2_PACKAGE_EITRI_CONFIGURATOR
+	bool "eitri-configurator"
+	select BR2_PACKAGE_PYTHON3
+	select BR2_PACKAGE_PYTHON_AIOHTTP
+	select BR2_PACKAGE_PYTHON_JINJA2
+	select BR2_PACKAGE_EITRI_MCUFLASH
+	select BR2_PACKAGE_EITRI_KLIPPER_LAYER
+	help
+	  The first-run and maintenance web configurator (port 8099).
+	  Built from the configurator/ directory of this repository and
+	  installed as a source tree, because the application resolves
+	  its web assets and release.lock relative to its own location.

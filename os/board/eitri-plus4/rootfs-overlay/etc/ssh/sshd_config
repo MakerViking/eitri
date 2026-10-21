@@ -1,0 +1,25 @@
+# Eitri sshd configuration.
+#
+# The "eitri" account has no password until one is set, so login is by public
+# key. Keys are added by dropping an authorized_keys file on the boot partition
+# (see /boot/firmware/README.txt) or through the configurator. Host keys are
+# generated on the first boot and live in the persistent /etc overlay.
+Port 22
+AddressFamily any
+
+PermitRootLogin no
+AllowUsers eitri
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+PasswordAuthentication yes
+PermitEmptyPasswords no
+KbdInteractiveAuthentication no
+UsePAM no
+
+X11Forwarding no
+AllowTcpForwarding yes
+ClientAliveInterval 30
+ClientAliveCountMax 4
+PrintMotd no
+
+Subsystem sftp /usr/libexec/sftp-server

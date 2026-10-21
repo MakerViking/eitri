@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=Eitri: look for a newer release (does not install anything)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/eitri-update --json --events-file /data/eitri/logs/update.jsonl check

@@ -1,0 +1,51 @@
+[Unit]
+Description=Klarity - open screen daemon for the QIDI X-Plus 4 touchscreen
+Documentation=https://github.com/eitri-fw/eitri/tree/main/klarity
+After=network.target moonraker.service
+Wants=moonraker.service
+ConditionPathExists=/data/eitri/klarity/venv/bin/klarity
+ConditionPathExists=/data/printer_data/config/klarity.cfg
+
+[Service]
+Type=simple
+User=eitri
+Group=eitri
+# dialout owns the UART; the supplementary groups also match the eitri user's login groups.
+SupplementaryGroups=dialout
+WorkingDirectory=/data/eitri/klarity
+ExecStart=/data/eitri/klarity/venv/bin/klarity -c /data/printer_data/config/klarity.cfg
+# SIGTERM makes the daemon print its learn summary and exit cleanly.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+# EX_CONFIG (78): bad config / unset serial port -- restarting cannot fix that.
+RestartPreventExitStatus=78
+Restart=on-failure
+RestartSec=3
+# Moonraker/Klipper being down is normal; Klarity reconnects by itself, so no ordering
+# failure should take the screen down.
+
+# Hardening: Klarity needs the UART, loopback HTTP/websocket and its own log directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/data/printer_data/logs
+ProtectHome=true
+RuntimeDirectory=klarity
+PrivateTmp=true
+PrivateDevices=false
+DevicePolicy=closed
+DeviceAllow=char-ttyS rw
+DeviceAllow=char-ttyAMA rw
+DeviceAllow=char-ttyUSB rw
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+UMask=0027
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

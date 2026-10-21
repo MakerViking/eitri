@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "partx $*" >>"${FAKE_LOG:?}"

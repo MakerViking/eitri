@@ -1,0 +1,161 @@
+#!/bin/sh
+# eitri-camera-tune: prepare the Eitri UVC camera before ustreamer opens it.
+#
+# Subcommands:
+#   wait  Block until the camera node exists, at most EITRI_CAMERA_WAIT_SECONDS.
+#         Exits non-zero if it never appears, so systemd retries the unit.
+#   tune  Apply V4L2 controls that keep the frame rate locked at the requested
+#         value. Never fails: a control the device does not expose is logged
+#         and skipped, so a different UVC camera still streams.
+#
+# Why tune at all: UVC auto-exposure may lengthen exposure and lower the frame
+# rate when the scene is dark. Disabling the frame-rate-dropping controls keeps
+# the sensor at the requested rate; exposure then auto-adjusts within that rate.
+#
+# Environment (all optional, normally set from camera.env):
+#   EITRI_CAMERA_DEVICE          camera node          (default /dev/eitri-cam)
+#   EITRI_CAMERA_WAIT_SECONDS    wait budget          (default 20)
+#   EITRI_CAMERA_EXPOSURE_MODE   auto | manual        (default auto)
+#   EITRI_CAMERA_EXPOSURE_ABS    manual exposure, in 100 us units (manual only).
+#                                At 30 fps keep it <= 333 or the frame rate drops.
+#   EITRI_CAMERA_POWER_LINE      off | 50 | 60 | auto (default: leave unchanged)
+#   EITRI_CAMERA_V4L2CTL         v4l2-ctl binary      (default v4l2-ctl)
+
+set -u
+
+DEVICE="${EITRI_CAMERA_DEVICE:-/dev/eitri-cam}"
+WAIT_SECONDS="${EITRI_CAMERA_WAIT_SECONDS:-20}"
+EXPOSURE_MODE="${EITRI_CAMERA_EXPOSURE_MODE:-auto}"
+EXPOSURE_ABS="${EITRI_CAMERA_EXPOSURE_ABS:-}"
+POWER_LINE="${EITRI_CAMERA_POWER_LINE:-}"
+V4L2CTL="${EITRI_CAMERA_V4L2CTL:-v4l2-ctl}"
+
+# Longest exposure that still lets a 30 fps sensor hold its rate: 1/30 s in 100 us units.
+MAX_EXPOSURE_30FPS=333
+
+# Control names exposed by the device; filled in by cmd_tune.
+CONTROLS=""
+
+log() {
+    echo "eitri-camera-tune: $*" >&2
+}
+
+case "$WAIT_SECONDS" in
+    '' | *[!0-9]*) WAIT_SECONDS=20 ;;
+esac
+
+cmd_wait() {
+    waited=0
+    while [ ! -e "$DEVICE" ]; do
+        if [ "$waited" -ge "$WAIT_SECONDS" ]; then
+            log "camera node $DEVICE did not appear within ${WAIT_SECONDS}s"
+            return 1
+        fi
+        waited=$((waited + 1))
+        sleep 1
+    done
+    log "camera node $DEVICE is present"
+    return 0
+}
+
+# Print the control names the device exposes, one per line.
+list_controls() {
+    "$V4L2CTL" -d "$DEVICE" --list-ctrls 2>/dev/null |
+        sed -n 's/^[[:space:]]*\([a-z0-9_]*\) 0x[0-9a-f]* (.*/\1/p'
+}
+
+has_control() {
+    printf '%s\n' "$CONTROLS" | grep -qx -- "$1"
+}
+
+# set_ctrl NAME VALUE: set one control if exposed, then read it back.
+set_ctrl() {
+    name=$1
+    value=$2
+    if ! has_control "$name"; then
+        log "skip $name: not exposed by this device"
+        return 0
+    fi
+    if ! "$V4L2CTL" -d "$DEVICE" --set-ctrl="$name=$value" >/dev/null 2>&1; then
+        log "warning: could not set $name=$value"
+        return 0
+    fi
+    got=$("$V4L2CTL" -d "$DEVICE" --get-ctrl="$name" 2>/dev/null | sed -n 's/^[^:]*: *//p')
+    if [ "$got" = "$value" ]; then
+        log "set $name=$value"
+    else
+        log "warning: $name reads back as '${got:-unknown}', wanted $value"
+    fi
+    return 0
+}
+
+cmd_tune() {
+    if [ ! -e "$DEVICE" ]; then
+        log "no camera node at $DEVICE; nothing to tune"
+        return 0
+    fi
+    if ! command -v "$V4L2CTL" >/dev/null 2>&1; then
+        log "$V4L2CTL not installed; skipping tuning"
+        return 0
+    fi
+    CONTROLS=$(list_controls)
+    if [ -z "$CONTROLS" ]; then
+        log "device reports no readable controls; skipping tuning"
+        return 0
+    fi
+
+    # Frame-rate lock. Both names are tried: which one a given uvcvideo build
+    # exposes varies by kernel version. Absent names are skipped.
+    set_ctrl exposure_auto_priority 0
+    set_ctrl exposure_dynamic_framerate 0
+
+    case "$EXPOSURE_MODE" in
+        auto)
+            ;;
+        manual)
+            case "$EXPOSURE_ABS" in
+                '' | *[!0-9]*)
+                    log "warning: EITRI_CAMERA_EXPOSURE_ABS must be a positive integer; keeping auto exposure"
+                    ;;
+                *)
+                    if [ "$EXPOSURE_ABS" -gt "$MAX_EXPOSURE_30FPS" ]; then
+                        log "warning: exposure $EXPOSURE_ABS exceeds 1/30 s; frame rate will drop below 30 fps"
+                    fi
+                    # Menu value 1 = Manual Mode on UVC; must be set before exposure_absolute.
+                    set_ctrl exposure_auto 1
+                    set_ctrl exposure_absolute "$EXPOSURE_ABS"
+                    ;;
+            esac
+            ;;
+        *)
+            log "warning: unknown EITRI_CAMERA_EXPOSURE_MODE '$EXPOSURE_MODE' (want auto|manual); keeping auto"
+            ;;
+    esac
+
+    case "$POWER_LINE" in
+        '')
+            ;;
+        off) set_ctrl power_line_frequency 0 ;;
+        50) set_ctrl power_line_frequency 1 ;;
+        60) set_ctrl power_line_frequency 2 ;;
+        auto) set_ctrl power_line_frequency 3 ;;
+        *) log "warning: unknown EITRI_CAMERA_POWER_LINE '$POWER_LINE' (want off|50|60|auto); ignored" ;;
+    esac
+
+    return 0
+}
+
+case "${1:-}" in
+    wait)
+        cmd_wait
+        exit $?
+        ;;
+    tune)
+        cmd_tune
+        exit 0
+        ;;
+    *)
+        echo "usage: $0 {wait|tune}" >&2
+        exit 2
+        ;;
+esac

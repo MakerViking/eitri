@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "klarity"
+version = "0.1.0"
+description = "Klarity: open screen daemon for the QIDI X-Plus 4 TJC/Nextion touchscreen (Eitri firmware)"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.14"
+dependencies = [
+    "pyserial-asyncio-fast>=0.16",
+    "websockets>=15",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# Camera preview needs to downscale ustreamer's full-size JPEG for the panel.
+camera = ["pillow>=12"]
+
+[project.scripts]
+klarity = "klarity.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=9", "pytest-asyncio>=1.0", "pillow>=12", "ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/klarity"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"  # keeps `except (A, B):` parenthesised (PEP 758 style is 3.14-only)
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "SIM"]
+ignore = ["ASYNC109"]  # explicit timeout parameters are part of the public API
+
+[tool.ruff.lint.isort]
+known-first-party = ["klarity", "fakes", "helpers"]

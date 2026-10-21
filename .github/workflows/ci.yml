@@ -1,0 +1,54 @@
+name: ci
+
+# Fast, hardware-free checks for every component that does not need a Buildroot build or an upstream
+# Klipper checkout: syntax gate, repository checks, Klarity, the configurator (against the real
+# eitri-mcuflash CLI and the klipper-layer templates) and the OS tree's unit tests.
+# Not run here yet: the klipper-layer tests (need Klipper/Kalico checkouts and arm-none-eabi-gcc, see
+# klipper-layer/tests/conftest.py), the camera tests (need go2rtc and ffmpeg) and the installer suite
+# (needs a U-Boot sandbox build for its boot-script tests). `make test` runs all of them locally.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Lint, repository checks and component tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nodejs
+          python -m pip install --quiet pytest ruff aiohttp jinja2 pyyaml websockets pyserial-asyncio-fast pillow
+          python -m pip install --quiet -e klarity
+
+      - name: Syntax gate and repository checks
+        run: make test-repo
+
+      - name: Klarity
+        run: |
+          make test-klarity
+          ruff check klarity/src klarity/tests
+
+      - name: Configurator
+        run: make test-configurator
+
+      - name: OS tree (pins, scripts, units)
+        run: make test-os

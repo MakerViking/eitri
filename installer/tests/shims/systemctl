@@ -1,0 +1,6 @@
+#!/bin/sh
+echo "systemctl $*" >>"${FAKE_LOG:?}"
+case "$1" in
+  is-active) exit 3 ;;   # nothing is running in tests
+esac
+exit 0

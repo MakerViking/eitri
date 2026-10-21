@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "insmod $*" >>"$FAKE_LOG"

@@ -1,0 +1,11 @@
+config BR2_PACKAGE_EITRI_KATAPULT
+	bool "katapult (flashtool scripts)"
+	select BR2_PACKAGE_PYTHON3
+	select BR2_PACKAGE_PYTHON_SERIAL
+	help
+	  The host-side scripts of Katapult (flashtool.py and friends),
+	  used to put the toolhead MCU into its bootloader and flash it
+	  over the existing UART. Only the scripts are installed; the
+	  bootloader firmware itself is not built here.
+
+	  https://github.com/Arksine/katapult

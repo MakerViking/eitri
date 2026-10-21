@@ -1,0 +1,231 @@
+# release.lock — the pinned manifest for an Eitri release.
+#
+# Every third-party input that an Eitri image or update bundle is built from is
+# listed here with the exact version and the source it was resolved from.
+# Git-based inputs are pinned to a full 40-hex commit; downloaded artifacts are
+# pinned to a SHA-256 digest.
+#
+# Fields:
+#   version   human-readable version or tag
+#   commit    full commit SHA the tag or branch resolved to (git sources)
+#   source    where the pinned input is fetched from
+#   sha256    digest of the downloaded artifact (tarballs and binaries)
+#   verified  date the pin was last checked against its remote (YYYY-MM-DD)
+#   tested    true only after the pin has been exercised on real hardware
+#
+# A field that has not been resolved yet is left out, never filled with a
+# placeholder. Edit this file through the release tooling, or by hand together
+# with a re-check of every value you change.
+
+schema = 1
+project = "eitri"
+release_status = "pre-alpha"   # no release has been built or flashed yet
+
+# ---------------------------------------------------------------------------
+# L0 — base OS image (Buildroot appliance, glibc, read-only A/B rootfs)
+# ---------------------------------------------------------------------------
+
+[os.buildroot]
+version = "2026.02.3"          # LTS series; 2026.08 is the latest stable release
+commit = "679b9ead7620bbf193620d1ebf56f53c1764d37a"
+source = "https://gitlab.com/buildroot.org/buildroot/-/tags/2026.02.3"
+verified = "2026-10-21"
+tested = false
+
+[os.linux]
+version = "6.18.57"            # longterm (LTS) kernel
+source = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.57.tar.xz"
+sha256 = "5bd9acdc82ec5efc3790ae840e5aaa40dfde7efff261cf6dde902dc570acf98c"
+verified = "2026-10-21"
+tested = false
+
+[os.uboot]
+version = "v2026.10"
+commit = "5508406582f6f7120dce0c4b3059819a41788db2"
+source = "https://github.com/u-boot/u-boot/releases/tag/v2026.10"
+defconfig = "roc-cc-rk3328_defconfig"   # configs/roc-cc-rk3328_defconfig
+verified = "2026-10-21"
+tested = false
+
+[os.tfa]
+version = "v2.15.0"
+commit = "da738d5eae93af342fdc4995dd3c05acb4c9d757"
+source = "https://github.com/ARM-software/arm-trusted-firmware/releases/tag/v2.15.0"
+platform = "rk3328"
+fallback_version = "lts-v2.12.1"   # the Buildroot-native version if v2.15.0 does not build
+verified = "2026-10-21"
+tested = false
+
+[os.rauc]
+version = "1.15.2"
+commit = "4fb7c798d6ae412344fb8f8d310d773046af3441"
+source = "https://github.com/rauc/rauc/releases/download/v1.15.2/rauc-1.15.2.tar.xz"
+sha256 = "127a24cde208c65b837ae978c695a00730f1094ee8b6c7d48cf58ef846eae340"
+verified = "2026-10-21"
+tested = false
+
+[os.nginx]
+version = "1.30.2"             # as packaged by Buildroot 2026.02.3 (package/nginx/nginx.mk)
+source = "buildroot:package/nginx"
+verified = "2026-10-21"
+tested = false
+
+# ---------------------------------------------------------------------------
+# Python runtime (app venvs under /data are created with uv)
+# ---------------------------------------------------------------------------
+
+[python]
+version = "3.14.5"             # as packaged by Buildroot 2026.02.3 (package/python3/python3.mk)
+source = "https://www.python.org/ftp/python/3.14.5/Python-3.14.5.tar.xz"
+# sha256 is taken from Buildroot's package/python3/python3.hash at build time.
+verified = "2026-10-21"
+tested = false
+
+[uv]
+version = "0.13.4"
+commit = "7456b60bc6bc348e13e06e3691bf08e78d3aef54"
+source = "https://github.com/astral-sh/uv/releases/download/0.13.4/uv-aarch64-unknown-linux-gnu.tar.gz"
+sha256 = "1ae72b4718729e2ccc4f1ae2c6d1e531ca8467800e0546e9130b3886023a60ab"
+verified = "2026-10-21"
+tested = false
+
+# ---------------------------------------------------------------------------
+# L2 — host firmware base. Klipper and Kalico are pristine upstream clones;
+# Eitri never patches either tree. Exactly one flavor is chosen per install
+# and recorded in /data/eitri/flavor.
+# ---------------------------------------------------------------------------
+
+[firmware.klipper]
+version = "master-a08fc79"     # no tag since v0.13.0; master is pinned, not the tag
+commit = "a08fc79fcfa342e5b95ac02a9a8b271f453523e9"
+source = "https://github.com/Klipper3d/klipper"
+last_tag = "v0.13.0"
+last_tag_commit = "61c0c8d2ef40340781835dd53fb04cc7a454e37a"
+verified = "2026-10-21"
+tested = false                 # re-pin to a bench-tested commit before any release
+
+[firmware.kalico]
+version = "v2026.10.00"
+commit = "3526de3bfbdc64f40001a4070b95d28b79fa4147"
+source = "https://github.com/KalicoCrew/kalico"
+verified = "2026-10-21"
+tested = false
+
+[moonraker]
+version = "v0.11.0"
+commit = "985c1d0bbeb90bc057d34a232c9dc3b05e0c6c8d"
+source = "https://github.com/Arksine/moonraker"
+# Dependency caps that the app venv must respect: tornado<=6.5.8, pillow<=12.3.0,
+# dbus-fast<=5.0.22, zeroconf<=0.150.0, importlib_metadata<=9.0.0, pyserial==3.4.
+verified = "2026-10-21"
+tested = false
+
+[katapult]
+version = "master"             # the only release tag is v0.0.1 (2022); master is pinned
+commit = "3b973a485388b4ef0f9efef46f78152e302aea8e"
+source = "https://github.com/Arksine/katapult"
+verified = "2026-10-21"
+tested = false
+
+# ---------------------------------------------------------------------------
+# L3 — camera
+# ---------------------------------------------------------------------------
+
+[camera.ustreamer]
+version = "v6.67"
+commit = "0e64f1fedab4030c7bf58a287c462e21919c1d48"
+source = "https://github.com/pikvm/ustreamer"
+verified = "2026-10-21"
+tested = false
+
+[camera.go2rtc]
+version = "v1.9.14"
+commit = "b5948cfb25404cc5cb37b166ecaa2dca20b11d4b"
+source = "https://github.com/AlexxIT/go2rtc/releases/download/v1.9.14/go2rtc_linux_arm64"
+sha256 = "359fabade8a7a51e81a55fe6df6b0ef81764a5e1d63179577534eaaa71904b50"
+optional = true                # go2rtc.service is optional; ustreamer is the default path
+verified = "2026-10-21"
+tested = false
+
+# ---------------------------------------------------------------------------
+# Web UIs served by nginx on :80
+# ---------------------------------------------------------------------------
+
+[ui.fluidd]
+version = "v1.37.7"
+commit = "b2edab5bc690f5265a5aa1e56ae3f67669053fd4"
+source = "https://github.com/fluidd-core/fluidd/releases/download/v1.37.7/fluidd.zip"
+sha256 = "e45889071dae4e79f22e38bfb28cad0ce0c89e134c09d174cd447c4c93bd9556"
+verified = "2026-10-21"
+tested = false
+
+[ui.mainsail]
+version = "v2.19.0"
+commit = "5fb9e77fb9f4e60cf0725d9dc7f57cf7b84bbd70"
+source = "https://github.com/mainsail-crew/mainsail/releases/download/v2.19.0/mainsail.zip"
+sha256 = "c4d9d96f89851c6ae0709c2f20725447f3fe8c57cf193869b0083441bd93378a"
+verified = "2026-10-21"
+tested = false
+
+# ---------------------------------------------------------------------------
+# Eitri's own components (this repository). Versions stay at the development
+# baseline until each component has a tagged release.
+# ---------------------------------------------------------------------------
+
+[components.camera]
+version = "0.0.0.dev0"
+source = "eitri/camera"
+
+[components.klarity]
+version = "0.0.0.dev0"
+source = "eitri/klarity"
+
+[components.klipper-extras]
+version = "0.0.0.dev0"
+source = "eitri/klipper-layer/extras"
+license = "GPL-3.0-or-later"
+
+[components.klipper-layer]
+version = "0.0.0.dev0"
+source = "eitri/klipper-layer"          # config set (printer.cfg template, macros) and scripts; extras above
+license = "Apache-2.0"
+
+[components.installer]
+version = "0.0.0.dev0"
+source = "eitri/installer"              # install.sh, revert.sh, eitri-mcuflash, eitri-update, boot manager
+
+[components.configurator]
+version = "0.0.0.dev0"
+source = "eitri/configurator"
+
+[components.recovery-tools]
+version = "0.0.0.dev0"
+source = "planned; not yet in the repository (docs/RECOVERY.md describes the manual procedure)"
+
+# ---------------------------------------------------------------------------
+# Attributed reference sources. These are public GPL work by QIDI TECH that
+# Eitri may read, reference, or adapt, with attribution. No QIDI binary, .tft,
+# .HMI, or Cython .so may be shipped from these sources. See docs/CLEAN-ROOM.md.
+# ---------------------------------------------------------------------------
+
+[attributed.qidi-klipper]
+commit = "4bb7c6337936ef273e621d1f55bc0ef92114785d"
+source = "https://github.com/QIDITECH/klipper"
+license = "GPL-3.0-or-later"
+license_file = "COPYING"
+verified = "2026-10-21"
+
+[attributed.qidi-moonraker]
+commit = "6a6d22641320d94c69a09af9c38158f2f69e9e48"
+source = "https://github.com/QIDITECH/moonraker"
+license = "GPL-3.0-or-later"
+license_file = "LICENSE"
+verified = "2026-10-21"
+
+[attributed.qidi-plus4]
+commit = "ec595fc903540564be757bcafa745cd5c4a52cd0"
+source = "https://github.com/QIDITECH/QIDI_PLUS4"
+tag = "Plus4_v1.7.1"
+license = "AGPL-3.0-or-later"  # from the LICENSE file; the README badge says GPL-3.0 — confirm before adapting code
+license_file = "LICENSE"
+verified = "2026-10-21"

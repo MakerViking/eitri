@@ -1,0 +1,192 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# RAUC custom bootloader backend for the Eitri A/B boot state.
+#
+# U-Boot (uboot.env) and this script share one text sector on the eMMC that
+# holds the slot order and the remaining boot attempts of each slot:
+#
+#   BOOT_ORDER=A B
+#   BOOT_A_LEFT=3
+#   BOOT_B_LEFT=3
+#   EITRI_STATE=1
+#
+# U-Boot decrements BOOT_<slot>_LEFT on every boot attempt of that slot. A slot
+# is "good" while it has attempts left; marking it good restores the full
+# count, marking it bad drops it to zero.
+#
+# RAUC calls this script as configured in system.conf:
+#   get-primary                  print the slot that boots next
+#   set-primary SLOT             make SLOT boot next, with a full attempt count
+#   get-state SLOT               print "good" or "bad"
+#   set-state SLOT good|bad
+#   get-current                  print the slot that is running now
+#
+# Environment overrides, used by the tests:
+#   EITRI_STATE_DEV      block device or file holding the sector (/dev/mmcblk1)
+#   EITRI_STATE_SECTOR   sector number, 512-byte units (8128 = 0x1fc0)
+#   EITRI_CMDLINE        kernel command line file (/proc/cmdline)
+#   EITRI_LOCK           lock file (/run/eitri-boot-state.lock)
+
+set -eu
+
+DEV=${EITRI_STATE_DEV:-/dev/mmcblk1}
+SECTOR=${EITRI_STATE_SECTOR:-8128}
+CMDLINE=${EITRI_CMDLINE:-/proc/cmdline}
+LOCK=${EITRI_LOCK:-/run/eitri-boot-state.lock}
+SLOTS="A B"
+TRIES=3
+
+die() {
+	echo "rauc-bootloader: $*" >&2
+	exit 1
+}
+
+cmdline_value() {
+	# shellcheck disable=SC2013  # words of the command line, split on purpose
+	for word in $(cat "$CMDLINE"); do
+		case "$word" in
+		"$1"=*)
+			echo "${word#*=}"
+			return 0
+			;;
+		esac
+	done
+	return 1
+}
+
+check_slot() {
+	case "$1" in
+	A | B) ;;
+	*) die "unknown slot '$1'" ;;
+	esac
+}
+
+# The state sector belongs to the eMMC. A bench boot from a microSD card must
+# leave it alone, so writes are refused unless the running system is on the
+# device that holds the state.
+check_writable() {
+	disk=$(cmdline_value eitri.disk || true)
+	if [ -n "$disk" ] && [ "$disk" != "$DEV" ]; then
+		die "booted from $disk, refusing to modify the boot state on $DEV"
+	fi
+}
+
+left_of() {
+	case "$1" in
+	A) echo "$A_LEFT" ;;
+	B) echo "$B_LEFT" ;;
+	esac
+}
+
+set_left() {
+	case "$1" in
+	A) A_LEFT=$2 ;;
+	B) B_LEFT=$2 ;;
+	esac
+}
+
+read_state() {
+	ORDER="A B"
+	A_LEFT=$TRIES
+	B_LEFT=$TRIES
+	text=$(dd if="$DEV" bs=512 skip="$SECTOR" count=1 2>/dev/null | tr -d '\000' || true)
+	valid=0
+	order=
+	a=
+	b=
+	# Whitespace-only here: the sector holds NAME=value lines written by U-Boot.
+	for line in $(printf '%s\n' "$text" | tr ' ' '_'); do
+		case "$line" in
+		EITRI_STATE=1) valid=1 ;;
+		BOOT_ORDER=*) order=$(printf '%s' "${line#BOOT_ORDER=}" | tr '_' ' ') ;;
+		BOOT_A_LEFT=*) a=${line#BOOT_A_LEFT=} ;;
+		BOOT_B_LEFT=*) b=${line#BOOT_B_LEFT=} ;;
+		esac
+	done
+	[ "$valid" = 1 ] || return 0
+	case "$order" in
+	"A B" | "B A" | "A" | "B") ORDER=$order ;;
+	esac
+	case "$a" in
+	[0-9]) A_LEFT=$a ;;
+	esac
+	case "$b" in
+	[0-9]) B_LEFT=$b ;;
+	esac
+}
+
+write_state() {
+	check_writable
+	printf 'BOOT_ORDER=%s\nBOOT_A_LEFT=%s\nBOOT_B_LEFT=%s\nEITRI_STATE=1\n' "$ORDER" "$A_LEFT" "$B_LEFT" |
+		dd of="$DEV" bs=512 seek="$SECTOR" count=1 conv=notrunc,sync,fsync 2>/dev/null ||
+		die "cannot write the boot state to $DEV"
+}
+
+with_lock() {
+	if command -v flock >/dev/null 2>&1; then
+		exec 9>"$LOCK"
+		flock 9
+	fi
+}
+
+[ "$#" -ge 1 ] || die "usage: $0 get-primary|set-primary|get-state|set-state|get-current"
+cmd=$1
+shift
+
+case "$cmd" in
+get-current)
+	slot=$(cmdline_value rauc.slot) || die "no rauc.slot= on the kernel command line"
+	check_slot "$slot"
+	echo "$slot"
+	;;
+get-primary)
+	with_lock
+	read_state
+	for slot in $ORDER; do
+		if [ "$(left_of "$slot")" -gt 0 ]; then
+			echo "$slot"
+			exit 0
+		fi
+	done
+	# Every slot is out of attempts; U-Boot will restore the counters and try
+	# the first one in order again.
+	# shellcheck disable=SC2086  # ORDER is a validated list of slot names
+	set -- $ORDER
+	echo "$1"
+	;;
+set-primary)
+	[ "$#" -eq 1 ] || die "set-primary needs a slot"
+	check_slot "$1"
+	with_lock
+	read_state
+	new=$1
+	for slot in $SLOTS; do
+		[ "$slot" = "$1" ] || new="$new $slot"
+	done
+	ORDER=$new
+	set_left "$1" "$TRIES"
+	write_state
+	;;
+get-state)
+	[ "$#" -eq 1 ] || die "get-state needs a slot"
+	check_slot "$1"
+	with_lock
+	read_state
+	if [ "$(left_of "$1")" -gt 0 ]; then echo good; else echo bad; fi
+	;;
+set-state)
+	[ "$#" -eq 2 ] || die "set-state needs a slot and a state"
+	check_slot "$1"
+	with_lock
+	read_state
+	case "$2" in
+	good) set_left "$1" "$TRIES" ;;
+	bad) set_left "$1" 0 ;;
+	*) die "unknown state '$2'" ;;
+	esac
+	write_state
+	;;
+*)
+	die "unknown command '$cmd'"
+	;;
+esac

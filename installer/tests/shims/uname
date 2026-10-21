@@ -1,0 +1,2 @@
+#!/bin/sh
+if [ "$1" = "-m" ]; then echo "${FAKE_ARCH:-aarch64}"; else /usr/bin/uname "$@"; fi

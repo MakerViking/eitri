@@ -1,0 +1,5 @@
+#!/bin/sh
+# modprobe --show-depends NAME
+[ "$1" = "--show-depends" ] || exit 1
+[ -n "$FAKE_MODDIR" ] && [ -f "$FAKE_MODDIR/$2.ko" ] && echo "insmod $FAKE_MODDIR/$2.ko"
+exit 0

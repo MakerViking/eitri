@@ -1,0 +1,120 @@
+#!/bin/sh
+# Test double for v4l2-ctl. Covers only what the Eitri camera scripts call.
+#
+# Environment:
+#   FAKE_V4L2_DIR        directory with <node-basename>.info and .formats for the probe
+#   FAKE_V4L2_CONTROLS   file used for --list-ctrls output (required for tune tests)
+#   FAKE_V4L2_STATE      file holding name=value control state (created on demand)
+#   FAKE_V4L2_REJECT     space-separated control names whose --set-ctrl fails
+#   FAKE_V4L2_IGNORE     space-separated control names whose --set-ctrl "succeeds" silently
+#   FAKE_V4L2_LOG        file to append every invocation to
+#   FAKE_V4L2_FRAME_BYTES  bytes written per frame by --stream-to (raw bench)
+
+set -u
+
+device=""
+action=""
+ctrl_arg=""
+stream_to=""
+stream_count=1
+
+for arg in "$@"; do
+    case "$arg" in
+        -d) ;;
+        --list-ctrls) action=list-ctrls ;;
+        --info) action=info ;;
+        --list-formats) action=list-formats ;;
+        --set-ctrl=*) action=set; ctrl_arg=${arg#--set-ctrl=} ;;
+        --get-ctrl=*) action=get; ctrl_arg=${arg#--get-ctrl=} ;;
+        --set-fmt-video=*) ;;
+        --stream-mmap=*) ;;
+        --set-parm=*) ;;
+        --stream-count=*) stream_count=${arg#--stream-count=} ;;
+        --stream-to=*) stream_to=${arg#--stream-to=} ;;
+        *)
+            if [ -z "$device" ] && [ "${prev:-}" = "-d" ]; then
+                device=$arg
+            fi
+            ;;
+    esac
+    prev=$arg
+done
+
+# -d may be given as "-d PATH" or "-dPATH"; handle the latter too.
+for arg in "$@"; do
+    case "$arg" in
+        -d*) [ "$arg" = "-d" ] || device=${arg#-d} ;;
+    esac
+done
+
+log_call() {
+    if [ -n "${FAKE_V4L2_LOG:-}" ]; then
+        echo "$*" >> "$FAKE_V4L2_LOG"
+    fi
+}
+
+state_get() {
+    [ -n "${FAKE_V4L2_STATE:-}" ] && [ -f "$FAKE_V4L2_STATE" ] || return 1
+    sed -n "s/^$1=//p" "$FAKE_V4L2_STATE" | tail -n 1
+}
+
+state_set() {
+    [ -n "${FAKE_V4L2_STATE:-}" ] || return 1
+    touch "$FAKE_V4L2_STATE"
+    grep -v "^$1=" "$FAKE_V4L2_STATE" > "$FAKE_V4L2_STATE.tmp" || true
+    echo "$1=$2" >> "$FAKE_V4L2_STATE.tmp"
+    mv "$FAKE_V4L2_STATE.tmp" "$FAKE_V4L2_STATE"
+}
+
+node=$(basename -- "$device")
+log_call "$action ${ctrl_arg:-} dev=$device"
+
+case "$action" in
+    list-ctrls)
+        cat "$FAKE_V4L2_CONTROLS"
+        ;;
+    get)
+        name=${ctrl_arg}
+        value=$(state_get "$name") || value=""
+        if [ -z "$value" ]; then
+            echo "VIDIOC_G_EXT_CTRLS: failed: Invalid argument" >&2
+            exit 1
+        fi
+        echo "$name: $value"
+        ;;
+    set)
+        name=${ctrl_arg%%=*}
+        value=${ctrl_arg#*=}
+        for r in ${FAKE_V4L2_REJECT:-}; do
+            [ "$r" = "$name" ] && { echo "VIDIOC_S_EXT_CTRLS: failed: Permission denied" >&2; exit 1; }
+        done
+        for i in ${FAKE_V4L2_IGNORE:-}; do
+            [ "$i" = "$name" ] && exit 0
+        done
+        state_set "$name" "$value"
+        ;;
+    info)
+        cat "$FAKE_V4L2_DIR/$node.info"
+        ;;
+    list-formats)
+        cat "$FAKE_V4L2_DIR/$node.formats"
+        ;;
+    *)
+        if [ -n "$stream_to" ]; then
+            # Open the destination once, as the real tool does; a FIFO reader
+            # would otherwise see EOF after the first frame.
+            bytes=${FAKE_V4L2_FRAME_BYTES:-1000}
+            {
+                i=0
+                while [ "$i" -lt "$stream_count" ]; do
+                    head -c "$bytes" /dev/zero
+                    i=$((i + 1))
+                done
+            } >> "$stream_to"
+            exit 0
+        fi
+        echo "fake v4l2-ctl: unsupported invocation: $*" >&2
+        exit 2
+        ;;
+esac
+exit 0

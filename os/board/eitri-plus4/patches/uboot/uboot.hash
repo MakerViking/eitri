@@ -1,0 +1,4 @@
+# GitHub tag archive of u-boot v2026.10 (commit 5508406582f6f7120dce0c4b3059819a41788db2).
+# denx.de has not published u-boot-2026.10.tar.bz2 yet; move back to it when it exists.
+sha256  f943a88389c8fd70a6b0d061a88267465e143c7ca6ea2b75837ab20f5b60c739  v2026.10.tar.gz
+sha256  8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643  Licenses/gpl-2.0.txt

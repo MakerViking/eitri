@@ -1,0 +1,42 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Mount a writable overlay on /etc.
+#
+# The root filesystem is read-only. /etc must still accept changes (hostname,
+# passwords, SSH host keys, Wi-Fi profiles, time zone), so the read-only /etc
+# becomes the lower layer of an overlay whose upper layer lives on /data and
+# therefore survives reboots and OS updates. When /data is not available the
+# upper layer is a tmpfs, so the system keeps working, but changes are lost.
+#
+# After the mount, the identity files that systemd read before the overlay
+# existed are refreshed: the machine id is created once and the hostname is
+# applied.
+
+set -eu
+
+UPPER=/data/eitri/state/etc/upper
+WORK=/data/eitri/state/etc/work
+
+mkdir -p /run/eitri
+if mountpoint -q /data && [ -d "$UPPER" ] && [ -d "$WORK" ]; then
+	:
+else
+	UPPER=/run/eitri/etc-upper
+	WORK=/run/eitri/etc-work
+	mkdir -p "$UPPER" "$WORK"
+	echo "/etc is volatile: /data is not available" >/run/eitri/degraded-etc
+	echo "etc-overlay: /data is not available, /etc changes will not persist" >&2
+fi
+
+mount -t overlay overlay -o "lowerdir=/etc,upperdir=$UPPER,workdir=$WORK" /etc
+
+# One machine id for the life of the installation.
+if [ ! -s /etc/machine-id ] || [ "$(cat /etc/machine-id)" = "uninitialized" ]; then
+	rm -f /etc/machine-id
+	systemd-machine-id-setup
+fi
+
+# systemd applied the factory hostname before this mount. Apply the persisted one.
+if [ -s /etc/hostname ]; then
+	hostname -F /etc/hostname || true
+fi

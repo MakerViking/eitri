@@ -1,0 +1,7 @@
+#!/bin/sh
+# Moonraker print_stats query only; real downloads in tests use file:// URLs and go to the real curl.
+case "$*" in
+  *127.0.0.1:7125*) [ "${FAKE_PRINT_STATE:-standby}" = none ] && exit 7
+     echo "{\"result\":{\"status\":{\"print_stats\":{\"state\": \"${FAKE_PRINT_STATE:-standby}\"}}}}" ;;
+  *) exec /usr/bin/curl "$@" ;;
+esac

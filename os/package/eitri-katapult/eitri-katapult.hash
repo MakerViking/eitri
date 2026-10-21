@@ -1,0 +1,3 @@
+# Computed with os/scripts/hashfile.py; compare with release.lock.
+sha256  8dcbe36b71762285c649568586542223a8c05b1b2a6452ff168c478ba1dfb60b  eitri-katapult-3b973a485388b4ef0f9efef46f78152e302aea8e.tar.gz
+sha256  605e9047a563c5c8396ffb18232aa4304ec56586aee537c45064c6fb425e44ad  LICENSE

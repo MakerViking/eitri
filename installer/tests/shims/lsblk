@@ -1,0 +1,6 @@
+#!/bin/sh
+case "$*" in
+  *-dpno*NAME,TRAN*) [ -n "$FAKE_USB_DEV" ] && echo "/dev/sda usb" ;;
+  *-rpno*NAME,TYPE,FSTYPE*) [ -n "$FAKE_USB_DEV" ] && echo "$FAKE_USB_DEV part ${FAKE_USB_FS:-ext4}" ;;
+esac
+exit 0

@@ -1,0 +1,10 @@
+# The root filesystem is mounted read-only from the kernel command line.
+#
+# /data and /boot/firmware are not listed here: they follow the disk that was
+# booted (eMMC or a bench microSD card), so systemd generates their mount units
+# at boot from eitri.disk=, see /usr/lib/systemd/system-generators/eitri-generator.
+# /etc is an overlay mounted by eitri-etc.service. /var is a tmpfs populated by
+# systemd-tmpfiles from the factory copy in /usr/share/factory/var.
+#
+# Only the root entry that Buildroot's init system expects is kept.
+/dev/root	/	auto	ro,noatime	0	1

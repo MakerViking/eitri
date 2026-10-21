@@ -1,0 +1,100 @@
+# ---------------------------------------------------------------------------
+# Eitri .gitignore
+# ---------------------------------------------------------------------------
+
+# Build outputs and scratch space
+/build/
+/out/
+/output/
+/dl/
+/downloads/
+*.log
+
+# Buildroot / image artifacts (generated, never committed)
+*.img
+*.img.xz
+*.img.gz
+*.img.zst
+*.raucb
+*.ext4
+*.squashfs
+*.itb
+idbloader*.img
+u-boot*.bin
+*.dtb
+
+# Firmware binaries: MCU builds and anything dumped from hardware
+*.elf
+*.bin
+*.hex
+*.dfu
+*.uf2
+*.so
+*.o
+*.a
+
+# Third-party or proprietary display / vendor assets (clean-room boundary)
+*.tft
+*.HMI
+*.hmi
+*.hex.tft
+
+# Backups and dumps taken from a printer (may contain secrets and serials)
+backups/
+dumps/
+*.emmc
+*.dump
+*.tar
+*.tar.gz
+*.tar.zst
+*.tar.xz
+*.zip
+
+# Credentials, tokens and local configuration with secrets
+secrets/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.token
+*.tokens
+*.secret
+*.secrets
+credentials*
+config.mksini
+moonraker-api-key*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.python-version.local
+
+# Node / web tooling
+node_modules/
+dist/
+.next/
+.cache/
+
+# Logs and captures produced while running the tools
+*.jsonl
+/eitri-mock-*/
+
+# Editors and OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+!.vscode/extensions.json

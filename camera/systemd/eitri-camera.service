@@ -1,0 +1,57 @@
+# eitri-camera.service: the UVC camera served as MJPEG over HTTP by ustreamer.
+#
+# Pure passthrough: ustreamer forwards the camera's own JPEG frames untouched
+# (--format=MJPEG --encoder=HW), so no video is decoded or re-encoded on the
+# A53 cores. The stream listens on 127.0.0.1 only; nginx serves it at /webcam/
+# and go2rtc reads it locally. Resolution and format are fixed by design (1080p30);
+# camera.env only tunes exposure and the device path.
+
+[Unit]
+Description=Eitri camera streamer (ustreamer, MJPEG passthrough)
+Documentation=file:///usr/share/doc/eitri/camera/README.md
+After=dev-eitri\x2dcam.device
+
+[Service]
+Type=simple
+User=eitri
+Group=eitri
+SupplementaryGroups=video
+
+# Optional site overrides. A missing file is not an error.
+EnvironmentFile=-/data/printer_data/config/camera.env
+Environment=EITRI_CAMERA_DEVICE=/dev/eitri-cam
+Environment=EITRI_CAMERA_WAIT_SECONDS=20
+
+# Wait for the node (fails the start so Restart= retries), then tune. Tuning is
+# best-effort: the leading '-' keeps a v4l2 hiccup from blocking the stream.
+ExecStartPre=/usr/lib/eitri/camera/eitri-camera-tune wait
+ExecStartPre=-/usr/lib/eitri/camera/eitri-camera-tune tune
+
+ExecStart=/usr/bin/ustreamer \
+    --device=${EITRI_CAMERA_DEVICE} \
+    --format=MJPEG \
+    --encoder=HW \
+    --resolution=1920x1080 \
+    --desired-fps=30 \
+    --host=127.0.0.1 \
+    --port=8080 \
+    --workers=1 \
+    --device-timeout=2 \
+    --device-error-delay=2 \
+    --log-level=0
+
+Restart=on-failure
+RestartSec=3
+
+# Least privilege: the streamer reads one camera and serves HTTP. It writes nothing.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

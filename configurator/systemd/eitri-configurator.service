@@ -1,0 +1,42 @@
+[Unit]
+Description=Eitri first-run configurator (setup wizard on port 8099)
+Documentation=file:///usr/share/doc/eitri/configurator/README.md
+After=network.target eitri-data-init.service eitri-etc.service
+Wants=moonraker.service eitri-data-init.service
+# eitri-data-init creates this environment from the copy of the configurator in the image.
+ConditionPathExists=/data/eitri/configurator/venv/bin/python
+
+[Service]
+Type=simple
+User=eitri
+Group=eitri
+# dialout: the MCU flasher opens the board UARTs itself.
+SupplementaryGroups=dialout
+WorkingDirectory=/data/eitri/configurator
+# The app layer ships the package under /data/eitri/configurator; its venv is created with uv.
+ExecStart=/data/eitri/configurator/venv/bin/python -m eitri_configurator --host 0.0.0.0 --port 8099
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=2
+
+# Needs: write /data (config, state), start/stop the managed units (polkit rule for
+# the eitri user, see README), open the board UARTs, talk to Moonraker on loopback
+# and, for Wi-Fi onboarding, NetworkManager over D-Bus.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/data
+ProtectHome=true
+PrivateTmp=true
+DevicePolicy=closed
+DeviceAllow=char-ttyS rw
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallFilter=@system-service
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target

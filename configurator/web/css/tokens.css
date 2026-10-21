@@ -1,0 +1,108 @@
+/* Eitri design tokens.  Theme: "forge" (dark, default) and "bone & iron" (light).
+   Heat is the one recurring idea: iron -> cherry -> orange -> yellow -> white-hot.
+   It is spent sparingly: progress, the active step, primary actions, focus. */
+
+@font-face { font-family: "Instrument Serif"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("../fonts/instrument-serif-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "Instrument Serif"; font-style: italic; font-weight: 400; font-display: swap;
+  src: url("../fonts/instrument-serif-latin-400-italic.woff2") format("woff2"); }
+@font-face { font-family: "Schibsted Grotesk"; font-style: normal; font-weight: 400 900; font-display: swap;
+  src: url("../fonts/schibsted-grotesk-latin-wght-normal.woff2") format("woff2"); }
+@font-face { font-family: "Martian Mono"; font-style: normal; font-weight: 100 800; font-display: swap;
+  src: url("../fonts/martian-mono-latin-wght-normal.woff2") format("woff2"); }
+
+:root {
+  --font-display: "Instrument Serif", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --font-body: "Schibsted Grotesk", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Martian Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --r-sm: 8px; --r-md: 12px; --r-lg: 18px; --r-xl: 26px;
+  --ease: cubic-bezier(.2, .7, .2, 1);
+  --ease-spring: cubic-bezier(.34, 1.4, .5, 1);
+
+  --rail-w: 292px;
+  --stage-pad: clamp(1.1rem, 3.2vw, 3.25rem);
+  --bar-h: 76px;
+}
+
+/* ---- dark: the forge at night ---- */
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0c0a09;
+  --bg-2: #130f0d;
+  --surface: #181310;
+  --surface-2: #201a16;
+  --surface-3: #2a231d;
+  --line: rgba(255, 228, 196, .09);
+  --line-2: rgba(255, 228, 196, .17);
+  --text: #f4ece1;
+  --text-2: #bcae9d;
+  --text-3: #837769;
+
+  --ember: #ff6f1f;
+  --ember-hi: #ff9b3d;
+  --glow: #ffc65c;
+  --hot: #fff1d2;
+  --cherry: #d23a1c;
+  --iron: #93a8b8;
+  --ok: #67d6b4;
+  --warn: #ffc65c;
+  --bad: #ff6350;
+
+  --on-ember: #1c0c04;
+  --ember-text: #ff8a3d;          /* ember as text on --bg */
+  --ok-bg: rgba(103, 214, 180, .12);
+  --warn-bg: rgba(255, 198, 92, .11);
+  --bad-bg: rgba(255, 99, 80, .12);
+  --ember-bg: rgba(255, 111, 31, .11);
+
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, .035) inset, 0 18px 40px -22px rgba(0, 0, 0, .8);
+  --shadow-pop: 0 24px 60px -20px rgba(0, 0, 0, .85);
+  --heat: linear-gradient(90deg, #5b1608 0%, #b8300f 22%, #ff6a1a 55%, #ffb347 82%, #fff1d2 100%);
+  --heat-v: linear-gradient(180deg, #3a140a 0%, #b8300f 28%, #ff6a1a 62%, #ffb347 88%, #fff1d2 100%);
+  --grain-opacity: .07;
+  --grain-blend: overlay;
+  --ember-glow-a: rgba(255, 92, 20, .20);
+  --ember-glow-b: rgba(255, 170, 70, .07);
+}
+
+/* ---- light: bone and iron ---- */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #efe9de;
+  --bg-2: #e7dfd1;
+  --surface: #f9f6ef;
+  --surface-2: #fffdf8;
+  --surface-3: #efe8da;
+  --line: rgba(52, 36, 22, .12);
+  --line-2: rgba(52, 36, 22, .22);
+  --text: #1e1712;
+  --text-2: #594c40;
+  --text-3: #85766a;
+
+  --ember: #cf4a10;
+  --ember-hi: #e8691f;
+  --glow: #e79a2b;
+  --hot: #f7d58c;
+  --cherry: #b3281a;
+  --iron: #51697b;
+  --ok: #1d7a62;
+  --warn: #a96a07;
+  --bad: #b3261e;
+
+  --on-ember: #fffaf3;
+  --ember-text: #b93c08;
+  --ok-bg: rgba(29, 122, 98, .10);
+  --warn-bg: rgba(169, 106, 7, .10);
+  --bad-bg: rgba(179, 38, 30, .09);
+  --ember-bg: rgba(207, 74, 16, .08);
+
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, .8) inset, 0 14px 30px -22px rgba(60, 36, 14, .45);
+  --shadow-pop: 0 24px 50px -20px rgba(60, 36, 14, .4);
+  --heat: linear-gradient(90deg, #7a1d0a 0%, #c53a12 28%, #e8691f 62%, #f0a030 88%, #f7d58c 100%);
+  --heat-v: linear-gradient(180deg, #5a1a0c 0%, #b3281a 30%, #e8691f 65%, #f0a030 90%, #f7d58c 100%);
+  --grain-opacity: .16;
+  --grain-blend: multiply;
+  --ember-glow-a: rgba(232, 105, 31, .13);
+  --ember-glow-b: rgba(240, 160, 48, .10);
+}

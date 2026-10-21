@@ -1,0 +1,10 @@
+# Buildroot users table (format: see the manual, "Makeusers syntax").
+#
+# username uid group gid password home shell groups comment
+#
+# The password is "*": the account cannot log in with a password, but SSH
+# public-key login works (a "!" prefix would lock the account for key login as
+# well). Keys are installed on first boot from /boot/firmware/authorized_keys,
+# or by the configurator. The home directory lives on the writable /data
+# partition and is created by eitri-data-init on first boot.
+eitri 1000 eitri 1000 * /data/eitri/home /bin/bash dialout,video,plugdev,tty Eitri service and login user

@@ -1,0 +1,5 @@
+ioctl: VIDIOC_ENUM_FMT
+	Type: Video Capture
+
+	[0]: 'MJPG' (Motion-JPEG, compressed)
+	[1]: 'YUYV' (YUYV 4:2:2)

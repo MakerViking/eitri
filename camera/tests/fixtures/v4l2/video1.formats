@@ -1,0 +1,10 @@
+ioctl: VIDIOC_ENUM_FMT
+	Type: Video Capture Multiplanar
+
+	[0]: 'NV12' (Y/CbCr 4:2:0)
+
+ioctl: VIDIOC_ENUM_FMT
+	Type: Video Output Multiplanar
+
+	[0]: 'H264' (H.264, compressed)
+	[1]: 'VP8F' (VP8, compressed)

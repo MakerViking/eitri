@@ -1,0 +1,11 @@
+#!/bin/sh
+case "$1" in
+  -d) cat "$FAKE_TABLE" ;;
+  --no-reread)
+    echo "sfdisk-apply" >>"$FAKE_LOG"
+    cat >"$FAKE_TABLE.pending"
+    if [ -n "$FAKE_FAIL_SFDISK" ]; then echo "sfdisk: write failed" >&2; exit 1; fi
+    exit 0
+    ;;
+  *) echo "sfdisk shim: unexpected $*" >&2; exit 1 ;;
+esac

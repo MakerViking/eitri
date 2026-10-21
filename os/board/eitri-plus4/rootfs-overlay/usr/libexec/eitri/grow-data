@@ -1,0 +1,76 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Grow the "data" partition (partition 4) to the end of the disk.
+#
+# The disk image is written to the start of the eMMC, so the backup GPT sits
+# inside the disk instead of at its end and the data partition is small. sfdisk
+# moves the backup GPT as part of rewriting the table; "-N 4" with a size of "+"
+# makes partition 4 as large as possible. The kernel is then told about the new
+# size with partx. The file system itself is grown online by eitri-data-init
+# once it is mounted.
+#
+# Safe to run on every boot: it does nothing unless the partition is named
+# "data" and there is room to grow, and it never exits non-zero, because a
+# failure to grow must not stop the boot.
+#
+# Environment overrides, used by the tests: EITRI_CMDLINE, EITRI_DISK.
+
+set -u
+
+CMDLINE=${EITRI_CMDLINE:-/proc/cmdline}
+disk=${EITRI_DISK:-}
+if [ -z "$disk" ]; then
+	# shellcheck disable=SC2013  # words of the command line, split on purpose
+	for word in $(cat "$CMDLINE"); do
+		case "$word" in
+		eitri.disk=*) disk=${word#eitri.disk=} ;;
+		esac
+	done
+fi
+
+log() { echo "grow-data: $*"; }
+
+[ -n "$disk" ] || { log "no eitri.disk= on the kernel command line, nothing to do"; exit 0; }
+[ -e "$disk" ] || { log "$disk does not exist"; exit 0; }
+
+sectors() {
+	if [ -b "$1" ]; then
+		blockdev --getsz "$1"
+	else
+		echo $(($(stat -c %s "$1") / 512))
+	fi
+}
+
+# "name=data" is the guard: only touch a table that looks like an Eitri image.
+line=$(sfdisk -d "$disk" 2>/dev/null | grep -E ' : .*name="data"') || {
+	log "no partition named \"data\" on $disk, leaving the partition table alone"
+	exit 0
+}
+number=$(printf '%s\n' "$line" | sed -E 's#^[^ ]*[^0-9]([0-9]+) :.*#\1#')
+start=$(printf '%s\n' "$line" | sed -E 's#.*start= *([0-9]+).*#\1#')
+size=$(printf '%s\n' "$line" | sed -E 's#.*size= *([0-9]+).*#\1#')
+if [ -z "$number" ] || [ -z "$start" ] || [ -z "$size" ]; then
+	log "cannot parse the partition table of $disk"
+	exit 0
+fi
+
+total=$(sectors "$disk")
+# The backup GPT is 32 sectors of entries plus the header, so the last usable
+# sector is total - 34. 2048 sectors (1 MiB) of slack absorb sfdisk's alignment.
+last_usable=$((total - 34))
+end=$((start + size - 1))
+if [ $((last_usable - end)) -lt 2048 ]; then
+	log "partition $number already fills $disk"
+	exit 0
+fi
+
+log "growing partition $number of $disk from $size sectors to the end of the disk"
+if ! echo ', +' | sfdisk --quiet --no-reread --no-tell-kernel -N "$number" "$disk"; then
+	log "sfdisk failed, /data keeps its current size"
+	exit 0
+fi
+
+if [ -b "$disk" ]; then
+	partx --update --nr "$number" "$disk" || log "partx could not update the kernel, a reboot will pick up the new size"
+fi
+exit 0

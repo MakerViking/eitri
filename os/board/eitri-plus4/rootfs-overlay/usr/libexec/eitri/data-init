@@ -1,0 +1,149 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Create or repair the layout of the /data partition.
+#
+# Runs after /data is mounted, on every boot, and only creates what is missing.
+# On the first boot it builds the whole tree. It never deletes anything.
+#
+#   /data
+#     firmware/{klipper,moonraker}   cloned by the installer; owned by eitri
+#     venv/{klippy,moonraker}        uv virtual environments
+#     printer_data/{config,logs,gcodes,database,comms}
+#     eitri/{extras,klarity,toolchain,configurator,home}
+#     eitri/state/                   OS state, root only (etc overlay, RAUC)
+#
+# Environment overrides, used by the tests: EITRI_DATA, EITRI_FACTORY,
+# EITRI_BOOTFS, EITRI_OWNER, EITRI_RUN, EITRI_NO_RESIZE, EITRI_PYTHON,
+# EITRI_CONFIGURATOR_SRC.
+
+set -eu
+
+DATA=${EITRI_DATA:-/data}
+FACTORY=${EITRI_FACTORY:-/usr/share/eitri/factory}
+BOOTFS=${EITRI_BOOTFS:-/boot/firmware}
+OWNER=${EITRI_OWNER:-eitri:eitri}
+RUN=${EITRI_RUN:-/run/eitri}
+PYTHON=${EITRI_PYTHON:-python3}
+CONFIGURATOR_SRC=${EITRI_CONFIGURATOR_SRC:-/usr/lib/eitri/configurator}
+LAYOUT_VERSION=1
+
+log() { echo "data-init: $*"; }
+
+if [ -z "${EITRI_DATA:-}" ] && ! mountpoint -q "$DATA"; then
+	mkdir -p "$RUN"
+	echo "$DATA is not mounted" >"$RUN/degraded"
+	log "$DATA is not mounted, skipping"
+	exit 0
+fi
+
+# dir OWNER MODE PATH...
+dir() {
+	owner=$1
+	mode=$2
+	shift 2
+	for d in "$@"; do
+		if [ ! -d "$d" ]; then
+			install -d -m "$mode" "$d"
+			[ -z "$owner" ] || chown "$owner" "$d"
+		fi
+	done
+}
+
+# seed SRC DEST: copy a factory default, never overwriting the user's file.
+seed() {
+	if [ -f "$1" ] && [ ! -e "$2" ]; then
+		install -m 0644 "$1" "$2"
+		chown "$OWNER" "$2"
+		log "installed default $2"
+	fi
+}
+
+first_boot=0
+[ -d "$DATA/eitri/state" ] || first_boot=1
+
+# Root-only OS state. The etc overlay directories must exist before eitri-etc
+# mounts the overlay.
+dir "" 0755 "$DATA/eitri" "$DATA/eitri/state" "$DATA/eitri/state/etc" \
+	"$DATA/eitri/state/etc/upper" "$DATA/eitri/state/etc/work"
+
+# The application layer belongs to the service user.
+dir "$OWNER" 0755 \
+	"$DATA/firmware" \
+	"$DATA/venv" "$DATA/venv/klippy" "$DATA/venv/moonraker" \
+	"$DATA/printer_data" "$DATA/printer_data/config" "$DATA/printer_data/logs" \
+	"$DATA/printer_data/gcodes" "$DATA/printer_data/database" "$DATA/printer_data/comms" \
+	"$DATA/eitri/extras" "$DATA/eitri/klarity" "$DATA/eitri/toolchain" \
+	"$DATA/eitri/configurator" "$DATA/eitri/home"
+chmod 0750 "$DATA/eitri/home"
+
+seed "$FACTORY/moonraker.asvc" "$DATA/printer_data/moonraker.asvc"
+seed "$FACTORY/camera/go2rtc.yaml" "$DATA/printer_data/config/go2rtc.yaml"
+seed "$FACTORY/camera/camera.env.example" "$DATA/printer_data/config/camera.env.example"
+
+# The configurator runs from a virtual environment on /data, like the other
+# application-layer programs, so that the app layer can update it. A first
+# environment is created here from the copy that ships in the image: it sees
+# the image's Python packages (aiohttp, jinja2) and puts the image's
+# eitri_configurator on its path last, so a newer package installed into the
+# environment takes precedence. Created once, never replaced.
+venv="$DATA/eitri/configurator/venv"
+if [ ! -x "$venv/bin/python" ] && [ -d "$CONFIGURATOR_SRC" ]; then
+	if "$PYTHON" -m venv --without-pip --system-site-packages "$venv"; then
+		for site in "$venv"/lib/python3*/site-packages; do
+			printf '%s\n' "$CONFIGURATOR_SRC" >"$site/eitri-image.pth"
+		done
+		chown -R "$OWNER" "$venv"
+		log "created $venv"
+	else
+		log "could not create $venv"
+		rm -rf "$venv"
+	fi
+fi
+
+# Web UI served by nginx. A symlink, so the configurator can switch UIs.
+if [ ! -e "$DATA/eitri/ui" ] && [ ! -L "$DATA/eitri/ui" ]; then
+	ln -s /usr/share/eitri/ui/fluidd "$DATA/eitri/ui"
+fi
+
+# SSH keys dropped on the boot partition by a PC. Only well-formed key lines
+# are accepted, and each is added once.
+keys="$BOOTFS/authorized_keys"
+if [ -f "$keys" ]; then
+	ssh_dir="$DATA/eitri/home/.ssh"
+	dir "$OWNER" 0700 "$ssh_dir"
+	target="$ssh_dir/authorized_keys"
+	[ -e "$target" ] || install -m 0600 -o "${OWNER%%:*}" -g "${OWNER##*:}" /dev/null "$target"
+	added=0
+	while IFS= read -r line; do
+		case "$line" in
+		ssh-* | ecdsa-* | sk-ssh-* | sk-ecdsa-*)
+			if ! grep -qxF -- "$line" "$target"; then
+				printf '%s\n' "$line" >>"$target"
+				added=$((added + 1))
+			fi
+			;;
+		esac
+	done <"$keys"
+	[ "$added" -eq 0 ] || log "added $added SSH key(s) from $keys"
+fi
+
+if [ ! -e "$DATA/eitri/state/layout-version" ]; then
+	echo "$LAYOUT_VERSION" >"$DATA/eitri/state/layout-version"
+fi
+if [ "$first_boot" -eq 1 ]; then
+	{
+		date -u +%Y-%m-%dT%H:%M:%SZ
+		[ ! -r /etc/os-release ] || sed -n 's/^VERSION_ID=//p' /etc/os-release
+	} >"$DATA/eitri/state/first-boot"
+	log "first boot: created the /data layout"
+fi
+
+# The partition was enlarged before it was mounted (grow-data); grow the file
+# system to match. A no-op when it already fills the partition.
+if [ -z "${EITRI_NO_RESIZE:-}" ]; then
+	source_dev=$(findmnt -n -o SOURCE "$DATA" 2>/dev/null || true)
+	if [ -b "$source_dev" ]; then
+		resize2fs "$source_dev" >/dev/null 2>&1 || log "resize2fs failed on $source_dev"
+	fi
+fi
+exit 0

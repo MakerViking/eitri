@@ -1,0 +1,127 @@
+#!/bin/sh
+# eitri-camera-probe-mpp: report, without guessing, whether this board has a
+# usable hardware H.264 encoder that a camera pipeline could use.
+#
+# What it checks, in order:
+#   1. SoC identity (device-tree compatible) and kernel release.
+#   2. Every V4L2 node: driver, whether it is memory-to-memory, and the formats
+#      on its capture (compressed output) and output (raw input) queues. A node
+#      whose CAPTURE queue offers H264 is an H.264 encoder.
+#   3. The Rockchip MPP userspace path: /dev/mpp_service and librockchip_mpp.
+#   4. Relevant kernel config options, if /proc/config.gz is available.
+#
+# Exit status: 0 = a V4L2 H.264 encoder node was found, 1 = none found, 2 = usage.
+# An MPP device without a V4L2 encoder is reported as "not usable here": Eitri
+# does not ship MPP userspace, so it does not count as a working encoder.
+#
+# Environment overrides (used by the test suite):
+#   EITRI_CAMERA_VIDEO_GLOB   default /dev/video*
+#   EITRI_CAMERA_V4L2CTL      default v4l2-ctl
+#   EITRI_CAMERA_MPP_DEV      default /dev/mpp_service
+#   EITRI_CAMERA_KCONFIG      default /proc/config.gz
+
+set -u
+
+VIDEO_GLOB="${EITRI_CAMERA_VIDEO_GLOB:-/dev/video*}"
+V4L2CTL="${EITRI_CAMERA_V4L2CTL:-v4l2-ctl}"
+MPP_DEV="${EITRI_CAMERA_MPP_DEV:-/dev/mpp_service}"
+KCONFIG="${EITRI_CAMERA_KCONFIG:-/proc/config.gz}"
+
+if [ "$#" -ne 0 ]; then
+    echo "usage: $0" >&2
+    exit 2
+fi
+
+section() {
+    printf '\n== %s ==\n' "$1"
+}
+
+section "SoC and kernel"
+if [ -r /proc/device-tree/compatible ]; then
+    printf 'compatible: %s\n' "$(tr '\0' ' ' < /proc/device-tree/compatible)"
+else
+    echo "compatible: unavailable (no device tree)"
+fi
+printf 'kernel: %s\n' "$(uname -r)"
+
+section "V4L2 nodes"
+found_encoder=0
+found_any_m2m=0
+if ! command -v "$V4L2CTL" >/dev/null 2>&1; then
+    echo "$V4L2CTL not installed: cannot enumerate V4L2 nodes"
+else
+    for node in $VIDEO_GLOB; do
+        [ -e "$node" ] || continue
+        info=$("$V4L2CTL" -d "$node" --info 2>/dev/null) || continue
+        driver=$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*Driver name[[:space:]]*:[[:space:]]*//p')
+        card=$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*Card type[[:space:]]*:[[:space:]]*//p')
+        case "$info" in
+            *Memory-to-Memory*) m2m=yes ;;
+            *) m2m=no ;;
+        esac
+        printf '%s: driver=%s card="%s" memory-to-memory=%s\n' "$node" "$driver" "$card" "$m2m"
+        [ "$m2m" = yes ] || continue
+        found_any_m2m=1
+
+        # Per-queue format list. The "Type:" line precedes each queue's formats.
+        formats=$("$V4L2CTL" -d "$node" --list-formats 2>/dev/null | awk '
+            /Type:/ {
+                queue = ($0 ~ /Capture/) ? "capture" : "output"
+            }
+            /\[[0-9]+\]:/ {
+                # Line form: "[0]: 'H264' (H.264, compressed)"; keep the quoted code.
+                n = split($0, parts, "\047")
+                print queue " " parts[2]
+            }')
+        capture_fmts=$(printf '%s\n' "$formats" | awk '$1 == "capture" { printf "%s ", $2 }')
+        output_fmts=$(printf '%s\n' "$formats" | awk '$1 == "output" { printf "%s ", $2 }')
+        printf '    capture (compressed side): %s\n' "${capture_fmts:-none}"
+        printf '    output  (raw side):        %s\n' "${output_fmts:-none}"
+
+        has_h264_capture=0
+        case " $capture_fmts " in *" H264 "*) has_h264_capture=1 ;; esac
+        if [ "$has_h264_capture" -eq 1 ] && [ -n "$output_fmts" ]; then
+            echo "    -> H.264 ENCODER"
+            found_encoder=1
+        else
+            case " $output_fmts " in
+                *" H264 "*) echo "    -> decoder (H.264 on the compressed input side)" ;;
+                *) echo "    -> memory-to-memory device, not an H.264 encoder" ;;
+            esac
+        fi
+    done
+    if [ "$found_any_m2m" -eq 0 ]; then
+        echo "no memory-to-memory V4L2 devices matched $VIDEO_GLOB"
+    fi
+fi
+
+section "Rockchip MPP userspace"
+if [ -e "$MPP_DEV" ]; then
+    echo "$MPP_DEV: present"
+else
+    echo "$MPP_DEV: absent"
+fi
+if command -v ldconfig >/dev/null 2>&1 && ldconfig -p 2>/dev/null | grep -q 'librockchip_mpp'; then
+    echo "librockchip_mpp: installed"
+else
+    echo "librockchip_mpp: not installed"
+fi
+
+section "Kernel config"
+if [ -r "$KCONFIG" ] && command -v zcat >/dev/null 2>&1; then
+    zcat "$KCONFIG" 2>/dev/null | grep -E '^CONFIG_(VIDEO_HANTRO|VIDEO_HANTRO_ROCKCHIP|VIDEO_ROCKCHIP_VDEC|ROCKCHIP_VCODEC|ROCKCHIP_MPP|VIDEO_ROCKCHIP_RGA)[= ]' || echo "no matching options in $KCONFIG"
+else
+    echo "$KCONFIG not readable: skipped"
+fi
+
+section "Verdict"
+if [ "$found_encoder" -eq 1 ]; then
+    echo "V4L2 H.264 encoder available. A hardware H.264 profile may be worth benchmarking (see go2rtc/profiles)."
+    exit 0
+fi
+echo "No usable V4L2 H.264 encoder found on this board."
+if [ -e "$MPP_DEV" ]; then
+    echo "MPP device is present, but Eitri does not ship MPP userspace; treat as not usable."
+fi
+echo "Video path on this board: MJPEG passthrough from the camera (no transcoding)."
+exit 1

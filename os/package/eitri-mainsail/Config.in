@@ -1,0 +1,8 @@
+config BR2_PACKAGE_EITRI_MAINSAIL
+	bool "mainsail"
+	help
+	  Mainsail web interface for Klipper/Moonraker, installed as
+	  static files under /usr/share/eitri/ui/mainsail. nginx serves
+	  it when it is the active UI (see /data/eitri/ui).
+
+	  https://github.com/mainsail-crew/mainsail

@@ -1,0 +1,34 @@
+# Eitri service policy. systemctl preset-all applies this when the image is built.
+enable eitri-grow-data.service
+enable eitri-data-init.service
+enable eitri-etc.service
+enable eitri-zram.service
+enable eitri-mark-good.service
+enable klipper.service
+enable moonraker.service
+enable klarity.service
+enable eitri-configurator.service
+enable eitri-camera.service
+enable nginx.service
+enable sshd.service
+enable NetworkManager.service
+enable avahi-daemon.service
+enable chrony.service
+enable rauc.service
+
+# go2rtc is optional; the user turns it on from the configurator.
+disable go2rtc.service
+
+# NetworkManager starts its own dnsmasq for a Wi-Fi hotspot; a system-wide one
+# would hold port 53.
+disable dnsmasq.service
+
+# NetworkManager owns the network, DNS and the clock is chrony's. Buildroot
+# installs these systemd daemons next to them and the default preset would
+# enable them.
+disable systemd-networkd.service
+disable systemd-networkd-wait-online.service
+disable systemd-network-generator.service
+disable systemd-resolved.service
+disable systemd-timesyncd.service
+disable avahi-dnsconfd.service

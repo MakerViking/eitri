@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# Runs on every boot BEFORE Klipper: finishes a queued update (data bundles) and, on the first boot after
+# the in-place conversion or an update, puts firmware matching this host on the MCU boards.
+[Unit]
+Description=Eitri: finish pending updates and match MCU firmware
+DefaultDependencies=no
+After=local-fs.target
+RequiresMountsFor=/data /boot
+Before=klipper.service moonraker.service klarity.service
+ConditionPathExists=/data/eitri
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/eitri-update --json --events-file /data/eitri/logs/update.jsonl post-boot --stage prepare
+TimeoutStartSec=20min
+
+[Install]
+WantedBy=multi-user.target

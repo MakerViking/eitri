@@ -1,0 +1,163 @@
+Eitri
+Copyright 2026 The Eitri Authors
+
+This product includes software and reference material from third parties. Each
+item below is used under the license stated next to it. Eitri does not relicense
+any third-party work. Where Eitri ships a third-party component, the component's
+own license text accompanies it in the release bundle.
+
+Klipper and Kalico are used as pristine, unmodified upstream clones. Eitri adds
+its own code beside them and never edits their source.
+
+=============================================================================
+Runtime and firmware components
+=============================================================================
+
+Klipper
+  Copyright (C) Kevin O'Connor and the Klipper contributors
+  License: GNU General Public License v3.0 (GPL-3.0)
+  Source:  https://github.com/Klipper3d/klipper
+  Use:     Host firmware base (unmodified clone under /data/firmware/klipper),
+           and MCU firmware built from the same tree.
+
+Kalico
+  Copyright (C) the KalicoCrew contributors (a fork of Klipper, formerly Danger Klipper)
+  License: GNU General Public License v3.0 (GPL-3.0)
+  Source:  https://github.com/KalicoCrew/kalico
+  Use:     Optional host firmware base (unmodified clone under /data/firmware/klipper).
+
+Moonraker
+  Copyright (C) Eric Callahan (Arksine) and the Moonraker contributors
+  License: GNU General Public License v3.0 (GPL-3.0)
+  Source:  https://github.com/Arksine/moonraker
+  Use:     API server, installed unmodified under /data/firmware/moonraker.
+
+Katapult (formerly CanBoot)
+  Copyright (C) Eric Callahan (Arksine) and the Katapult contributors
+  License: GNU General Public License v3.0 (GPL-3.0)
+  Source:  https://github.com/Arksine/katapult
+  Use:     Serial bootloader tooling (flashtool.py) for MCU flashing.
+
+ustreamer
+  Copyright (C) the PiKVM project and its contributors
+  License: GNU General Public License v3.0 (GPL-3.0)
+  Source:  https://github.com/pikvm/ustreamer
+  Use:     MJPEG camera streamer (eitri-camera.service).
+
+go2rtc
+  Copyright (C) AlexxIT and contributors
+  License: MIT
+  Source:  https://github.com/AlexxIT/go2rtc
+  Use:     Optional RTSP/WebRTC gateway (go2rtc.service). Prebuilt linux_arm64 binary.
+
+Fluidd
+  Copyright (C) the Fluidd contributors
+  License: GNU General Public License v3.0 (GPL-3.0)
+  Source:  https://github.com/fluidd-core/fluidd
+  Use:     Web interface, served by nginx.
+
+Mainsail
+  Copyright (C) the Mainsail Crew and contributors
+  License: GNU General Public License v3.0 (GPL-3.0)
+  Source:  https://github.com/mainsail-crew/mainsail
+  Use:     Web interface, served by nginx.
+
+RAUC
+  Copyright (C) Pengutronix and the RAUC contributors
+  License: GNU Lesser General Public License v2.1 (LGPL-2.1)
+  Source:  https://github.com/rauc/rauc
+  Use:     A/B root filesystem update and rollback.
+
+uv
+  Copyright (C) Astral Software Inc. and the uv contributors
+  License: Apache-2.0 OR MIT (upstream offers both)
+  Source:  https://github.com/astral-sh/uv
+  Use:     Creates and locks the Python virtual environments under /data/venv.
+
+nginx
+  Copyright (C) Igor Sysoev and Nginx, Inc.
+  License: BSD-2-Clause
+  Source:  https://nginx.org
+  Use:     Reverse proxy and static file server (port 80).
+
+Python
+  Copyright (C) the Python Software Foundation
+  License: Python Software Foundation License Version 2
+  Source:  https://www.python.org
+  Use:     Interpreter for Klipper, Moonraker, Klarity, and tooling.
+
+=============================================================================
+Operating system and boot chain
+=============================================================================
+
+Buildroot
+  Copyright (C) the Buildroot Association and contributors
+  License: GNU General Public License v2.0 or later (GPL-2.0-or-later)
+  Source:  https://buildroot.org
+  Use:     Build system for the root filesystem.
+
+Linux kernel
+  Copyright (C) Linus Torvalds and the Linux kernel contributors
+  License: GPL-2.0 WITH Linux-syscall-note
+  Source:  https://www.kernel.org
+  Use:     Mainline 6.18 LTS kernel for the Firefly ROC-RK3328-CC.
+
+U-Boot
+  Copyright (C) the U-Boot contributors
+  License: GPL-2.0-or-later
+  Source:  https://source.denx.de/u-boot/u-boot
+  Use:     Bootloader (configs/roc-cc-rk3328_defconfig).
+
+Trusted Firmware-A (TF-A)
+  Copyright (C) Arm Limited and the TF-A contributors
+  License: BSD-3-Clause
+  Source:  https://github.com/ARM-software/arm-trusted-firmware
+  Use:     BL31 secure monitor for the RK3328 boot chain.
+
+rkdeveloptool
+  Copyright (C) Rockchip Electronics and contributors
+  License: per upstream repository; confirm before bundling
+  Source:  https://github.com/rockchip-linux/rkdeveloptool
+  Use:     Host-side USB recovery tool (documented in docs/RECOVERY.md).
+
+=============================================================================
+Reference sources published by QIDI TECH (public, GPL)
+=============================================================================
+
+Eitri may read, reference, and adapt these public sources with attribution,
+subject to their licenses. No QIDI binary, .tft or .HMI asset, Cython module,
+or decompiled code is part of Eitri. See docs/CLEAN-ROOM.md.
+
+QIDITECH klipper (QIDI's Klipper fork)
+  License: GNU General Public License v3.0 (see COPYING in that repository)
+  Source:  https://github.com/QIDITECH/klipper
+  Pinned:  4bb7c6337936ef273e621d1f55bc0ef92114785d
+
+QIDITECH moonraker (QIDI's Moonraker fork)
+  License: GNU General Public License v3.0 (see LICENSE in that repository)
+  Source:  https://github.com/QIDITECH/moonraker
+  Pinned:  6a6d22641320d94c69a09af9c38158f2f69e9e48
+
+QIDITECH QIDI_PLUS4 (QIDI X-Plus 4 configuration and UI sources)
+  License: GNU Affero General Public License v3.0, per the LICENSE file in that
+           repository. Its README badge says GPL-3.0. Confirm the applicable
+           license before adapting any code from it.
+  Source:  https://github.com/QIDITECH/QIDI_PLUS4
+  Pinned:  ec595fc903540564be757bcafa745cd5c4a52cd0 (tag Plus4_v1.7.1)
+
+=============================================================================
+Projects referenced for comparison and prior art (no code copied)
+=============================================================================
+
+FreeDi (Phil1988/FreeDi) — custom source-available license. Not copied.
+OpenNept4une and display_connector (OpenNeptune3D) — GPL-3.0. Referenced as prior art.
+Simple AF (pellcorp) — referenced for install and recovery practice. No license
+  detected by GitHub for pellcorp/creality; nothing copied.
+
+=============================================================================
+Trademarks
+=============================================================================
+
+QIDI and QIDI X-Plus 4 are trademarks of their respective owners. Eitri is not
+affiliated with or endorsed by QIDI TECH. Other product and project names are
+the property of their owners. See the Trademarks section of README.md.

@@ -1,0 +1,27 @@
+# go2rtc.service (optional): republishes the Eitri camera stream as RTSP for OBS.
+# Enable with: systemctl enable --now go2rtc
+# Config: /data/printer_data/config/go2rtc.yaml (defaults to the shipped
+# go2rtc.yaml, copied there at install time).
+
+[Unit]
+Description=go2rtc camera gateway (RTSP for OBS)
+After=eitri-camera.service network-online.target
+Wants=network-online.target
+Wants=eitri-camera.service
+
+[Service]
+Type=simple
+User=eitri
+Group=eitri
+ExecStart=/usr/bin/go2rtc -config /data/printer_data/config/go2rtc.yaml
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/data/printer_data/config
+
+[Install]
+WantedBy=multi-user.target

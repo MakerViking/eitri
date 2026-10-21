@@ -1,0 +1,204 @@
+name: os-image
+
+# Builds the Eitri OS disk image and the signed RAUC update bundle.
+#
+# Pull requests and pushes get a development build (throwaway signing key,
+# nothing is published). A pushed v* tag is a release build when the signing
+# secrets exist; it fails otherwise instead of falling back to the development
+# key.
+
+on:
+  pull_request:
+    paths:
+      - "os/**"
+      - "release.lock"
+      - "camera/**"
+      - "configurator/**"
+      - "installer/**"
+      - "klipper-layer/**"
+      - "klarity/systemd/**"
+      - ".github/workflows/os-image.yml"
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "os/**"
+      - "release.lock"
+      - "camera/**"
+      - "configurator/**"
+      - "installer/**"
+      - "klipper-layer/**"
+      - "klarity/systemd/**"
+      - ".github/workflows/os-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: os-image-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # Buildroot, its downloads and its output live next to the checkout, outside
+  # the repository, exactly as on a developer machine (os/Makefile BUILD_ROOT).
+  BUILD_ROOT: ${{ github.workspace }}/../build
+
+jobs:
+  check:
+    name: Checks without a full build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libncurses-dev libssl-dev unzip rsync bc cpio file wget \
+            genimage mtools dosfstools e2fsprogs fdisk nodejs flex bison
+          python -m pip install --quiet pytest
+
+      - name: Fetch Buildroot at the pinned commit
+        run: make -C os buildroot
+
+      - name: Pins, defconfig, shell tools and image layout
+        env:
+          EITRI_GENIMAGE: /usr/bin/genimage
+        run: make -C os check-pins check-defconfig test
+
+  image:
+    name: Build the image
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # git describe needs the tags to stamp the version.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Free disk space
+        run: |
+          # The build needs about 20 GB; the runner image carries toolchains we do not use.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install Buildroot prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libncurses-dev libssl-dev unzip rsync bc cpio file wget git \
+            flex bison libelf-dev openssl zstd
+
+      - name: Restore download and compiler caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.BUILD_ROOT }}/br-dl
+            ${{ env.BUILD_ROOT }}/br-ccache
+          key: os-br-${{ hashFiles('release.lock', 'os/configs/**', 'os/package/**', 'os/board/**/patches/**') }}
+          restore-keys: |
+            os-br-
+
+      - name: Decide development or release build
+        id: mode
+        env:
+          RAUC_KEY: ${{ secrets.EITRI_RAUC_KEY }}
+          RAUC_CERT: ${{ secrets.EITRI_RAUC_CERT }}
+          RAUC_KEYRING: ${{ secrets.EITRI_RAUC_KEYRING }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            if [ -z "$RAUC_KEY" ] || [ -z "$RAUC_CERT" ] || [ -z "$RAUC_KEYRING" ]; then
+              echo "::error::tag build without the EITRI_RAUC_KEY, EITRI_RAUC_CERT and EITRI_RAUC_KEYRING secrets"
+              exit 1
+            fi
+            keys="$RUNNER_TEMP/rauc"
+            mkdir -p "$keys"
+            umask 077
+            printf '%s\n' "$RAUC_KEY" > "$keys/release.key"
+            printf '%s\n' "$RAUC_CERT" > "$keys/release.crt"
+            printf '%s\n' "$RAUC_KEYRING" > "$keys/keyring.crt"
+            {
+              echo "release=1"
+              echo "version=${GITHUB_REF_NAME#v}"
+              echo "keys=$keys"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "release=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        env:
+          EITRI_RELEASE: ${{ steps.mode.outputs.release }}
+          EITRI_VERSION: ${{ steps.mode.outputs.version }}
+          EITRI_RAUC_CERT: ${{ steps.mode.outputs.keys && format('{0}/release.crt', steps.mode.outputs.keys) || '' }}
+          EITRI_RAUC_KEY: ${{ steps.mode.outputs.keys && format('{0}/release.key', steps.mode.outputs.keys) || '' }}
+          EITRI_RAUC_KEYRING: ${{ steps.mode.outputs.keys && format('{0}/keyring.crt', steps.mode.outputs.keys) || '' }}
+        run: make -C os image
+
+      - name: Test the image tooling against the host tools that were just built
+        run: |
+          python -m pip install --quiet pytest
+          sudo apt-get install -y --no-install-recommends nodejs mtools dosfstools fdisk
+          make -C os test
+
+      - name: Remove release keys
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/rauc"
+
+      - name: Package the artifacts
+        id: package
+        run: |
+          images="$BUILD_ROOT/br-out/images"
+          out="$RUNNER_TEMP/artifacts"
+          mkdir -p "$out"
+          version=$(os/scripts/version.sh)
+          zstd -T0 -19 --quiet -o "$out/eitri-plus4-$version.img.zst" "$images/eitri-plus4.img"
+          cp "$(readlink -f "$images/eitri-plus4.raucb")" "$out/eitri-plus4-$version.raucb"
+          cp "$BUILD_ROOT/br-out/.config" "$out/buildroot.config"
+          (cd "$out" && sha256sum * > SHA256SUMS && cat SHA256SUMS)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "dir=$out" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eitri-os-${{ steps.package.outputs.version }}${{ steps.mode.outputs.release == '1' && '' || '-dev' }}
+          path: ${{ steps.package.outputs.dir }}
+          retention-days: ${{ steps.mode.outputs.release == '1' && 90 || 14 }}
+          if-no-files-found: error
+
+  publish:
+    name: Attach release files
+    needs: image
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: eitri-os-*
+          merge-multiple: true
+          path: dist
+
+      # download-artifact can finish with a partly extracted file and still succeed.
+      - name: Verify the downloaded files
+        run: cd dist && sha256sum --check --strict SHA256SUMS
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --draft \
+            --title "Eitri OS ${GITHUB_REF_NAME#v}" \
+            --notes "Release candidate. Nothing in this release has been tested on a printer unless release.lock says so."

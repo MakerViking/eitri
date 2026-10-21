@@ -1,0 +1,38 @@
+# Eitri U-Boot configuration, merged onto configs/roc-cc-rk3328_defconfig.
+#
+# scripts/check-uboot-fragment.sh builds this against the pinned U-Boot and
+# fails if any line is dropped by Kconfig.
+
+# --- Environment -----------------------------------------------------------
+# The environment is never stored. The boot script in uboot.env is compiled in
+# and is the only copy, so a U-Boot update can never be shadowed by a stale
+# saved environment. The A/B boot state (BOOT_ORDER and the attempt counters)
+# lives in one raw eMMC sector instead; see uboot.env and docs/boot-chain.md.
+# CONFIG_ENV_IS_IN_MMC is not set
+CONFIG_ENV_IS_NOWHERE=y
+
+# --- Console ---------------------------------------------------------------
+# The U-Boot console is uart2, which is wired to an MCU on this printer. The
+# environment sets "silent", and this option lets that suppress all output.
+CONFIG_SILENT_CONSOLE=y
+
+# --- Host tools -------------------------------------------------------------
+# U-Boot builds an EFI capsule tool on the build host because EFI_LOADER is on.
+# It links against GnuTLS' PKCS#11 API, which Buildroot's host GnuTLS does not
+# export, and nothing here uses capsules.
+# CONFIG_TOOLS_MKEFICAPSULE is not set
+
+# --- Commands used by the boot script --------------------------------------
+CONFIG_CMD_SETEXPR=y
+CONFIG_CMD_EXT4=y
+CONFIG_CMD_FAT=y
+CONFIG_CMD_FS_GENERIC=y
+CONFIG_CMD_IMPORTENV=y
+CONFIG_CMD_EXPORTENV=y
+CONFIG_CMD_MEMORY=y
+CONFIG_CMD_BOOTI=y
+CONFIG_CMD_ECHO=y
+CONFIG_CMD_SLEEP=y
+CONFIG_FS_EXT4=y
+CONFIG_FS_FAT=y
+CONFIG_HUSH_PARSER=y

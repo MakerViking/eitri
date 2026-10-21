@@ -1,0 +1,8 @@
+# Fallback: use Rockchip's proprietary DRAM-init blob (rkbin) instead of the
+# open in-tree TPL. Applied only by "make -C os ddrbin-config". See
+# os/docs/boot-chain.md for when this is needed.
+#
+# The blob itself is fetched by Buildroot's rockchip-rkbin package at a pinned
+# commit; U-Boot is told where to find it through ROCKCHIP_TPL.
+CONFIG_ROCKCHIP_EXTERNAL_TPL=y
+# CONFIG_TPL is not set

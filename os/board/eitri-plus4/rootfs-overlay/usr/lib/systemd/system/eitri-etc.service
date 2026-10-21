@@ -1,0 +1,17 @@
+[Unit]
+Description=Writable /etc overlay
+Documentation=file:///usr/share/doc/eitri/os/README.md
+DefaultDependencies=no
+Wants=data.mount eitri-data-init.service
+After=data.mount eitri-data-init.service
+Before=sysinit.target systemd-tmpfiles-setup.service systemd-sysctl.service systemd-modules-load.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/eitri/etc-overlay
+
+[Install]
+WantedBy=sysinit.target

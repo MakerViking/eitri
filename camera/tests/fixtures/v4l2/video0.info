@@ -1,0 +1,15 @@
+Driver Info:
+	Driver name      : uvcvideo
+	Card type        : USB Camera (1bcf:0b09)
+	Bus info         : usb-0000:01:00.0-1
+	Driver version   : 6.18.57
+	Capabilities     : 0x84a00001
+		Video Capture
+		Metadata Capture
+		Streaming
+		Extended Pix Format
+		Device Capabilities
+	Device Caps      : 0x04200001
+		Video Capture
+		Streaming
+		Extended Pix Format

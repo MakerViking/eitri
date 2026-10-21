@@ -1,0 +1,21 @@
+[Unit]
+Description=Moonraker API server for Klipper
+Documentation=https://moonraker.readthedocs.io/
+After=network.target klipper.service eitri-data-init.service
+Wants=klipper.service eitri-data-init.service
+ConditionPathExists=/data/firmware/moonraker/moonraker/moonraker.py
+ConditionPathExists=/data/venv/moonraker/bin/python
+ConditionPathExists=/data/printer_data/config/moonraker.conf
+
+[Service]
+Type=simple
+User=eitri
+Group=eitri
+WorkingDirectory=/data/firmware/moonraker
+ExecStart=/data/venv/moonraker/bin/python /data/firmware/moonraker/moonraker/moonraker.py \
+    -d /data/printer_data
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

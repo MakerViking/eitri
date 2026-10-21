@@ -1,0 +1,16 @@
+#!/bin/sh
+case "$1" in
+  --getsz) echo "${FAKE_DISK_SECTORS:-60621824}" ;;
+  --rereadpt)
+    echo "blockdev-rereadpt" >>"$FAKE_LOG"
+    if [ -f "$FAKE_TABLE.pending" ]; then
+      mv "$FAKE_TABLE.pending" "$FAKE_TABLE"
+      # materialise the new partition devices as sparse files of the right size
+      awk '$1 ~ /p[0-9]+$/ { n=$1; sub(/.*p/, "", n); for (i=1;i<=NF;i++) if ($i ~ /^size=/) { v=$i; if (v=="size=") v=$(i+1); sub(/^size=/,"",v); sub(/,$/,"",v); print n, v } }' "$FAKE_TABLE" |
+      while read -r n sectors; do
+        case "$n" in 5|6|7) : >"$FAKE_PART_DIR/mmcblk1p$n"; truncate -s $((sectors * 512)) "$FAKE_PART_DIR/mmcblk1p$n" ;; esac
+      done
+    fi
+    ;;
+esac
+exit 0

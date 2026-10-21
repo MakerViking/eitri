@@ -1,0 +1,19 @@
+[Unit]
+Description=Compressed RAM swap (zram)
+Documentation=file:///usr/share/doc/eitri/os/README.md
+DefaultDependencies=no
+After=eitri-data-init.service
+Before=swap.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+RuntimeDirectory=eitri
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/libexec/eitri/zram start
+ExecStop=/usr/libexec/eitri/zram stop
+
+[Install]
+WantedBy=swap.target

@@ -1,0 +1,30 @@
+# go2rtc: serves the Eitri camera to OBS and other LAN clients.
+#
+# Default profile is PASSTHROUGH. go2rtc reads ustreamer's MJPEG over HTTP and
+# republishes the same JPEG frames over RTSP. Nothing is decoded or encoded.
+#
+# Limits, stated plainly:
+#   * WebRTC cannot carry MJPEG (browsers take H.264/VP8/AV1-class video). The
+#     webrtc listener below therefore serves nothing for eitri_cam; it only
+#     matters for the optional transcoded stream in profiles/software-h264.yaml.example.
+#   * The API has no authentication. It listens on loopback only. Do not bind it
+#     to the LAN without putting an auth proxy in front.
+#
+# Test with: ffprobe -rtsp_transport tcp rtsp://<printer>:8554/eitri_cam
+
+api:
+  listen: "127.0.0.1:1984"
+
+rtsp:
+  listen: ":8554"
+  # Add username/password here before exposing RTSP beyond a trusted LAN.
+  # See the go2rtc RTSP documentation for the exact keys for your release.
+
+webrtc:
+  listen: ":8555"
+
+streams:
+  # Plain http:// is auto-detected as MJPEG (multipart/x-mixed-replace).
+  # Verified with go2rtc 1.9.14: RTSP DESCRIBE reports codec_name=mjpeg.
+  eitri_cam:
+    - http://127.0.0.1:8080/stream

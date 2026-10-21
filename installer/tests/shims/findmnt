@@ -1,0 +1,9 @@
+#!/bin/sh
+# findmnt -no SOURCE PATH | -no TARGET DEV | -no FSTYPE ...
+for last; do :; done
+case "$*" in
+  *SOURCE*"/boot"|*SOURCE*"/boot/") echo "${FAKE_BOOT_SRC:-/dev/mmcblk1p1}" ;;
+  *SOURCE*) case "$last" in */boot) echo "${FAKE_BOOT_SRC:-/dev/mmcblk1p1}" ;; *) echo "${FAKE_ROOT_SRC:-/dev/mmcblk1p2}" ;; esac ;;
+  *TARGET*) [ -n "$FAKE_USB_MNT" ] && { echo "$FAKE_USB_MNT"; exit 0; }; exit 1 ;;
+  *) ;;
+esac

@@ -1,0 +1,3 @@
+# Computed with os/scripts/hashfile.py; compare with release.lock.
+sha256  359fabade8a7a51e81a55fe6df6b0ef81764a5e1d63179577534eaaa71904b50  go2rtc_linux_arm64
+sha256  b0dcf4855af5a72b4dfbd9117c207b330f4cc35658576a0b5351d6e2becac546  LICENSE

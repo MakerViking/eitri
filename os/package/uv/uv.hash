@@ -1,0 +1,4 @@
+# Computed with os/scripts/hashfile.py; compare with release.lock.
+sha256  1ae72b4718729e2ccc4f1ae2c6d1e531ca8467800e0546e9130b3886023a60ab  uv-aarch64-unknown-linux-gnu.tar.gz
+sha256  860e3d7a86b84e6a7012c7a635fc64df475cebc6cce34dfeb73a5982ec58176c  LICENSE-MIT
+sha256  c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4  LICENSE-APACHE
