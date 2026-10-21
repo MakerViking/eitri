@@ -228,37 +228,30 @@ recovery; installer writes are still dry-run by default. No Qidi binary or asset
 * One klipper-layer batch test (`test_config_loads_and_homes[kalico-chamber]`) failed once in an early full run and not in
   three later ones; the cause was not found. Watch for it.
 
-## Decisions for Thomas
+## Decisions (made by Thomas, 2026-10-22)
 
-1. **Boot backend: GPT flash-once or DOS in-place?** Both are implemented and tested in simulation. Recommendation: ship
-   DOS in-place as the user default (keeps the stock U-Boot so a bootloader is never erased; `revert.sh` is the recovery
-   path) and keep the GPT image for bench, microSD and CI/QEMU. The OS code serves both.
-2. **Where do the extras live?** `/data/eitri/extras` (the contract) versus the image's `/usr/lib/eitri/klipper-layer`
-   with a `/data/eitri/klipper-layer` override. Pick one before the data bundle is built.
-3. **Data seed design.** Pinned clones plus uv venvs built in CI and shipped as `data-seed.tar.zst`, or built on the printer
-   at first boot? CI-built is faster for users but needs aarch64 builds and bigger releases; on-device is lighter to
-   host but slow and network dependent. Nothing builds either yet.
-4. **Root access for users.** Passwordless root is gone. Pick: a configurator step that sets a password, a boot-partition
-   recovery file read by data-init, or no general root shell (physical or RAM-installer only).
-5. **Release trust.** Who holds the minisign and RAUC private keys; create the `release` GitHub Environment with required
-   reviewers; add the deferred-signing mode; when `EITRI_RELEASE=1` should imply the hard "release key required" error;
-   bump `CLOCK_FLOOR` and `EITRI_MIN_MANIFEST_SEQUENCE` each release.
-6. **Authentication of the web UI.** Should the printer UI (nginx :80, including `/webcam/`) get a login? Today it trusts
-   the LAN. Related: the default of the configurator's new Access option ("Trust my home network" or "Require sign-in"),
-   and whether to show the generated RTSP password in the wizard.
-7. **IPv6 on nginx:** allow all (today), pin a prefix at runtime, or remove the IPv6 listener.
-8. **Configurator after setup:** exit entirely (`--retire-when-locked`, saves about 30 MiB), stay up locked, and whether it
-   binds `0.0.0.0:8099` or sits behind nginx. Does Klarity show the pairing code (`pairing.json`) and offer an unlock
-   button?
-9. **Moonraker port 7125 is loopback only** now; slicers and scripts must use port 80. Accept?
-10. **Klipper-layer policy:** `gcode_shell_command` PARAMS unrestricted by default or default-deny; keep steppers energised
-    during a long pause (current) or release and cancel; PLR resume with homed Z uses live Z; the chamber backstop sensor
-    (`chamber_backstop_max_temp`, default 140) must be lowered to 85-90 if it sits in chamber air.
-11. **Klarity strictness:** maps whose print cancel/pause/resume/start lack a guard now fail to load. Keep as an error or
-    make it a warning? Same for the silent drop of repeat taps on an in-flight gcode action.
-12. **Licences:** the AGPL/GPL question for `QIDI_PLUS4`, SPDX tag for `klipper-layer/config/`, and who does the clean-room
-    review of the Klarity map.
-13. **Python source:** `.py` files stay in the image (readable tracebacks); `PYC_ONLY` would save about 20 MiB uncompressed.
+1. **Boot backend: DOS in-place** is the user default (keeps the stock U-Boot; `revert.sh` is the recovery path). The GPT
+   flash-once image stays for bench, microSD and CI/QEMU only.
+2. **Extras live on `/data`** (`/data/eitri/extras` + config) and update with Klipper/Kalico, not with the OS. Drop the
+   `/usr/lib/eitri/klipper-layer` copy as the source of truth.
+3. **Data seed: built by CI** for aarch64 (pinned Klipper/Kalico + Moonraker clones and uv venvs) and shipped per release
+   as `data-seed.tar.zst`. First boot is offline. (Follow-upstream mode may rebuild on the printer.)
+4. **Root access: optional configurator step** (add SSH key and/or set a password), off by default.
+5. **Release trust:** Thomas holds the minisign and RAUC private keys offline; CI signs only via a protected GitHub
+   `release` environment with Thomas as required reviewer (deferred signing).
+6. **Web UI login: asked in setup, default "Trust my home network"**; "Require sign-in" available. The RTSP password is
+   shown on a separate page, not in the wizard.
+7. **IPv6: remove the nginx IPv6 listener** for now (the LAN allow-list is IPv4-only).
+8. **Configurator exits after setup** (`--retire-when-locked` default, frees ~30 MiB); **Klarity shows an "Unlock setup"
+   button** that restarts it and displays the pairing code.
+9. **Moonraker stays loopback-only**; slicers/apps use port 80.
+10. **Klipper-layer policy:** `gcode_shell_command` **denies extra PARAMS by default**; **motors stay energised** during a
+    long pause; PLR resume **uses live Z when Z is homed**; **chamber backstop limit = 85 °C**.
+11. **Klarity: a print-control widget without a state guard stays a load error.**
+12. **Licences: treat `QIDITECH/QIDI_PLUS4` as AGPL-3.0** (the stricter reading). Consequence: files in
+    `klipper-layer/config/` adapted from QIDI's configs must be tagged **AGPL-3.0-or-later** (not GPL), and the README/NOTICE
+    must say so. The lead (Claude) does the clean-room review of the Klarity map.
+13. **Keep `.py` source in the image** (readable tracebacks; ~20 MiB accepted).
 
 ## Not built by anyone yet
 
