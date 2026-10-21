@@ -126,24 +126,18 @@ data seed does not exist yet; add its `uv pip freeze` / `uv.lock` when it does.
 
 ## Open findings (need changes outside this directory)
 
-1. **`make legal-info` fails** for `eitri-camera`, `eitri-configurator` and `eitri-mcuflash`:
-   `*_LICENSE_FILES = $(BR2_EXTERNAL_EITRI_PATH)/../LICENSE` is an absolute path, but Buildroot copies
-   `$(@D)/<file>`. The failed packages are then missing from the manifest and the source offer.
-   `package-legal.sh` refuses to continue when an enabled Eitri package is absent. Fix in each `.mk`:
-
-   ```
-   EITRI_CAMERA_LICENSE_FILES = LICENSE
-   define EITRI_CAMERA_COPY_LICENSE
-   	cp $(BR2_EXTERNAL_EITRI_PATH)/../LICENSE $(@D)/LICENSE
-   endef
-   EITRI_CAMERA_POST_RSYNC_HOOKS += EITRI_CAMERA_COPY_LICENSE
-   ```
+1. **Fixed (hardening run).** `make legal-info` used to fail for `eitri-camera`, `eitri-configurator` and
+   `eitri-mcuflash` because `*_LICENSE_FILES` was an absolute path outside the build directory. Each
+   package now copies the repository `LICENSE` into its build directory in a `POST_RSYNC_HOOKS` step and
+   names it `LICENSE`. `make -C os legal-info` now completes: 107 target packages in the manifest, the
+   SBOM tool reports 110 components (with Klipper, Kalico and Moonraker). Buildroot still prints
+   "no hash file for LICENSE" for these local packages; it is a warning.
 2. **The image carries no licence texts or notices.** Add a post-build step copying
    `legal-info/licenses`, `manifest.csv`, the root `NOTICE`/`os/NOTICE` and a `SOURCE-OFFER` text to
    `/usr/share/doc/eitri/`, or enable a rootfs overlay with the same. (Buildroot's legal-info is a
    separate output, not part of the rootfs.) About 3.5 MB.
-3. **`os-image.yml` publish step** uses `gh release create`, which fails if `legal.yml` created the
-   draft first. Use `gh release view ... || gh release create ...; gh release upload --clobber`.
+3. Fixed: the `os-image.yml` publish step now creates the draft only if `legal.yml` has not, and uploads
+   with `--clobber`.
 4. `uboot` is listed as version `custom` in the manifest; set `BR2_TARGET_UBOOT_CUSTOM_VERSION` naming
    or document `v2026.10` here and in `NOTICE`.
 5. Local package source tarballs name the build machine's path as the "source site"; the SBOM maps

@@ -78,6 +78,68 @@ CANCEL_PRINT
     ok(res)
 
 
+# The chamber wait polls the (simulated, always 0) sensor in real time. This
+# wrapper keeps the interlock logic and only skips the waiting.
+NO_CHAMBER_WAIT = """
+[gcode_macro QD_SET_CHAMBER]
+rename_existing: BASE_QD_SET_CHAMBER
+gcode:
+    BASE_QD_SET_CHAMBER TARGET={params.TARGET}
+    {% if params.WAIT is defined %}
+        { action_respond_info("stub QD_SET_CHAMBER wait skipped") }
+    {% endif %}
+"""
+
+
+def test_print_flow_with_chamber(env_factory):
+    """PRINT_START/PRINT_END/CANCEL with a chamber target run through the
+    interlock (the chamber wait itself is stubbed: batch sensors read 0)."""
+    env = env_factory(chamber=True)
+    env.append(NO_CHAMBER_WAIT)
+    res = env.run("""
+PRINT_START BED=60 HOTEND=250 CHAMBER=55 SOAK=0
+G1 X100 Y100 F6000
+PRINT_END
+PRINT_START BED=60 HOTEND=250 CHAMBER=55 MESH=skip SOAK=0
+CANCEL_PRINT
+QD_POWER_INTERLOCK_STATUS
+""", timeout=300)
+    ok(res)
+    assert "Raising bed target to 80C" in res.log   # 55 C chamber + 25 C
+    assert "stub QD_SET_CHAMBER wait skipped" in res.log
+    assert "chamber power BLOCKED" in res.log       # batch bed never reads hot
+
+
+def test_low_slicer_chamber_target_is_raised_not_fatal(env_factory):
+    """Klarity and slicers send M141 S40; the interlock minimum is 45."""
+    env = env_factory(chamber=True)
+    env.append(NO_CHAMBER_WAIT)
+    res = env.run("""
+M141 S40
+M191 S30
+PRINT_START BED=100 HOTEND=250 CHAMBER=40 MESH=skip SOAK=0
+M141 S0
+""", timeout=300)
+    ok(res)
+    assert "M141: 40.0C is outside the chamber range, using 45.0C" in res.log
+    assert "M191: 30.0C is outside the chamber range, using 45.0C" in res.log
+    # the request reached the interlock at 45 (bed needs 45 + 25 = 70)
+    assert "Chamber target 45C will be applied once the bed is ready" in res.log
+
+
+def test_gated_chamber_pwm_reaches_the_mcu_as_zero(env_factory):
+    """Real Heater.set_pwm -> _GatedPwm -> MCU output, with the gate closed."""
+    env = env_factory(chamber=True)
+    env.add_test_extra("qd_test_pwm")
+    res = env.run("""
+SET_HEATER_TEMPERATURE HEATER=chamber TARGET=50
+QD_TEST_PWM VALUE=0.4
+SET_HEATER_TEMPERATURE HEATER=chamber TARGET=0
+""")
+    ok(res)
+    assert "QD_TEST_PWM requested=0.400 reached_mcu=[0.0]" in res.log
+
+
 def print_time(result):
     return float(re.search(r"Exiting \(print time ([\d.]+)s\)",
                            result.log).group(1))
@@ -290,3 +352,194 @@ def test_power_loss_recovery_round_trip(env_factory):
     assert "M109 S200" in head and "QD_PURGE LEN=15" in head
     assert "SET_KINEMATIC_POSITION Z=" in head and "SET_HOMED=z" in head
     assert head.index("G28 X Y") < head.index("G1 X")
+
+
+# --- homing never leaves Z flagged homed at an invented height ---------------
+
+def test_partial_homing_does_not_fake_a_homed_z(env_factory):
+    """G28 X / G28 Y from cold lift from an assumed Z but must not leave Z
+    homed: QD_PURGE refuses and M604 homes first."""
+    env = env_factory()
+    res = env.run("G28 X\nG28 Y\nQD_PURGE HOTEND=210")
+    assert res.returncode != 0
+    assert "needs the printer homed" in res.log
+    # the assumed Z was set to lift, then cleared again
+    assert "set_homed=z clear_homed=" in res.log
+    assert "set_homed= clear_homed=z" in res.log
+    # a following filament load still homes properly
+    ok(env.run("G28 X\nG28 Y\nM604 S210"))
+
+
+def test_cold_single_axis_homing_homes_only_that_axis(env_factory):
+    env = env_factory()
+    ok(env.run("G28 X"))
+    ok(env.run("G28 Y"))
+    ok(env.run("G28 Z"))                     # needs X/Y: homes them itself
+    res = env.run("G28 X\nG1 Z10 F600")
+    assert res.returncode != 0 and "Must home axis first" in res.log
+
+
+def test_full_homing_leaves_everything_homed(env_factory):
+    ok(env_factory().run("G28\nQD_PURGE HOTEND=210\nG28 X\nQD_PURGE HOTEND=210"))
+
+
+def test_pre_triggered_probe_is_an_error_and_never_a_reference(env_factory):
+    env = env_factory()
+    env.add_test_extra("qd_test_probe")
+    res = env.run("G28")
+    assert res.returncode != 0
+    assert "still reads triggered" in res.log
+    # Z was never measured: it must not be left flagged homed
+    assert "set_homed= clear_homed=z" in res.log
+    res = env.run("G28 X")
+    assert res.returncode != 0 and "still reads triggered" in res.log
+
+
+# --- pause / idle timeout / resume ---------------------------------------------
+
+def test_a_long_pause_stays_resumable(env_factory):
+    """The idle timeout turns heaters off during a pause but keeps the print
+    recoverable: RESUME reheats and carries on."""
+    env = env_factory()
+    ok(env.run("""
+G28
+M140 S60
+M104 S200
+G1 X100 Y100 F6000
+PAUSE
+_QD_IDLE_OFF
+RESUME
+"""))
+
+
+def test_idle_timeout_still_releases_the_motors_when_not_paused(env_factory):
+    env = env_factory()
+    res = env.run("G28\n_QD_IDLE_OFF\nQD_PURGE HOTEND=210")
+    assert res.returncode != 0 and "needs the printer homed" in res.log
+
+
+def test_resume_refuses_before_heating_when_the_position_is_lost(env_factory):
+    env = env_factory()
+    res = env.run("""
+G28
+M140 S60
+M104 S200
+PAUSE
+M84
+RESUME
+""")
+    assert res.returncode != 0
+    assert "RESUME needs the printer homed" in res.log
+    # the error came before any re-heat wait
+    tail = res.log.split("RESUME needs the printer homed")[0]
+    assert "stub TEMPERATURE_WAIT" not in tail
+    # ... whereas a RESUME that can proceed does wait for the heaters
+    ok_run = env.run("G28\nM140 S60\nM104 S200\nPAUSE\nRESUME")
+    ok(ok_run)
+    assert "stub TEMPERATURE_WAIT SENSOR=extruder" in ok_run.log
+
+
+# --- M290 / saved Z offset --------------------------------------------------------
+
+def test_m290_is_limited_to_the_zoffset_range(env_factory):
+    env = env_factory()
+    ok(env.run("G28\nM290 Z-0.05\nM290 Z0.1"))
+    for cmd in ("M290 Z-3", "M290 Z2"):
+        res = env.run("G28\nSET_GCODE_OFFSET Z=-0.5 MOVE=0\n" + cmd)
+        assert res.returncode != 0 and "M290" in res.log, cmd
+    res = env.run("M290 Z-0.1")
+    assert res.returncode != 0 and "needs the printer homed" in res.log
+
+
+def test_saved_zoffset_is_dropped_after_probe_recalibration(env_factory):
+    env = env_factory()
+    saved = env.pd / "config" / "saved_variables.cfg"
+    ok(env.run("SET_GCODE_OFFSET Z=-0.085 MOVE=0\nQD_SAVE_ZOFFSET"))
+    text = saved.read_text()
+    assert "z_offset = -0.085" in text and "z_offset_probe_ref = 1.5" in text
+    # same calibration: applied
+    res = env.run("QD_LOAD_ZOFFSET\nQD_SAVE_ZOFFSET")
+    ok(res)
+    assert "z_offset = -0.085" in saved.read_text()
+    # PROBE_CALIBRATE + SAVE_CONFIG changed the probe z_offset
+    cfg = env.cfg_path.read_text()
+    assert "z_offset: 1.5" in cfg
+    env.cfg_path.write_text(cfg.replace("z_offset: 1.5", "z_offset: 1.62", 1))
+    res = env.run("QD_LOAD_ZOFFSET\nGET_POSITION")
+    ok(res)
+    assert "Saved Z offset -0.0850 discarded" in res.log
+    text = saved.read_text()
+    assert "z_offset = 0.0" in text and "z_offset_probe_ref = 1.62" in text
+    # and the next print starts clean
+    res = env.run("QD_LOAD_ZOFFSET")
+    ok(res)
+    assert "discarded" not in res.log
+
+
+def _interrupted_print(env, job):
+    """Run `job` until the host is SIGKILLed mid-print; return its record."""
+    # PRINTER_INIT (BED_MESH_CLEAR ...) is queued 0.2 s after startup; in batch
+    # mode the job is already running by then and the init would run in the
+    # middle of it, clearing the mesh under test.
+    env.append("[delayed_gcode PRINTER_INIT]\ninitial_duration: 0\n"
+               "gcode:\n    G4 P1\n")
+    env.link_extra("qd_shell_test.py", "gcode_shell_command.py")
+    env.append("[qd_shell_test pad]\ncommand: /bin/sleep\ntimeout: 10\n"
+               "verbose: False\n"
+               "[qd_shell_test powercut]\ncommand: /bin/sh -c 'kill -9 $PPID'\n"
+               "verbose: False\n")
+    # sample every second so the short job is recorded after its bed mesh
+    cfg = env.cfg_path.read_text()
+    assert "save_interval: 10" in cfg
+    env.cfg_path.write_text(cfg.replace("save_interval: 10",
+                                        "save_interval: 1", 1))
+    (env.gcodes / "job.gcode").write_text(job)
+    first = env.run("SDCARD_PRINT_FILE FILENAME=job.gcode\n",
+                    wait_for=r"never matches")
+    assert first.returncode == -9, first.log[-2000:]
+    env.append("[qd_shell_test powercut]\ncommand: /bin/true\n")
+    return json.loads((env.gcodes / ".plr" / "state.json").read_text())
+
+
+MESH_JOB = PLR_JOB.replace(
+    "G28\n", "G28\nBED_MESH_CALIBRATE PROFILE=adaptive ADAPTIVE=1\n", 1)
+
+
+def test_power_loss_resume_rebuilds_the_unsaved_adaptive_mesh(env_factory):
+    """The default adaptive mesh exists only in RAM, so a restart has no such
+    profile: the record carries the mesh and the resume re-creates it."""
+    env = env_factory()
+    rec = _interrupted_print(env, MESH_JOB)
+    assert rec["bed_mesh_profile"] == "adaptive", rec
+    assert rec["bed_mesh"]["points"] and rec["bed_mesh"]["mesh_params"]
+    res = env.run("QD_PLR_RESUME CONFIRM=1\n",
+                  wait_for=r"Exiting SD card print")
+    assert res.returncode == 0, res.log[-3000:]
+    assert res.errors() == [], res.errors()
+    head = (env.gcodes / ".plr" / "resume-a.gcode").read_text()
+    assert "BED_MESH_PROFILE LOAD=plr-resume" in head
+    assert "LOAD=adaptive" not in head
+
+
+def test_power_loss_resume_without_a_recoverable_mesh_refuses_first(env_factory):
+    env = env_factory()
+    rec = _interrupted_print(env, MESH_JOB)
+    state = env.gcodes / ".plr" / "state.json"
+    rec.pop("bed_mesh")                    # a record from before the mesh was kept
+    state.write_text(json.dumps(rec))
+    res = env.run("QD_PLR_RESUME CONFIRM=1\n")
+    assert res.returncode != 0
+    assert "never saved" in res.log and "Nothing was heated or moved" in res.log
+    assert not (env.gcodes / ".plr" / "resume-a.gcode").exists()
+
+
+def test_power_loss_resume_keeps_a_homed_z(env_factory):
+    env = env_factory()
+    _interrupted_print(env, PLR_JOB)
+    res = env.run("G28\nQD_PLR_RESUME CONFIRM=1\n",
+                  wait_for=r"Exiting SD card print")
+    assert res.returncode == 0, res.log[-3000:]
+    assert res.errors() == [], res.errors()
+    head = (env.gcodes / ".plr" / "resume-a.gcode").read_text()
+    assert "SET_KINEMATIC_POSITION" not in head
+    assert "Z is already homed" in res.log

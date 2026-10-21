@@ -2,7 +2,6 @@
 """The release-channel client: check, upgrade, post-boot verification, rollback."""
 from __future__ import annotations
 
-import datetime
 import json
 import os
 import re
@@ -14,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional
 from eitri_mcuflash.errors import FlashError
 from eitri_mcuflash.events import EventSink
 from eitri_mcuflash.proc import Runner, run
+from eitri_mcuflash.registry import load_registry
 
 from . import fetch, health as health_mod, minisign
 from .bootenv import BootControl
@@ -22,7 +22,9 @@ from .rauc import RaucClient
 from .state import State
 
 DEFAULT_MANIFEST_URL = "https://github.com/eitri-fw/eitri/releases/latest/download/manifest.json"
-DEFAULT_KEY_DIRS = ["/usr/share/eitri/keys", "/etc/eitri/keys"]
+# Only the keys that ship in the (RAUC-verified) OS image are trusted by default.  /data is writable by every service
+# on the printer, so a key directory there is opt-in: name it with `key_dir=` in /etc/eitri/update.conf.
+DEFAULT_KEY_DIRS = ["/usr/share/eitri/keys"]
 CONF_PATH = "/etc/eitri/update.conf"
 
 
@@ -36,10 +38,22 @@ class Config:
     health_timeout: float = 120.0
     mcu_firmware_root: str = "/data/eitri/mcu/firmware"
     mcu_state_dir: str = "/data/eitri/mcu"
+    min_sequence_file: str = "/usr/share/eitri/min-manifest-sequence"
 
     @property
     def eitri_root(self) -> str:
         return os.path.join(self.data_root, "eitri")
+
+    @property
+    def application_paths(self) -> List[str]:
+        """What klipper.service and moonraker.service need before they will start (their ConditionPathExists=)."""
+        d = self.data_root
+        return [os.path.join(d, p) for p in (
+            "firmware/klipper/klippy/klippy.py", "venv/klippy/bin/python", "printer_data/config/printer.cfg",
+            "firmware/moonraker/moonraker/moonraker.py", "venv/moonraker/bin/python", "printer_data/config/moonraker.conf")]
+
+    def application_configured(self) -> bool:
+        return all(os.path.exists(p) for p in self.application_paths)
 
     @property
     def updates_dir(self) -> str:
@@ -83,7 +97,8 @@ class Updater:
     ) -> None:
         self.cfg, self.events, self.runner, self.opener = config, events, runner, opener
         self.rauc = rauc or RaucClient(runner)
-        self.bootctl = bootctl or BootControl(runner=runner)
+        self.bootctl = bootctl or BootControl(
+            runner=runner, confirmed_path=os.path.join(config.eitri_root, "state", "slot-confirmed.json"))
         self.state = state or State(config.eitri_root)
         self._reboot = reboot or (lambda: self.runner(["systemctl", "reboot"]))
         self.health_check = health_check
@@ -109,15 +124,24 @@ class Updater:
                 recovery="Nothing was changed. If you recently updated, the signing key may have rotated: update the eitri-keys package from a trusted source.",
             ) from exc
         manifest = parse_manifest(data)
-        stored = self.state.load().get("manifest_sequence", -1)
+        stored = max(self.state.load().get("manifest_sequence", -1), self._min_sequence())
         if manifest.sequence < stored and not allow_older:
             raise FlashError(
                 "the manifest (sequence %d) is older than one already seen (%d): refusing a possible rollback attack" % (manifest.sequence, stored),
                 code="stale_manifest", step="manifest")
-        if manifest.expired() and datetime.datetime.now().year >= 2026:
+        if manifest.expired():
             raise FlashError("the signed manifest has expired (%s); the mirror may be stale" % manifest.expires, code="expired_manifest", step="manifest")
         self.events.step("manifest", "ok", msg="signed by key %s: %s" % (signer.key_id_hex, sig.trusted_comment))
         return manifest
+
+    def _min_sequence(self) -> int:
+        """The lowest sequence this OS image will accept: shipped inside the (RAUC-verified) image, so it survives a
+        reset of /data, which would otherwise forget how far the channel had got."""
+        try:
+            with open(self.cfg.min_sequence_file) as fh:
+                return int(fh.read().strip())
+        except (OSError, ValueError):
+            return -1
 
     # ---- check ---------------------------------------------------------------------------
     def check(self) -> Dict[str, Any]:
@@ -151,6 +175,7 @@ class Updater:
         if dry_run:
             self.events.result(True, msg="dry run: nothing was downloaded or installed", data=plan)
             return plan
+        self._require_settled_system()
         need = int(total * 1.1) + (64 << 20)
         free = fetch.free_bytes(self.cfg.updates_dir)
         if free < need:
@@ -161,6 +186,8 @@ class Updater:
             raise FlashError("rauc reports no booted slot; this does not look like an Eitri A/B system", code="rauc")
         self._check_slot_layout(status)
         files = self._download(bundles)
+        # The slot about to be overwritten loses whatever was proven about the system in it.
+        self.bootctl.forget_confirmation(self.bootctl.other(status.booted))
         self.state.update(pending={"to": release.version, "from": installed, "flavor": flavor, "remaining": [], "mcu_flashed": [],
                                     "slot_before": status.booted, "phase": "installing",
                                     "commit": (release.flavors.get(flavor) or {}).get("commit")}, manifest_sequence=manifest.sequence)
@@ -180,6 +207,23 @@ class Updater:
             self._reboot()
         self.events.result(True, msg="update staged", data=plan)
         return plan
+
+    def _require_settled_system(self) -> None:
+        """An update overwrites the OTHER slot, which is the only fallback.  That is only safe while the running
+        system is itself proven good and no earlier update is still waiting for its verdict."""
+        pending = self.state.load().get("pending")
+        if pending:
+            raise FlashError(
+                "an earlier update (to %s, %s) has not been verified yet; installing another would overwrite the only known-good system"
+                % (pending.get("to", "?"), pending.get("phase", "?")),
+                code="update_pending", step="install",
+                recovery="Reboot and let eitri-verify finish (it commits or rolls back), then try again.")
+        slot = self.bootctl.current_slot()           # raises when this is not an Eitri A/B system
+        if self.bootctl.get_state(slot) != "good":
+            raise FlashError(
+                "the running system (slot %s) has not been confirmed healthy yet; installing now would overwrite the only known-good system" % slot,
+                code="unconfirmed_slot", step="install",
+                recovery="Wait for eitri-verify (about two minutes after boot), or check the printer and run `eitri-update confirm`.")
 
     def _check_slot_layout(self, status) -> None:
         """An in-place conversion keeps its rootfs slots in logical partitions 5 and 6 (p3 is the extended
@@ -305,8 +349,9 @@ class Updater:
 
     def _mcu_sync(self, pending: Dict[str, Any]) -> None:
         pin = ["--commit", pending["commit"]] if pending.get("commit") else []
-        plan = self._mcuflash(["plan"] + pin)
-        boards = (plan or {}).get("boards", {})
+        ok, plan = self._mcuflash(["plan"] + pin, want_ok=False, with_status=True)
+        self._check_plan(ok, plan)
+        boards = plan.get("boards", {})
         need = [name for name, b in boards.items() if b.get("needs_flash")]
         if not need:
             self.events.info("MCU firmware already matches the host")
@@ -328,7 +373,33 @@ class Updater:
             self.state.update(pending=pending)
         self.events.step("mcu-sync", "ok")
 
-    def _mcuflash(self, args: List[str], want_ok: bool = False) -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def _check_plan(ok: bool, plan: Optional[Dict[str, Any]]) -> None:
+        """"Nothing needs flashing" is only a conclusion when the plan itself succeeded and described every board.
+        A blocked or failed plan lists no boards at all (or boards without firmware), which must never read as
+        "already matches"."""
+        blocked = [c for c in (plan or {}).get("checks", []) if isinstance(c, dict) and c.get("status") == "block"]
+        boards = (plan or {}).get("boards") or {}
+        expected = sorted(load_registry().boards)
+        problems = []
+        if not ok or not plan:
+            problems.append("eitri-mcuflash plan failed")
+        if plan and plan.get("blocked"):
+            problems.append("the plan is blocked")
+        missing = [b for b in expected if b not in boards]
+        if plan and missing:
+            problems.append("no plan for: %s" % ", ".join(missing))
+        no_fw = [n for n, b in boards.items() if "firmware" in b and not b["firmware"]]
+        if no_fw:
+            problems.append("no firmware for: %s" % ", ".join(sorted(no_fw)))
+        if problems:
+            detail = "; ".join("%s: %s" % (c.get("id", "check"), c.get("detail") or "blocked") for c in blocked)
+            raise FlashError(
+                "cannot tell whether the MCU firmware matches this host (%s)%s" % ("; ".join(problems), (" - " + detail) if detail else ""),
+                code="mcu_plan_blocked", step="mcu-sync",
+                recovery="Run `eitri-mcuflash plan` for the preflight table. The MCUs were not touched.")
+
+    def _mcuflash(self, args: List[str], want_ok: bool = False, with_status: bool = False):
         argv = [sys.executable, "-m", "eitri_mcuflash", args[0], "--json", "--stop-services",
                 "--flavor", self.state.flavor, "--firmware-root", self.cfg.mcu_firmware_root, "--state-dir", self.cfg.mcu_state_dir] + args[1:]
         result: Dict[str, Any] = {}
@@ -354,9 +425,18 @@ class Updater:
             self._mcu_partial = sorted(((result.get("data") or {}).get("results") or {}).keys())
             raise FlashError("MCU flashing failed: %s" % (result.get("msg") or res.output.strip().splitlines()[-1:] or "no result"),
                              code="mcu_flash", step="mcu-sync", recovery="The previous MCU firmware was restored by eitri-mcuflash where possible.")
+        if with_status:
+            return bool(res.returncode == 0 and result.get("ok")), result.get("data")
         return result.get("data")
 
     def _verify_and_commit(self, pending: Optional[Dict[str, Any]], slot: str, start_services: bool = False) -> Dict[str, Any]:
+        if not self.cfg.application_configured():
+            # No printer.cfg / moonraker.conf yet (before the first-run wizard, or a deliberately Klipper-less
+            # printer): both services are held back by ConditionPathExists=, so there is nothing to wait for and
+            # waiting would roll back a perfectly good OS.  The OS-level health gate (eitri-verify's
+            # `mark-good --check`) has already passed by the time we run.
+            self.events.step("health", "ok", msg="application layer not configured; committing on OS health alone")
+            return self._commit(pending, slot, "application layer not configured")
         self.events.step("health", "start", msg="waiting for Klipper and Moonraker")
         if start_services:
             for unit in ("moonraker", "klipper"):
@@ -366,6 +446,9 @@ class Updater:
             self.events.step("health", "failed", msg=h.detail)
             return self._roll_back(pending, slot, "health check failed: %s" % h.detail)
         self.events.step("health", "ok", msg=h.detail)
+        return self._commit(pending, slot, h.detail)
+
+    def _commit(self, pending: Optional[Dict[str, Any]], slot: str, detail: str) -> Dict[str, Any]:
         self.rauc.mark("good")
         self.bootctl.set_state(slot, "good")
         if pending:

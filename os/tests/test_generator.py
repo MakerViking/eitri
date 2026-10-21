@@ -24,6 +24,8 @@ def test_emmc_boot_mounts_partitions_of_mmcblk1(tmp_path, cmdline):
     data = (out / "data.mount").read_text()
     assert "What=/dev/mmcblk1p4" in data and "Where=/data" in data and "Type=ext4" in data
     assert "systemd-fsck@dev-mmcblk1p4.service" in data
+    # A journal error on the eMMC must stop writes, not be carried on past.
+    assert "Options=noatime,errors=remount-ro" in data
     boot = (out / "boot-firmware.mount").read_text()
     assert "What=/dev/mmcblk1p1" in boot and "Where=/boot/firmware" in boot and "ro," in boot
 

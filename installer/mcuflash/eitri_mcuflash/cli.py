@@ -28,6 +28,7 @@ from .methods import FlashContext
 from .proc import Runner, run
 from .registry import load_registry
 from .runner import EX_BLOCKED, EX_FAIL, EX_OK, EX_USAGE, Flasher, Options
+from .guidance import recovery_steps
 from .transport import open_transport
 
 CONFIRM_PHRASE = "FLASH"
@@ -273,6 +274,13 @@ def _cmd_rollback(flasher: Flasher, plan, args: argparse.Namespace) -> int:
     entry = flasher.store.original_restorable(args.board) if args.original else flasher.store.latest_restorable(args.board)
     if entry is None and not (flasher.store.stock_image(args.board) or flasher.opt.stock_bins.get(args.board)):
         flasher.events.result(False, msg="no saved image for %s" % args.board)
+        return EX_FAIL
+    # The dry run answers the question revert.sh asks before it flashes ANY board: can this one really go back?
+    problems = flasher.rollback_problems(bp, original=args.original)
+    if problems:
+        recovery = " | ".join(recovery_steps(bp.board, bp.method or "", False))
+        flasher.events.result(False, msg="%s cannot be rolled back automatically: %s" % (args.board, "; ".join(problems)),
+                              data={"problems": problems, "recovery": recovery})
         return EX_FAIL
     if not args.apply:
         flasher.events.result(True, msg="dry run: would restore %s from %s" % (args.board, entry.directory if entry else "stock image"))

@@ -1,1 +1,13 @@
-eitri ALL=(ALL) NOPASSWD: ALL
+# The "eitri" account runs the unauthenticated configurator, Moonraker, Klipper, Klarity and the camera
+# programs, so a flaw in any of them must not hand out root. It gets exactly two things:
+#
+#   - the two on-device update tools, without a password (they do the boot-slot and RAUC work;
+#     unit control, reboot, host name and networking go through polkit, see
+#     usr/share/polkit-1/rules.d/50-eitri.rules);
+#   - anything else only with the account's own password. The password is locked ("*") until
+#     its owner sets one, so on a fresh image there is no general root access at all.
+#
+# Do not add a NOPASSWD rule that allows ALL commands; os/tests/test_tree.py rejects it. Bench
+# images that need one ship it in a separate drop-in (sudoers.d/eitri-dev).
+eitri ALL=(root) NOPASSWD: /usr/bin/eitri-update, /usr/libexec/eitri/eitri-bootctl
+eitri ALL=(ALL) ALL

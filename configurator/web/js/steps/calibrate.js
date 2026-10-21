@@ -44,19 +44,19 @@ async function runJob(path, steps, konsole) {
   return end;
 }
 
-// ---------------------------------------------------------------- heat map
+// ---------------------------------------------------------------- mesh map
 function lerp(a, b, t) { return a.map((v, i) => Math.round(v + (b[i] - v) * t)); }
 function meshColor(t) {
-  const lo = [79, 134, 176], mid = [233, 220, 198], hi = [255, 106, 26];
+  const lo = [79, 134, 176], mid = [226, 233, 240], hi = [140, 98, 200];
   return t < 0.5 ? lerp(lo, mid, t * 2) : lerp(mid, hi, (t - 0.5) * 2);
 }
 
-function heatmap(m) {
+function meshmap(m) {
   const rows = m.matrix.length, cols = m.matrix[0].length;
   const { min, max } = m.stats;
   const span = max - min || 1;
   const cell = 52;
-  const svg = svgEl('svg', { viewBox: `0 0 ${cols * cell} ${rows * cell}`, class: 'heatmap', role: 'img', 'aria-label': `Bed mesh, ${rows} by ${cols} points, range ${m.stats.range.toFixed(3)} millimetres` });
+  const svg = svgEl('svg', { viewBox: `0 0 ${cols * cell} ${rows * cell}`, class: 'meshmap', role: 'img', 'aria-label': `Bed mesh, ${rows} by ${cols} points, range ${m.stats.range.toFixed(3)} millimetres` });
   m.matrix.forEach((row, y) => row.forEach((v, x) => {
     const [r, g, b] = meshColor((v - min) / span);
     const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
@@ -64,7 +64,7 @@ function heatmap(m) {
     const rect = svgEl('rect', { x: x * cell + 1.5, y: ry * cell + 1.5, width: cell - 3, height: cell - 3, rx: 6, fill: `rgb(${r},${g},${b})` });
     rect.style.setProperty('animation', `rise .6s var(--ease) both`);
     rect.style.setProperty('animation-delay', `${(x + y) * 28}ms`);
-    const label = svgEl('text', { x: x * cell + cell / 2, y: ry * cell + cell / 2 + 4, 'text-anchor': 'middle', fill: lum > 0.6 ? '#2a1a0c' : '#fff', 'font-size': 11, 'font-family': 'var(--font-mono)' });
+    const label = svgEl('text', { x: x * cell + cell / 2, y: ry * cell + cell / 2 + 4, 'text-anchor': 'middle', fill: lum > 0.6 ? '#17202b' : '#fff', 'font-size': 11, 'font-family': 'var(--font-mono)' });
     label.textContent = v.toFixed(2);
     svg.append(rect, label);
   }));
@@ -92,7 +92,7 @@ function zoffsetPanel(ctx, status, mark, refresh) {
           h('li', null, 'Slide a sheet of ordinary printer paper under the nozzle.'),
           h('li', null, 'Eitri homes the printer, lifts the nozzle clear, and starts Klipper’s manual probe.'),
           h('li', null, 'Lower the nozzle in small steps until the paper drags slightly, then accept.')),
-        button({ label: phase === 'starting' ? 'Preparing...' : 'Start', kind: 'primary', icon: 'flame', disabled: phase === 'starting', onClick: async (e) => {
+        button({ label: phase === 'starting' ? 'Preparing...' : 'Start', kind: 'primary', icon: 'hammer', disabled: phase === 'starting', onClick: async (e) => {
           phase = 'starting'; paint();
           steps.reset(); konsole.clear();
           const end = await runJob('calibrate/zoffset/start', steps, konsole);
@@ -181,7 +181,7 @@ function meshPanel(ctx, status, mark, refresh) {
       } }),
       steps.host,
       mesh && h('div', { class: 'mesh-wrap' },
-        heatmap(mesh),
+        meshmap(mesh),
         h('div', { class: 'mesh-side' },
           h('div', { class: 'legend' }, h('span', { class: 'mono' }, `${mesh.stats.min.toFixed(3)}`), h('span', { class: 'ramp' }), h('span', { class: 'mono' }, `${mesh.stats.max.toFixed(3)}`)),
           h('dl', { class: 'specs mesh-stats' },

@@ -27,6 +27,7 @@ class Server:
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
         assert self.ready.wait(10), "server did not start"
+        self.token = self.pair()
 
     def _run(self) -> None:
         asyncio.set_event_loop(self.loop)
@@ -38,6 +39,13 @@ class Server:
         self.port = self.runner.addresses[0][1]
         self.ready.set()
         self.loop.run_forever()
+
+    def pair(self) -> str:
+        """Pair like a user would: read the code the printer shows, present it, keep the bearer token."""
+        shown = json.loads((self.settings.configurator_dir / "pairing.json").read_text())["code"]
+        st, body, _ = self.req("POST", "/api/pair", {"code": shown}, auth=False)
+        assert st == 200, body
+        return body["token"]
 
     def close(self) -> None:
         fut = asyncio.run_coroutine_threadsafe(self.runner.cleanup(), self.loop)
@@ -53,9 +61,9 @@ class Server:
     def ctx(self):
         return self.app[CTX]
 
-    def req(self, method: str, path: str, data=None, headers=None, base: str | None = None):
+    def req(self, method: str, path: str, data=None, headers=None, base: str | None = None, auth: bool = True):
         body = json.dumps(data).encode() if data is not None else None
-        h = {"Content-Type": "application/json", **(headers or {})}
+        h = {"Content-Type": "application/json", **({"Authorization": f"Bearer {self.token}"} if auth else {}), **(headers or {})}
         r = urllib.request.Request((base or self.base) + path, data=body, method=method, headers=h)
         try:
             with urllib.request.urlopen(r, timeout=20) as resp:

@@ -54,7 +54,7 @@ printf '%s\n' "$VERSION" >"$TARGET_DIR/etc/eitri-release"
 
 # --- Accounts -----------------------------------------------------------------
 # Buildroot leaves root with an empty password. Nothing needs a root password:
-# the eitri user has sudo, and there is no console.
+# the eitri user has scoped sudo (etc/sudoers.d/eitri), and there is no console.
 sed -i 's/^root:[^:]*:/root:*:/' "$TARGET_DIR/etc/shadow"
 
 if [ -n "${EITRI_DEV_PASSWORD_HASH:-}" ]; then
@@ -68,6 +68,13 @@ fi
 
 # sudo ignores a drop-in that is not mode 0440, and git does not keep that mode.
 chmod 0440 "$TARGET_DIR/etc/sudoers.d/eitri"
+
+# A bench image (never a release) may carry a development password. Without a console and with
+# scoped sudo rules, such an image also gets passwordless sudo, so that the bench tooling works.
+if [ -n "${EITRI_DEV_PASSWORD_HASH:-}" ]; then
+	printf '# Development image only.\neitri ALL=(ALL) NOPASSWD: ALL\n' >"$TARGET_DIR/etc/sudoers.d/eitri-dev"
+	chmod 0440 "$TARGET_DIR/etc/sudoers.d/eitri-dev"
+fi
 
 # NetworkManager writes the resolver file; systemd-resolved is not built.
 ln -sfn ../run/NetworkManager/resolv.conf "$TARGET_DIR/etc/resolv.conf"

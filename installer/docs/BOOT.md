@@ -22,19 +22,22 @@ complete undo (`revert.sh --hard`).
 
 | key | values |
 |---|---|
-| `eitri_mode` | `eitri` boot a slot, `stage2` run the one-shot RAM installer once, `stock` boot the stock entry |
+| `eitri_mode` | `eitri` boot a slot, `stage2` run the RAM installer (bounded by `eitri_s2_tries`), `stock` boot the stock entry |
 | `eitri_slot` | `A` or `B` |
 | `eitri_tries` | `3 2 1 0`: boot attempts left for that slot |
 | `eitri_state_A`, `eitri_state_B` | `good`, `bad`, `unknown` |
+| `eitri_s2_tries` | `3 2 1 0`: starts of the RAM installer left while `eitri_mode=stage2` (absent otherwise) |
 
-Only five variables are exported because U-Boot's command line is limited to 16 arguments (found the hard way in
+Only six variables are exported because U-Boot's command line is limited to 16 arguments (found the hard way in
 the sandbox test: a longer `env export` list silently prints usage).
 
 ## State machine
 
 ```
-mode=stage2 ──boot.scr──► (flag consumed and written BEFORE the kernel starts) ──► RAM installer
-                                  │ installer finishes: mode=eitri slot=A tries=3
+mode=stage2, s2_tries>0 ──boot.scr──► (s2_tries-- written BEFORE the kernel starts; mode stays stage2) ──► RAM installer
+                                  │ installer finishes: mode=eitri slot=A tries=3 (no s2_tries)
+                                  │ installer fails in a handled way: mode=stock
+                                  │ power cut / hang: mode is still stage2 -> next boot starts it again (resumes), until s2_tries=0 -> mode=stock
 mode=eitri, tries>0 ──► tries-- (written first), ext4load slot kernel, booti
                                   │ userspace healthy: eitri-update verify → state_X=good, tries=3
 tries=0 (kernel never confirmed) ──► state_X=bad; other slot good? boot it : boot stock
@@ -42,14 +45,26 @@ mode=stock / no boot.env / anything fails ──► sysboot extlinux.conf.stock
 ```
 
 Safety properties (each covered by `tests/test_boot_script.py`, which runs the script in a real U-Boot):
-* a hanging kernel can be escaped: the counter/one-shot flag is persisted before `booti`, and if the write fails
+* a hanging kernel can be escaped: the counter is persisted before `booti`, and if the write fails
   the script does not boot Eitri at all;
+* an interrupted conversion or restore is not a dead end: the RAM installer is armed with a start counter
+  (`install.sh`: 2, `revert.sh --full`: 3), not a one-shot flag, so a power cut re-enters it and it resumes from
+  its phase markers; when the starts are spent (or the installer's files will not load) the mode falls back to `stock`;
 * a slot that never gets confirmed is retired after three attempts; a confirmed other slot takes over;
 * every path that does not reach `booti` ends in the stock boot.
 
 ## RAUC
 
-RAUC uses the `custom` bootloader backend (`eitri-update/systemd/rauc-system.conf.snippet`):
+Two layouts exist and `eitri-update` (`bootenv.BootControl`) handles both behind one interface:
+
+* **in-place conversion** (this document): state in `/boot/eitri/boot.env`; RAUC calls `eitri-bootctl`.
+* **flash-once GPT image**: no `boot.env`; U-Boot keeps `BOOT_ORDER`/`BOOT_<slot>_LEFT` in one raw eMMC sector owned by
+  `/usr/libexec/eitri/rauc-bootloader` (the kernel command line carries `rauc.slot=`). That script only knows
+  "attempts left", so a never-written or unproven slot looks `good` to it. `BootControl` therefore reports `good` only for
+  slots with a recorded healthy boot (`/data/eitri/state/slot-confirmed.json`, written by `eitri-update`'s verify/confirm, cleared
+  when a new system is written into the slot), and rollback never targets an unconfirmed slot.
+
+In-place RAUC configuration: RAUC uses the `custom` bootloader backend (`eitri-update/systemd/rauc-system.conf.snippet`):
 `get-primary`, `set-primary SLOT` (slot + 3 tries + mode eitri; state untouched), `get-state`, `set-state`
 (good restores 3 tries; marking the booted slot bad forces the fallback on the next boot), `get-current`
 (`eitri.slot=` on the kernel command line). Slot bootnames are `A`/`B`.

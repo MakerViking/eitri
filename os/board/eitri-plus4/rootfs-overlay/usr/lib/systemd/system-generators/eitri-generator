@@ -111,7 +111,9 @@ After=$fsck_unit
 What=$data
 Where=/data
 Type=ext4
-Options=noatime
+# errors=remount-ro: after a journal error on a damaged eMMC stop writing instead of
+# carrying on (the superblock default is usually errors=continue).
+Options=noatime,errors=remount-ro
 UNIT
 	ln -sf ../data.mount "$wants/data.mount"
 

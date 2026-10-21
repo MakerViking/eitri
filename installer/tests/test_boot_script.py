@@ -66,20 +66,47 @@ def test_missing_kernel_in_slot_falls_through_to_stock(tmp_path):
     assert after["eitri_tries"] == "2"       # the attempt was still spent: no infinite retry
 
 
-def test_stage2_is_one_shot_and_consumed_before_the_kernel_starts(tmp_path):
-    out, after = BootSim(tmp_path, env(eitri_mode="stage2")).boot()
-    assert "starting the one-shot installer environment" in out
+def test_stage2_start_spends_a_counter_but_keeps_the_mode_until_stage2_ends_it(tmp_path):
+    out, after = BootSim(tmp_path, env(eitri_mode="stage2", eitri_s2_tries="2"), booti_returns=False).boot()
+    assert "starting the installer environment (1 start(s) left after this one)" in out
     assert "BOOTI bootargs=[console=tty1 rdinit=/init eitri.op=convert]" in out
     assert "0x2080000 0x6000000:3e8 0x1f00000" in out        # initramfs size passed (1000 bytes = 0x3e8)
-    assert after["eitri_mode"] == "stock"                    # next boot is stock unless stage 2 finishes
-    out2, _ = BootSim(tmp_path / "again", {**BASE, **after}).boot() if (tmp_path / "again").mkdir() is None else (None, None)
-    assert "BOOTI" not in out2 and "SYSBOOT" in out2
+    assert after["eitri_mode"] == "stage2" and after["eitri_s2_tries"] == "1"
 
 
-def test_stage2_with_missing_initramfs_does_not_hang(tmp_path):
-    sim = BootSim(tmp_path, env(eitri_mode="stage2", eitri_s2_initrd="/nope.gz"))
+def test_interrupted_installer_is_started_again_until_the_counter_is_spent(tmp_path):
+    """A power cut mid-shrink must not leave a half-converted disk booting stock with nothing to resume it."""
+    state = env(eitri_mode="stage2", eitri_s2_tries="2")
+    for n, (left, booti) in enumerate([("1", True), ("0", True), ("0", False)]):
+        sub = tmp_path / ("boot%d" % n)
+        sub.mkdir()
+        out, after = BootSim(sub, state, booti_returns=False).boot()
+        assert ("BOOTI" in out) is booti, out
+        state = {**BASE, **after}
+        assert state["eitri_s2_tries"] == left
+    assert state["eitri_mode"] == "stock" and "out of starts" in out and "SYSBOOT" in out
+
+
+def test_an_installer_kernel_that_will_not_start_is_not_retried(tmp_path):
+    out, after = BootSim(tmp_path, env(eitri_mode="stage2", eitri_s2_tries="3")).boot()      # booti returns = failed
+    assert "could not be started" in out and "SYSBOOT" in out and after["eitri_mode"] == "stock"
+
+
+def test_stage2_without_a_start_counter_boots_stock(tmp_path):
+    out, after = BootSim(tmp_path, env(eitri_mode="stage2")).boot()      # a boot.env from before the counter existed
+    assert "BOOTI" not in out and "SYSBOOT" in out and after["eitri_mode"] == "stock"
+
+
+def test_stage2_with_missing_initramfs_does_not_hang_or_retry(tmp_path):
+    sim = BootSim(tmp_path, env(eitri_mode="stage2", eitri_s2_tries="3", eitri_s2_initrd="/nope.gz"))
     out, after = sim.boot()
     assert "installer environment could not be started" in out and "SYSBOOT" in out and "BOOTI" not in out
+    assert after["eitri_mode"] == "stock"
+
+
+def test_a_finished_stage2_leaves_eitri_mode_with_no_stray_counter(tmp_path):
+    out, after = BootSim(tmp_path, env(eitri_mode="eitri", eitri_s2_tries="0")).boot()
+    assert "booting slot A" in out and after["eitri_mode"] == "eitri"
 
 
 @pytest.mark.parametrize("mode", ["stock", "garbage", ""])

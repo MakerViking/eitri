@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .errors import FlashError
-from .fsutil import sha256_file
+from .fsutil import atomic_write, fsync_dir, sha256_file
 
 MIN_FREE_BYTES = 8 * 1024 * 1024
 
@@ -35,6 +35,16 @@ class BackupEntry:
     def restorable(self) -> bool:
         p = self.app_path
         return bool(p and os.path.isfile(p))
+
+    def verify_image(self) -> None:
+        """The image must still hash to what was recorded when it was read from the board; a rotted or truncated copy
+        must never be written back to a board."""
+        p, want = self.app_path, self.meta.get("app_sha256")
+        board = self.meta.get("board")
+        if not p or not want or not os.path.isfile(p) or sha256_file(p) != want:
+            raise FlashError("the saved firmware image for the %s board in %s is damaged (its checksum no longer matches)"
+                             % (board, self.directory), code="backup_corrupt", step="rollback", board=board,
+                             recovery="Use an older entry under the backup directory, or flash the board by hand (see docs/recovery.md).")
 
 
 class BackupStore:
@@ -95,12 +105,30 @@ class BackupStore:
             if sha256_file(path) != meta["app_sha256"]:
                 raise FlashError("backup file failed read-back verification", code="backup_unwritable", step="backup", board=board)
         if dictionary is not None:
-            with open(os.path.join(directory, "dictionary.json"), "w", encoding="utf-8") as fh:
-                json.dump(dictionary, fh, separators=(",", ":"))
+            atomic_write(os.path.join(directory, "dictionary.json"), json.dumps(dictionary, separators=(",", ":")), mode=0o644)
             meta["dictionary_file"] = "dictionary.json"
-        with open(os.path.join(directory, "meta.json"), "w", encoding="utf-8") as fh:
-            json.dump(meta, fh, indent=2, sort_keys=True)
+        # meta.json is what makes the entry findable (entries() skips a directory without a readable one), so it is
+        # written atomically and the directory entries are made durable BEFORE the caller erases anything.
+        atomic_write(os.path.join(directory, "meta.json"), json.dumps(meta, indent=2, sort_keys=True), mode=0o644)
+        fsync_dir(directory)
+        fsync_dir(os.path.dirname(directory))
         return BackupEntry(directory, meta)
+
+    def damaged(self, board: str) -> List[str]:
+        """Entries that hold an image but whose meta.json cannot be read (entries() cannot list them)."""
+        base = os.path.join(self.root, "backup")
+        out: List[str] = []
+        if not os.path.isdir(base):
+            return out
+        for name in sorted(os.listdir(base)):
+            if not name.endswith("-" + board):
+                continue
+            try:
+                with open(os.path.join(base, name, "meta.json"), "r", encoding="utf-8") as fh:
+                    json.load(fh)
+            except (OSError, ValueError):
+                out.append(os.path.join(base, name))
+        return out
 
     def entries(self, board: str) -> List[BackupEntry]:
         base = os.path.join(self.root, "backup")

@@ -34,6 +34,7 @@ class Settings:
     mock: bool = False
     host: str = "0.0.0.0"
     port: int = 8099
+    retire_when_locked: bool = False     # exit at start-up when setup is complete and nobody opened maintenance
 
     repo_root: Path = DEFAULT_REPO_ROOT
     web_dir: Path = field(default_factory=default_web_dir)
@@ -65,8 +66,12 @@ class Settings:
         return self.data_dir / "eitri"
 
     @property
+    def configurator_dir(self) -> Path:
+        return self.eitri_dir / "configurator"
+
+    @property
     def state_file(self) -> Path:
-        return self.eitri_dir / "configurator" / "state.json"
+        return self.configurator_dir / "state.json"
 
     @property
     def flavor_file(self) -> Path:

@@ -1,5 +1,5 @@
 // Shared client state: what the server told us at boot plus the persisted wizard state.
-import { get, put } from './api.js';
+import { get, put, session } from './api.js';
 
 export const store = { boot: null, state: null, klarity: null };
 const listeners = new Set();
@@ -10,6 +10,7 @@ const emit = () => listeners.forEach((fn) => fn(store));
 export async function load() {
   store.boot = await get('bootstrap');
   store.state = store.boot.state;
+  session.csrf = store.boot.auth?.csrf || null;
   store.klarity = store.boot.klarity;
   emit();
   return store;

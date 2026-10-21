@@ -14,6 +14,9 @@ Group=eitri
 SupplementaryGroups=dialout
 WorkingDirectory=/data/eitri/configurator
 # The app layer ships the package under /data/eitri/configurator; its venv is created with uv.
+# Every write needs a browser paired with the printer (the code is on its screen, in the journal and in
+# /data/eitri/configurator/pairing.json), and the service locks when setup is finished: see README.md,
+# "Pairing and lock". Add --retire-when-locked to also exit at start-up while locked.
 ExecStart=/data/eitri/configurator/venv/bin/python -m eitri_configurator --host 0.0.0.0 --port 8099
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure

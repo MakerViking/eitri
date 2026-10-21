@@ -6,16 +6,23 @@ Wants=klipper.service eitri-data-init.service
 ConditionPathExists=/data/firmware/moonraker/moonraker/moonraker.py
 ConditionPathExists=/data/venv/moonraker/bin/python
 ConditionPathExists=/data/printer_data/config/moonraker.conf
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 User=eitri
 Group=eitri
+# Neither needs to gain privileges (unit control and reboot go through polkit over D-Bus, which
+# NoNewPrivileges does not affect), so a flaw in them cannot be turned into root through sudo.
+NoNewPrivileges=true
 WorkingDirectory=/data/firmware/moonraker
 ExecStart=/data/venv/moonraker/bin/python /data/firmware/moonraker/moonraker/moonraker.py \
     -d /data/printer_data
 Restart=always
 RestartSec=10
+# Soft limit (the board has about 1 GiB): above it the kernel reclaims from this service and slows
+# it down, long before the OOM killer would get involved. Deliberately not MemoryMax.
+MemoryHigh=256M
 
 [Install]
 WantedBy=multi-user.target

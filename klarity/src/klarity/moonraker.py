@@ -16,6 +16,10 @@ from .state import DEFAULT_OBJECTS, PrinterState
 log = logging.getLogger(__name__)
 
 
+#: Upper bound for one G-code script (heat-up waits, PID tuning and meshes take minutes).
+GCODE_TIMEOUT = 3600.0
+
+
 class MoonrakerError(Exception):
     """Moonraker answered a request with a JSON-RPC error, or the link dropped."""
 
@@ -230,9 +234,13 @@ class MoonrakerClient:
         self._pending.clear()
 
     # -- convenience wrappers ----------------------------------------------------------
-    async def gcode(self, script: str) -> None:
-        """Run G-code; returns when Klipper has finished it (can be minutes for G28/G29)."""
-        await self.call("printer.gcode.script", {"script": script}, timeout=None)
+    async def gcode(self, script: str, timeout: float | None = GCODE_TIMEOUT) -> None:
+        """Run G-code; returns when Klipper has finished it (can be minutes for G28/G29).
+
+        The wait is generous but finite so a wedged Klipper cannot pin a pending request
+        forever; pass ``timeout=None`` only for a caller that can cancel.
+        """
+        await self.call("printer.gcode.script", {"script": script}, timeout=timeout)
 
     async def pause(self) -> None:
         await self.call("printer.print.pause")
@@ -254,4 +262,3 @@ class MoonrakerClient:
 
     async def restart(self) -> None:
         await self.call("printer.restart")
-

@@ -36,9 +36,15 @@ What a real run does, and where you can still turn back:
    payload file is checked against the signed SHA-256s.
 4. **MCU recovery**: each board is reset into its bootloader over the UART, its firmware read back and written
    back (round trip), and the copy kept. If a board cannot be proven recoverable the installer stops here.
-5. **You type `CONVERT`.** Nothing irreversible has happened yet.
+   This is the one device write before step 5: the toolhead's application area is erased and the same image written
+   back, so it needs its own consent (`--accept-mcu-roundtrip`, or a prompt on a terminal; `--mcu skip` avoids it).
+   The saved copy is synced to disk before the erase; a power cut in those seconds needs a Katapult re-flash from it
+   (`docs/recovery.md`).
+5. **The backup is checked again**, then **you type `CONVERT`.** Nothing irreversible has happened yet.
 6. **Arm stage 2**: boot manager installed, stock boot entry renamed (not deleted), reboot into a one-shot RAM
-   installer that shrinks the stock root, creates rootfs A/B and `/data`, writes and verifies Eitri.
+   installer that shrinks the stock root, creates rootfs A/B and `/data`, writes and verifies Eitri. If the power is
+   cut during that, the installer starts again by itself (two starts) and resumes; `install.sh --status` explains where
+   things stand.
 7. **First boot of Eitri** flashes both MCUs to match the host, health-checks, and only then marks the system good.
    Three failed boots fall back to the stock system automatically.
 

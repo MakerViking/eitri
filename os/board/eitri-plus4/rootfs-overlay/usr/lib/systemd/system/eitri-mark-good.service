@@ -1,7 +1,11 @@
 [Unit]
-Description=Mark the running OS slot good once the system is healthy
+Description=Mark the running OS slot good once the system is healthy (images without eitri-update)
 Documentation=file:///usr/share/doc/eitri/os/README.md
-After=network.target rauc.service
+After=network.target rauc.service eitri-prepare.service eitri-verify.service
+# With eitri-update installed, eitri-verify.service is the only thing that commits a slot: it checks
+# Klipper, Moonraker and the MCUs and finishes pending data bundles first. This unit would commit
+# long before that and reset the boot attempts, so it stays out of the way.
+ConditionPathExists=!/usr/bin/eitri-update
 
 [Service]
 Type=simple

@@ -34,7 +34,7 @@ from typing import Any
 from .jobs import Job
 from .settings import Settings
 
-PORT_RE = re.compile(r"^/dev/ttyS[0-9]{1,2}$")       # the board UARTs; nothing else is ever passed on
+PORT_RE = re.compile(r"/dev/ttyS[0-9]{1,2}")          # the board UARTs; use fullmatch: `$` would admit a trailing newline
 ROLES = ("mainboard", "toolhead")
 # The phases the UI draws, in order.  CLI step names map onto them; steps that are
 # not a phase (roundtrip, rollback, services) are surfaced as log lines instead.
@@ -59,7 +59,7 @@ def assign_args(assign: dict[str, str] | None) -> list[str]:
     out: list[str] = []
     for role in ROLES:
         port = (assign or {}).get(role)
-        if port and PORT_RE.match(port):
+        if port and PORT_RE.fullmatch(port):
             out += ["--assign", f"{role}={port}"]
     return out
 

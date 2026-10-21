@@ -40,6 +40,9 @@
 #                   optional modifiers: guard: {source, <test>}   cooldown: <s>
 #                                       read: {var: "obj.attr"}  (ask the panel, use as {var})
 #                                       else_beep: <ms>  (when the guard blocks)
+#                   print verbs other than emergency_stop REQUIRE a guard; emergency_stop needs
+#                   either a guard or `unguarded: true`.  A todo widget with an emergency_stop
+#                   stays inert even with allow_todo until `todo` is removed.
 #                   Placeholders {value} / {text} / {page} / {widget} and read-vars are
 #                   substituted into gcode; text from the panel is restricted to [\w .+-/].
 #  derived.*        state, progress, elapsed, remaining, filename, layer, total_layers,
@@ -126,6 +129,7 @@ pages:
         todo: true
         on_release:
         - print: emergency_stop
+          unguarded: true
         - print: firmware_restart
           guard:
             source: derived.state
@@ -167,11 +171,11 @@ pages:
             source: heater_bed.target
             gt: 0
           else_beep: 80
-      # toggle chamber heater via M141 (saved target default 40; range 45..65 when set by keypad)
+      # toggle chamber heater via M141 (stock default 40, raised to the 45 minimum by the layer; range 45..65 when set by keypad)
       chamber_toggle:
         id: 6
         on_release:
-        - gcode: M141 S40
+        - gcode: M141 S45
           guard:
             source: heater_generic chamber.target
             le: 0
@@ -2088,7 +2092,7 @@ pages:
       chamber_toggle:
         id: 2
         on_release:
-        - gcode: M141 S40
+        - gcode: M141 S45
           guard:
             source: heater_generic chamber.target
             le: 0
@@ -2441,7 +2445,7 @@ pages:
       chamber_toggle:
         id: 2
         on_release:
-        - gcode: M141 S40
+        - gcode: M141 S45
           guard:
             source: heater_generic chamber.target
             le: 0
@@ -2795,7 +2799,7 @@ pages:
       chamber_toggle:
         id: 2
         on_release:
-        - gcode: M141 S40
+        - gcode: M141 S45
           guard:
             source: heater_generic chamber.target
             le: 0
@@ -2983,7 +2987,7 @@ pages:
       chamber:
         id: 2
         on_release:
-        - gcode: M141 S40
+        - gcode: M141 S45
           guard:
             source: heater_generic chamber.target
             le: 0
@@ -3073,7 +3077,7 @@ pages:
       chamber:
         id: 2
         on_release:
-        - gcode: M141 S40
+        - gcode: M141 S45
           guard:
             source: heater_generic chamber.target
             le: 0
@@ -3181,7 +3185,7 @@ pages:
       chamber:
         id: 2
         on_release:
-        - gcode: M141 S40
+        - gcode: M141 S45
           guard:
             source: heater_generic chamber.target
             le: 0
@@ -3263,7 +3267,7 @@ pages:
       chamber:
         id: 2
         on_release:
-        - gcode: M141 S40
+        - gcode: M141 S45
           guard:
             source: heater_generic chamber.target
             le: 0
@@ -3339,7 +3343,7 @@ pages:
       chamber:
         id: 2
         on_release:
-        - gcode: M141 S40
+        - gcode: M141 S45
           guard:
             source: heater_generic chamber.target
             le: 0
@@ -3415,7 +3419,7 @@ pages:
       chamber:
         id: 2
         on_release:
-        - gcode: M141 S40
+        - gcode: M141 S45
           guard:
             source: heater_generic chamber.target
             le: 0

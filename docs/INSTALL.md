@@ -88,7 +88,7 @@ Switching channels does not change the flavor.
 
 Work through this list before you print anything.
 
-- [ ] Moonraker answers: `curl http://eitri.local:7125/server/info` returns JSON.
+- [ ] Moonraker answers: `curl http://eitri.local/server/info` returns JSON.
 - [ ] The web interface loads at `http://eitri.local/` on port 80.
 - [ ] The services are active: `systemctl status klipper moonraker klarity eitri-camera`.
 - [ ] The camera responds: `curl -o /tmp/snap.jpg http://eitri.local:8080/snapshot`.

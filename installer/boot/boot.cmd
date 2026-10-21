@@ -19,15 +19,20 @@
 #       eitri_slot     A | B               rootfs slot to boot
 #       eitri_tries    3 2 1 0             boot attempts left for that slot
 #       eitri_state_A/B  good | bad | unknown
-#   (Only the five state variables are exported: U-Boot's command line is limited
-#   to 16 arguments, which `env export` would exceed with a longer list.)
+#       eitri_s2_tries 3 2 1 0     RAM-installer starts left while eitri_mode=stage2 (absent otherwise)
+#   (Only these six state variables are exported: U-Boot's command line is limited
+#   to 16 arguments, and `env export -t ADDR` plus a longer list would exceed it.)
 #
 # Safety rules:
 #  * Every path that does not end in a successful `booti` falls through to the
 #    last lines, which boot the stock system.
-#  * The boot counter / one-shot flag is written BEFORE the kernel is started.  If
+#  * The boot counter / installer start counter is written BEFORE the kernel is started.  If
 #    that write fails we do not boot Eitri at all - otherwise a kernel that hangs
 #    could never be escaped.
+#  * The RAM installer is armed with a start counter, not a one-shot flag: a power cut in the middle of the
+#    conversion (or of a restore) must re-enter the installer, which resumes from its phase markers, instead
+#    of dropping to a half-converted stock disk.  The counter bounds that: each start spends one, and when it
+#    is gone the mode falls back to stock.
 #  * Userspace (eitri-bootctl mark-good) resets the counter once the system is up.
 
 # The stock U-Boot's distro environment normally sets fdtfile; if it does not, this board's name is the right default.
@@ -37,7 +42,7 @@ fi
 setenv eitri_buf ${pxefile_addr_r}
 setenv eitri_dev ${devtype} ${devnum}:${distro_bootpart}
 setenv eitri_mode stock
-setenv eitri_keys "eitri_mode eitri_slot eitri_tries eitri_state_A eitri_state_B"
+setenv eitri_keys "eitri_mode eitri_slot eitri_tries eitri_state_A eitri_state_B eitri_s2_tries"
 setenv eitri_save 'env export -t ${eitri_buf} ${eitri_keys} && fatwrite ${eitri_dev} ${eitri_buf} /eitri/boot.env ${filesize}'
 
 if load ${eitri_dev} ${eitri_buf} /eitri/layout.env; then
@@ -48,20 +53,38 @@ if load ${eitri_dev} ${eitri_buf} /eitri/boot.env; then
 fi
 
 if test "${eitri_mode}" = "stage2"; then
-    echo "Eitri: starting the one-shot installer environment"
-    # Consume the one-shot flag first: if the installer environment hangs, the next boot is stock.
-    setenv eitri_mode stock
-    if run eitri_save; then
-        if load ${eitri_dev} ${kernel_addr_r} ${eitri_s2_kernel}; then
-            if load ${eitri_dev} ${fdt_addr_r} ${eitri_s2_fdt}; then
-                if load ${eitri_dev} ${ramdisk_addr_r} ${eitri_s2_initrd}; then
-                    setenv bootargs "${eitri_s2_args}"
-                    booti ${kernel_addr_r} ${ramdisk_addr_r}:${filesize} ${fdt_addr_r}
+    # Spend one start of the installer environment.  Unlike the Eitri boot counter it is NOT cleared by a start
+    # alone: stage 2 itself ends the mode (commit, or a handled failure that leaves a bootable stock system).
+    # So an installer that hangs or loses power re-enters here, up to the counter; then stock boots.
+    setenv eitri_s2_ok 0
+    if test "${eitri_s2_tries}" = "3"; then
+        setenv eitri_s2_tries 2; setenv eitri_s2_ok 1
+    elif test "${eitri_s2_tries}" = "2"; then
+        setenv eitri_s2_tries 1; setenv eitri_s2_ok 1
+    elif test "${eitri_s2_tries}" = "1"; then
+        setenv eitri_s2_tries 0; setenv eitri_s2_ok 1
+    fi
+    if test "${eitri_s2_ok}" = "1"; then
+        echo "Eitri: starting the installer environment (${eitri_s2_tries} start(s) left after this one)"
+        if run eitri_save; then
+            if load ${eitri_dev} ${kernel_addr_r} ${eitri_s2_kernel}; then
+                if load ${eitri_dev} ${fdt_addr_r} ${eitri_s2_fdt}; then
+                    if load ${eitri_dev} ${ramdisk_addr_r} ${eitri_s2_initrd}; then
+                        setenv bootargs "${eitri_s2_args}"
+                        booti ${kernel_addr_r} ${ramdisk_addr_r}:${filesize} ${fdt_addr_r}
+                    fi
                 fi
             fi
         fi
+        echo "Eitri: installer environment could not be started"
+        # Files that will not load will not load next time either: stop retrying.
+        setenv eitri_mode stock
+        run eitri_save
+    else
+        echo "Eitri: installer environment is out of starts, booting the stock system"
+        setenv eitri_mode stock
+        run eitri_save
     fi
-    echo "Eitri: installer environment could not be started"
 elif test "${eitri_mode}" = "eitri"; then
     # Spend one boot attempt on the selected slot.
     setenv eitri_boot_slot ${eitri_slot}

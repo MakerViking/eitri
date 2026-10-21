@@ -1,0 +1,8 @@
+#!/bin/bash
+# Test shim: behaves like dd, except that a call whose arguments contain $FAKE_DD_FAIL_MATCH fails (a write that dies,
+# as in a power cut or an eMMC error) after copying nothing.
+if [[ -n "${FAKE_DD_FAIL_MATCH:-}" && "$*" == *"$FAKE_DD_FAIL_MATCH"* ]]; then
+  echo "dd: simulated I/O error" >&2
+  exit 1
+fi
+exec "${REAL_DD:-/usr/bin/dd}" "$@"

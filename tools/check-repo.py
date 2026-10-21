@@ -165,5 +165,44 @@ check(re.search(r"\[mcu U_1\]\n(?:.*\n)*?serial: @@mcu_mainboard_serial@@", mcu_
 check("[verify_heater chamber]" in mcu_layer, "layer: the chamber heater keeps its verify_heater")
 check("serial_port: /dev/ttyS1" in read("klarity/config/klarity.cfg"), "klarity default panel UART is documented in klarity.cfg")
 
+# 7. workflows ---------------------------------------------------------------------------------------
+wf_dir = ROOT / ".github/workflows"
+uses_re = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)(?:\s+#\s*(\S+))?", re.M)
+for wf in sorted(wf_dir.glob("*.yml")):
+    text = wf.read_text()
+    for m in uses_re.finditer(text):
+        ref, ver = m.group(1), m.group(2)
+        if ref.startswith("./"):
+            continue
+        check(bool(re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", ref)), f"{wf.name}: action pinned to a commit SHA: {ref}")
+        check(bool(ver and re.fullmatch(r"v\d+(\.\d+)*", ver)), f"{wf.name}: pinned action {ref.split('@')[0]} has a version comment")
+check((ROOT / ".github/dependabot.yml").exists() and "github-actions" in (ROOT / ".github/dependabot.yml").read_text(),
+      "dependabot keeps the pinned actions current")
+
+osimg = (wf_dir / "os-image.yml").read_text()
+steps = re.split(r"(?m)^      - ", osimg)
+by_name = {m.group(1): st for st in steps if (m := re.match(r"name:\s*(.+)", st))}
+# Presence checks (`secrets.X != ''`) pass only a boolean; handing a step the value itself is what is limited.
+writers = [n for n, st in by_name.items() if "${{ secrets.EITRI_RAUC_KEY }}" in st]
+check("Decide development or release build" in by_name, "os-image: mode step exists")
+check(writers == ["Write release keys"], f"os-image: only the key-writing step reads the signing key secret (found {writers})")
+order = [m.group(1).strip() for m in re.finditer(r"(?m)^      - (?:name:\s*(.+)|uses:)", osimg) if m.group(1)]
+if "Write release keys" in order and "Build" in order and "Remove release keys" in order:
+    w, b, r = order.index("Write release keys"), order.index("Build"), order.index("Remove release keys")
+    check(w + 1 == b and b + 1 == r, "os-image: keys exist only around the Build step")
+    check(r < order.index("Test the image tooling against the host tools that were just built"),
+          "os-image: keys are removed before the tests run")
+else:
+    check(False, "os-image: Write release keys / Build / Remove release keys steps exist")
+for name in ("os-image.yml", "legal.yml"):
+    t = (wf_dir / name).read_text()
+    m = re.search(r"(?m)^      - name: Restore (?:download and compiler|download) caches?\n(?P<body>(?:        .*\n)+)", t)
+    check(bool(m) and "if: ${{ !startsWith(github.ref, 'refs/tags/') }}" in m.group("body"),
+          f"{name}: release (tag) builds do not restore caches written by other runs")
+pub = osimg[osimg.index("  publish:"):]
+check("gh release view" in pub and "gh release upload" in pub and "--clobber" in pub,
+      "os-image: publish tolerates a release that legal.yml already created")
+check(not re.search(r"gh release create \"\$GITHUB_REF_NAME\" dist", pub), "os-image: publish does not fail on an existing release")
+
 print(f"\n{passed} checks passed, {len(failures)} failed")
 sys.exit(1 if failures else 0)

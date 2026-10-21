@@ -15,6 +15,9 @@ from .state import PrinterState
 log = logging.getLogger(__name__)
 
 
+_RENDER_FAILED = "\x00render-failed"  # cache marker: log a failing binding once, not per pass
+
+
 class TokenBucket:
     """Classic token bucket; ``acquire`` sleeps until a token is available."""
 
@@ -99,7 +102,15 @@ class Pusher:
         sent = 0
         self.passes += 1
         for item in self.smap.push_items(self.screen.current_page):
-            value = item.binding.render(self.state)
+            try:
+                value = item.binding.render(self.state)
+            except (ValueError, TypeError, LookupError, AttributeError, ArithmeticError) as exc:
+                # Maps are validated at load; this is the last line of defence so one bad
+                # binding can never take the push loop (or the daemon) down.
+                if self._cache.get(item.key) != _RENDER_FAILED:
+                    log.error("cannot render %s.%s: %r", item.obj, item.binding.attr, exc)
+                    self._cache[item.key] = _RENDER_FAILED
+                continue
             if value is None or self._cache.get(item.key) == value:
                 continue
             attr = item.binding.attr

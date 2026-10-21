@@ -9,7 +9,15 @@
 [Unit]
 Description=Eitri camera streamer (ustreamer, MJPEG passthrough)
 Documentation=file:///usr/share/doc/eitri/camera/README.md
+# Ordering only: the device unit does not pull this service in. The service is
+# started at boot by multi-user.target and on hotplug by udev (SYSTEMD_WANTS).
 After=dev-eitri\x2dcam.device
+# No camera, no service: the start job is skipped (not failed, not retried), so
+# boot never waits on an absent camera. Plugging one in starts the unit via udev.
+# If you point EITRI_CAMERA_DEVICE elsewhere, clear this in a drop-in:
+#   [Unit]
+#   ConditionPathExists=
+ConditionPathExists=/dev/eitri-cam
 
 [Service]
 Type=simple
@@ -20,9 +28,10 @@ SupplementaryGroups=video
 # Optional site overrides. A missing file is not an error.
 EnvironmentFile=-/data/printer_data/config/camera.env
 Environment=EITRI_CAMERA_DEVICE=/dev/eitri-cam
-Environment=EITRI_CAMERA_WAIT_SECONDS=20
+Environment=EITRI_CAMERA_WAIT_SECONDS=5
 
-# Wait for the node (fails the start so Restart= retries), then tune. Tuning is
+# Short bounded wait for the node, covering the moment between the udev event and
+# the symlink (fails the start so Restart= retries), then tune. Tuning is
 # best-effort: the leading '-' keeps a v4l2 hiccup from blocking the stream.
 ExecStartPre=/usr/lib/eitri/camera/eitri-camera-tune wait
 ExecStartPre=-/usr/lib/eitri/camera/eitri-camera-tune tune

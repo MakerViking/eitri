@@ -27,6 +27,15 @@
 #   homes X/Y and returns. That is only valid if the bed did not move while
 #   unpowered, so QD_PLR_RESUME refuses to act without CONFIRM=1. It never
 #   probes, never homes onto the print and never silences a heater check.
+#   If Z is already homed when the resume runs, the recorded Z is NOT forced
+#   over the measured one: the head lifts from where it really is.
+#
+#   The bed mesh of the interrupted print lives only in RAM (adaptive meshes
+#   are never saved), so the record carries the probed matrix and mesh
+#   parameters, and the resume re-creates it as a session-only profile
+#   ("plr-resume", never written to printer.cfg). A record without a matrix
+#   is resumed only if its profile still exists; otherwise QD_PLR_RESUME
+#   refuses before it heats or moves anything.
 #
 # Needs [virtual_sdcard], [force_move] with enable_force_move: True (for
 # SET_KINEMATIC_POSITION) and [respond]-free G-code only. The power-cut flow
@@ -36,6 +45,7 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import collections
 import json
 import logging
 import math
@@ -46,6 +56,8 @@ import threading
 import time
 
 STATE_VERSION = 1
+# Session-only bed mesh profile the resume file loads (never saved to config)
+RESUME_MESH_PROFILE = "plr-resume"
 COPY_CHUNK = 1 << 20
 FREE_SPACE_MARGIN = 8 << 20
 RESUME_FILES = ("resume-a.gcode", "resume-b.gcode")
@@ -190,7 +202,10 @@ def build_resume_header(rec, st, opts):
 
     rec  -- the state record written during the print
     st   -- ScanState of the file up to rec['position']
-    opts -- dict: z_lift, home_gcode, purge_macro, use_interlock, fan_name
+    opts -- dict: z_lift, home_gcode, purge_macro, use_interlock, fan_name,
+            mesh_profile (name of a bed mesh profile that exists when the
+            resume file runs, or None), z_homed (Z is already measured: keep
+            it instead of forcing the recorded Z)
     Returns (lines, warnings).
     """
     warnings = []
@@ -230,17 +245,22 @@ def build_resume_header(rec, st, opts):
                        % _fmt(chamber))
     if bed > 0:
         out.append("M190 S%s" % _fmt(bed))
-    # Position: trust the recorded Z, lift away, home X/Y, come back.
-    out += ["; -- position (Z is trusted, see qd_plr SAFETY notes)",
-            "SET_GCODE_OFFSET Z=0 MOVE=0",
-            "SET_KINEMATIC_POSITION Z=%s SET_HOMED=z" % _fmt(real_z),
-            "G91",
+    # Position: lift away, home X/Y, come back.
+    out.append("SET_GCODE_OFFSET Z=0 MOVE=0")
+    if opts.get("z_homed"):
+        # Z was measured since the power cut: never replace it with the
+        # recorded (possibly stale) value; lift from the real position.
+        out.append("; -- position (Z is already homed: the live Z is kept)")
+    else:
+        out += ["; -- position (Z is trusted, see qd_plr SAFETY notes)",
+                "SET_KINEMATIC_POSITION Z=%s SET_HOMED=z" % _fmt(real_z)]
+    out += ["G91",
             "G1 Z%s F600" % _fmt(lift),
             "G90",
             opts["home_gcode"]]
     out.append("; -- restore settings")
     out.append("SET_GCODE_OFFSET Z=%s MOVE=0" % _fmt(zoff))
-    profile = rec.get("bed_mesh_profile")
+    profile = opts.get("mesh_profile")
     if profile:
         out.append("BED_MESH_PROFILE LOAD=%s" % profile)
     if ext > 0:
@@ -458,6 +478,8 @@ class QdPlr:
         bed_mesh = self.printer.lookup_object("bed_mesh", None)
         fan = self.printer.lookup_object(self.fan_name, None)
         rel = os.path.relpath(path, self.sd.sdcard_dirname)
+        profile = (bed_mesh.get_status(eventtime).get("profile_name", "")
+                   if bed_mesh else "")
         return {
             "version": STATE_VERSION,
             "saved_at": time.time(),
@@ -473,11 +495,31 @@ class QdPlr:
             "toolhead_z": gm["position"][2],
             "speed_factor": gm["speed_factor"],
             "extrude_factor": gm["extrude_factor"],
-            "bed_mesh_profile": (bed_mesh.get_status(eventtime).get(
-                "profile_name", "") if bed_mesh else ""),
+            "bed_mesh_profile": profile,
+            "bed_mesh": self._mesh_data(bed_mesh) if profile else None,
             "current_layer": stats["info"]["current_layer"],
             "total_layer": stats["info"]["total_layer"],
         }
+
+    @staticmethod
+    def _mesh_data(bed_mesh):
+        """The active mesh as plain data, so a resume can rebuild it after a
+        restart (adaptive and other unsaved meshes exist only in RAM)."""
+        try:
+            z_mesh = bed_mesh.get_mesh()
+            if z_mesh is None:
+                return None
+            data = {
+                "name": z_mesh.get_profile_name(),
+                "points": [[float(v) for v in row]
+                           for row in z_mesh.get_probed_matrix()],
+                "mesh_params": dict(z_mesh.get_mesh_params()),
+            }
+            json.dumps(data)               # must be serializable as it is
+            return data
+        except Exception:
+            logging.exception("qd_plr: unable to record the bed mesh")
+            return None
 
     def _tick(self, eventtime):
         state = self.print_stats.get_status(eventtime)["state"]
@@ -555,9 +597,10 @@ class QdPlr:
             gcmd.respond_info(
                 self._describe() + "\nThe printer lost its position at power "
                 "loss. Resuming assumes the bed has NOT moved: the recorded Z "
-                "is trusted, the head lifts %.0f mm, homes X/Y and returns to "
-                "the part. Make sure the nozzle is not stuck in the print, "
-                "then run QD_PLR_RESUME CONFIRM=1." % (lift,))
+                "is trusted (unless Z has been homed since), the head lifts "
+                "%.0f mm, homes X/Y and returns to the part. Make sure the "
+                "nozzle is not stuck in the print, then run QD_PLR_RESUME "
+                "CONFIRM=1." % (lift,))
             return
         self._resume(gcmd, rec, src, lift)
 
@@ -569,17 +612,28 @@ class QdPlr:
                             lambda: reactor.pause(reactor.NOW))
             use_interlock = (self.printer.lookup_object(
                 "qd_power_interlock", None) is not None)
+            th = self.printer.lookup_object("toolhead").get_status(
+                reactor.monotonic())
+            z_homed = "z" in th.get("homed_axes", "")
+            # Refuses here, before any heater or axis is touched
+            mesh_profile = self._prepare_mesh(gcmd, rec)
             header, warnings = build_resume_header(rec, st, {
                 "z_lift": lift, "home_gcode": self.home_gcode,
                 "purge_macro": self.purge_macro,
-                "use_interlock": use_interlock, "fan_name": self.fan_name})
+                "use_interlock": use_interlock, "fan_name": self.fan_name,
+                "mesh_profile": mesh_profile, "z_homed": z_homed})
         except (OSError, ValueError) as e:
             raise gcmd.error("Cannot build the resume file: %s" % (e,))
         for w in warnings:
             gcmd.respond_info("WARNING: " + w)
-        axis_max = self.printer.lookup_object("toolhead").get_status(
-            reactor.monotonic())["axis_maximum"][2]
-        real_z = st.pos["Z"] + float(rec.get("z_offset", 0.))
+        axis_max = th["axis_maximum"][2]
+        if z_homed:
+            gcmd.respond_info(
+                "Z is already homed: the live Z is kept instead of the "
+                "recorded one.")
+            real_z = th["position"][2]
+        else:
+            real_z = st.pos["Z"] + float(rec.get("z_offset", 0.))
         if real_z + lift > axis_max:
             raise gcmd.error("Z lift of %.0f mm from Z%.2f exceeds the %.0f mm "
                              "axis limit; use Z_LIFT=" % (lift, real_z,
@@ -595,6 +649,49 @@ class QdPlr:
                                            % (rel,))
         # Even a print that finishes between two ticks must retire the record
         self.tracking = True
+
+    def _prepare_mesh(self, gcmd, rec):
+        """Return the name of a bed mesh profile the resume file can load
+        (None if the print had no mesh), or refuse with a clear message."""
+        name = rec.get("bed_mesh_profile")
+        if not name:
+            return None
+        bed_mesh = self.printer.lookup_object("bed_mesh", None)
+        pmgr = getattr(bed_mesh, "pmgr", None)
+        data = rec.get("bed_mesh")
+        if (isinstance(data, dict) and pmgr is not None
+                and isinstance(data.get("points"), list)
+                and isinstance(data.get("mesh_params"), dict)):
+            # Same layout ProfileManager.save_profile keeps, minus the
+            # configfile entry: the profile lives for this session only.
+            profiles = dict(pmgr.profiles)
+            profiles[RESUME_MESH_PROFILE] = {
+                "points": data["points"],
+                "mesh_params": collections.OrderedDict(data["mesh_params"])}
+            pmgr.profiles = profiles
+            self._check_mesh_loads(gcmd, bed_mesh, pmgr, RESUME_MESH_PROFILE)
+            return RESUME_MESH_PROFILE
+        known = bed_mesh.get_status(None).get("profiles", {}) if bed_mesh \
+            else {}
+        if name in known:
+            return name
+        raise gcmd.error(
+            "The interrupted print used bed mesh '%s', which was never saved "
+            "and cannot be rebuilt from the record. Nothing was heated or "
+            "moved. Print a fresh copy, or SAVE_CONFIG a mesh named '%s' "
+            "first." % (name, name))
+
+    @staticmethod
+    def _check_mesh_loads(gcmd, bed_mesh, pmgr, name):
+        """Dry-run the profile load so a bad mesh is refused now, not halfway
+        through the resume. The previous mesh is put back afterwards."""
+        previous = bed_mesh.get_mesh()
+        try:
+            pmgr.load_profile(name)
+        except gcmd.error as e:
+            raise gcmd.error("The recorded bed mesh cannot be loaded: %s" % (e,))
+        finally:
+            bed_mesh.set_mesh(previous)
 
     def _write_resume_file(self, gcmd, header, src, start, dst):
         reactor = self.printer.get_reactor()

@@ -205,6 +205,20 @@ class FrameParser:
                 continue
 
             end = buf.find(TERMINATOR, 1)
+            # A stray byte directly in front of a complete, well-formed fixed-length frame
+            # (e.g. line noise before a touch): drop just the stray byte so the real frame is
+            # not swallowed with it as one terminator-delimited unknown frame.  Only when that
+            # frame's own terminator is the first one, so real unknown payloads that merely
+            # contain such bytes are left alone.
+            if (
+                end >= 0
+                and len(buf) > 1
+                and buf[1] in FIXED_PAYLOAD
+                and end == FIXED_PAYLOAD[buf[1]] + 2
+            ):
+                events.append(Garbage(bytes([ident]), "stray byte before frame"))
+                del buf[:1]
+                continue
             if end < 0:
                 if len(buf) > MAX_FRAME:
                     events.append(Garbage(bytes(buf), "oversized frame without terminator"))

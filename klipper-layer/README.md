@@ -100,6 +100,34 @@ only the reference unit's.
   `PID_CALIBRATE`). Nothing in this layer lowers a check, bypasses it, or
   accepts a pre-triggered probe.
 
+* Behaviour worth knowing:
+  * `G28 X` / `G28 Y` on an unhomed machine lift the head from an assumed Z
+    (so the move is legal) and then mark Z unhomed again; only a Z home (or
+    `G28`) marks it homed. `QD_PURGE` and `M603`/`M604` therefore home first.
+  * A pause keeps its homed state when the idle timeout (30 min) turns the
+    heaters off, so `RESUME` reheats and continues. If the motors were released
+    anyway, `RESUME` refuses *before* heating anything.
+  * `M290` baby-steps are limited to the same +/-1 mm total offset that
+    `qd_zoffset_var` allows when saving.
+  * The saved baby-step is tied to the probe calibration it was made against:
+    after `PROBE_CALIBRATE` + `SAVE_CONFIG` it is discarded (with a message) at
+    the next `PRINT_START`, and the first layer should be checked again.
+  * `M141`/`M191` raise a target below the interlock's minimum (45 C) to it and
+    clamp above the maximum, with a message, instead of aborting.
+  * If the bed target is lowered below the interlock window mid-print, or the
+    bed sags, the chamber heater is paused after 30 s (`park_delay`) and
+    resumes when the bed is back; it never reaches the `verify_heater` shutdown
+    just because the interlock held it off. `SET_HEATER_TEMPERATURE
+    HEATER=chamber` is gated too but bypasses the bed raise and range checks;
+    use `M141`/`QD_SET_CHAMBER`.
+  * Power-loss resume stores the active bed mesh in its record and rebuilds it
+    as a session-only profile (`plr-resume`), because the default adaptive mesh
+    is never saved. If Z is already homed when `QD_PLR_RESUME` runs, the live Z
+    is used instead of the recorded one.
+* `gcode_shell_command` (Klipper only): `PARAMS` from any G-code source is
+  appended verbatim to the configured argv (no shell). Set `params_pattern` in
+  a `[gcode_shell_command ...]` section to restrict it.
+
 See `config/README.md` for attribution and the stock-vs-Eitri differences.
 
 ## Tests

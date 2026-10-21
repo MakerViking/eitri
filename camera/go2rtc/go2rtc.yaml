@@ -4,24 +4,28 @@
 # republishes the same JPEG frames over RTSP. Nothing is decoded or encoded.
 #
 # Limits, stated plainly:
-#   * WebRTC cannot carry MJPEG (browsers take H.264/VP8/AV1-class video). The
-#     webrtc listener below therefore serves nothing for eitri_cam; it only
-#     matters for the optional transcoded stream in profiles/software-h264.yaml.example.
+#   * WebRTC cannot carry MJPEG (browsers take H.264/VP8/AV1-class video), and
+#     go2rtc's WebRTC has no authentication, so it is switched off. go2rtc would
+#     otherwise listen on :8555 on every interface by default.
 #   * The API has no authentication. It listens on loopback only. Do not bind it
 #     to the LAN without putting an auth proxy in front.
+#   * RTSP needs a password. go2rtc.service runs eitri-go2rtc-auth, which creates
+#     /data/printer_data/config/go2rtc-auth.env (user "eitri", random password,
+#     mode 0600) and loads it; the variables below are filled from there. It also
+#     refuses to start go2rtc if this file would expose RTSP without credentials.
 #
-# Test with: ffprobe -rtsp_transport tcp rtsp://<printer>:8554/eitri_cam
+# Test with: ffprobe -rtsp_transport tcp rtsp://eitri:<password>@<printer>:8554/eitri_cam
 
 api:
   listen: "127.0.0.1:1984"
 
 rtsp:
   listen: ":8554"
-  # Add username/password here before exposing RTSP beyond a trusted LAN.
-  # See the go2rtc RTSP documentation for the exact keys for your release.
+  username: ${EITRI_RTSP_USER}
+  password: ${EITRI_RTSP_PASS}
 
 webrtc:
-  listen: ":8555"
+  listen: ""
 
 streams:
   # Plain http:// is auto-detected as MJPEG (multipart/x-mixed-replace).

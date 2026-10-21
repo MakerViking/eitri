@@ -5,13 +5,40 @@
 # U-Boot counts every boot attempt of a slot. If a new OS never gets here, the
 # counter runs out after three boots and U-Boot falls back to the other slot.
 # "Healthy" means the services a user needs to reach and repair the printer are
-# running. Klipper and Moonraker are deliberately not part of this: they live in
-# the application layer on /data, which has its own rollback, and a printer
-# that has not been configured yet must not make a good OS look bad.
+# running.
 #
-# Environment overrides, used by the tests: EITRI_CMDLINE, EITRI_RAUC_BIN, EITRI_TIMEOUT.
+#   mark-good            wait until the system is healthy, then mark the slot good
+#   mark-good --check    only wait and report; never touches the boot state
+#
+# eitri-update is the one component that commits a slot (eitri-verify.service):
+# it also checks Klipper, Moonraker and the MCU firmware, and finishes pending
+# data bundles first. A slot marked good any earlier would get a fresh set of
+# boot attempts on every boot and could never fall back. So whenever
+# eitri-update is installed the plain form below does nothing, and the OS health
+# checks run as a gate in front of eitri-verify instead (the drop-in
+# eitri-verify.service.d/10-eitri-os.conf runs "mark-good --check"). The plain
+# form is only for images without eitri-update.
+#
+# Environment overrides, used by the tests: EITRI_CMDLINE, EITRI_RAUC_BIN,
+# EITRI_TIMEOUT, EITRI_UPDATE_BIN, EITRI_CONFIGURATOR_SRC.
 
 set -u
+
+mode=commit
+case "${1:-}" in
+"") ;;
+--check) mode=check ;;
+*)
+	echo "usage: mark-good [--check]" >&2
+	exit 2
+	;;
+esac
+
+UPDATE_BIN=${EITRI_UPDATE_BIN:-/usr/bin/eitri-update}
+if [ "$mode" = commit ] && [ -x "$UPDATE_BIN" ]; then
+	echo "mark-good: $UPDATE_BIN commits the slot (eitri-verify.service); nothing to do"
+	exit 0
+fi
 
 CMDLINE=${EITRI_CMDLINE:-/proc/cmdline}
 RAUC=${EITRI_RAUC_BIN:-rauc}
@@ -33,7 +60,7 @@ done
 # eitri.disk= another boot manager started this system and RAUC's backend, as
 # configured in system.conf, knows what to do.
 if [ -n "$disk" ] && [ "$disk" != "/dev/mmcblk1" ]; then
-	echo "mark-good: booted from $disk, not the eMMC; nothing to mark"
+	echo "mark-good: booted from $disk, not the eMMC; nothing to $mode"
 	exit 0
 fi
 
@@ -48,7 +75,7 @@ healthy() {
 waited=0
 until healthy; do
 	if [ "$waited" -ge "$TIMEOUT" ]; then
-		echo "mark-good: the system did not become healthy within ${TIMEOUT}s; not marking the slot good" >&2
+		echo "mark-good: the system did not become healthy within ${TIMEOUT}s; the slot stays uncommitted" >&2
 		for unit in $UNITS; do
 			systemctl is-active --quiet "$unit" || echo "mark-good:   $unit is not active" >&2
 		done
@@ -59,4 +86,5 @@ until healthy; do
 	waited=$((waited + 3))
 done
 
+[ "$mode" = commit ] || exit 0
 exec "$RAUC" status mark-good

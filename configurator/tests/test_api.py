@@ -100,7 +100,7 @@ def test_preview_apply_flow(detected):
     s = detected
     st, pv = s.post("/api/preview")
     paths = {f["path"]: f for f in pv["files"]}
-    assert set(paths) == {"printer.cfg", "klarity.cfg", "moonraker.conf", "eitri-update-manager.conf"}
+    assert set(paths) == {"printer.cfg", "klarity.cfg", "moonraker.conf", "eitri-update-manager.conf", "eitri-access.conf"}
     assert paths["printer.cfg"]["foreign"] and paths["printer.cfg"]["status"] == "modified"
     assert paths["klarity.cfg"]["status"] == "new"
     assert "new_content" not in paths["klarity.cfg"] and paths["klarity.cfg"]["hunks"]
@@ -113,7 +113,9 @@ def test_preview_apply_flow(detected):
     printer = (cfg / "printer.cfg").read_text()
     moonraker = (cfg / "moonraker.conf").read_text()
     assert "[webcam eitri]" in moonraker and "[include eitri-update-manager.conf]" in moonraker
-    assert f"klippy_uds_address: {s.settings.printer_data}/comms/klippy.sock" in moonraker
+    assert moonraker.index("[include eitri-access.conf]") < moonraker.index("[file_manager]")     # included first: user options win
+    access = (cfg / "eitri-access.conf").read_text()
+    assert f"klippy_uds_address: {s.settings.printer_data}/comms/klippy.sock" in access
     assert printer.index(f"serial: {roles['toolhead']}") < printer.index("[mcu U_1]") < printer.index(f"serial: {roles['mainboard']}")
     assert "z_offset = -0.012" in printer                              # SAVE_CONFIG block survived
     assert (cfg / ".eitri-backups").is_dir() and j["result"]["backed_up"] == ["printer.cfg"]
@@ -122,7 +124,7 @@ def test_preview_apply_flow(detected):
     # idempotent: nothing left to write except the timestamped header
     st, pv2 = s.post("/api/preview")
     # moonraker.conf is yours once written: it no longer appears in the plan at all
-    assert {f["path"]: f["status"] for f in pv2["files"]} == {"printer.cfg": "unchanged", "klarity.cfg": "unchanged"}
+    assert {f["path"]: f["status"] for f in pv2["files"]} == {"printer.cfg": "unchanged", "klarity.cfg": "unchanged", "eitri-access.conf": "unchanged"}
 
 
 def test_flavor_choice_changes_rendered_header_and_marker(detected):

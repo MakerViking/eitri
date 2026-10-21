@@ -3,8 +3,12 @@
 # Links only the capture node (interface index 0). The metadata node of the same
 # UVC device (index 1) is left alone, so /dev/eitri-cam always means video.
 #
-# Rule 1: the known camera, Sunplus 1bcf:0b09. Also starts eitri-camera.service on
-#         hotplug (SYSTEMD_WANTS); the unit's own ExecStartPre waits for the node.
+# Both rules start eitri-camera.service on hotplug (SYSTEMD_WANTS). The unit carries
+# ConditionPathExists=/dev/eitri-cam, so with no camera it is skipped at boot and this
+# is what starts it when a camera appears; its ExecStartPre only bridges the short gap
+# between this event and the symlink.
+#
+# Rule 1: the known camera, Sunplus 1bcf:0b09.
 # Rule 2: generic fallback for any other USB UVC capture device. Requires a USB
 #         parent (ATTRS{idVendor}) so Rockchip ISP/codec platform nodes never match.
 #         If two UVC cameras are attached, the fallback is ambiguous: keep rule 1's
@@ -14,4 +18,4 @@
 
 SUBSYSTEM=="video4linux", KERNEL=="video*", ATTR{index}=="0", ATTRS{idVendor}=="1bcf", ATTRS{idProduct}=="0b09", SYMLINK+="eitri-cam", GROUP="video", MODE="0660", TAG+="systemd", ENV{SYSTEMD_WANTS}+="eitri-camera.service"
 
-SUBSYSTEM=="video4linux", KERNEL=="video*", ATTR{index}=="0", ATTRS{idVendor}=="?*", ENV{ID_V4L_CAPABILITIES}==":capture:", SYMLINK+="eitri-cam", GROUP="video", MODE="0660", TAG+="systemd"
+SUBSYSTEM=="video4linux", KERNEL=="video*", ATTR{index}=="0", ATTRS{idVendor}=="?*", ENV{ID_V4L_CAPABILITIES}==":capture:", SYMLINK+="eitri-cam", GROUP="video", MODE="0660", TAG+="systemd", ENV{SYSTEMD_WANTS}+="eitri-camera.service"

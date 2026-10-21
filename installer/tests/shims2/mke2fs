@@ -1,2 +1,5 @@
 #!/bin/sh
 echo "mke2fs $*" >>"$FAKE_LOG"
+# FAKE_KILL_PARENT=1: the installer dies here without running any handler (what a power cut looks like)
+[ "${FAKE_KILL_PARENT:-}" = 1 ] && kill -9 "$PPID"
+exit 0

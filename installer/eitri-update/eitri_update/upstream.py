@@ -11,12 +11,15 @@ tree itself is never modified by either mode.
 from __future__ import annotations
 
 import os
+import posixpath
 import shutil
-from typing import Any, Dict, Optional
+import subprocess
+import tarfile
+from typing import Any, Dict, Iterable, List, Optional
 
 from eitri_mcuflash.errors import FlashError
 from eitri_mcuflash.events import EventSink
-from eitri_mcuflash.fsutil import atomic_write
+from eitri_mcuflash.fsutil import atomic_write, fsync_dir
 from eitri_mcuflash.proc import Runner, run
 
 from . import fetch
@@ -102,6 +105,65 @@ def _atomic_symlink(target: str, link: str) -> None:
         os.unlink(tmp)
     os.symlink(target, tmp)
     os.replace(tmp, link)
+    fsync_dir(os.path.dirname(link))
+
+
+def check_archive_members(members: Iterable[Any]) -> None:
+    """Refuse a toolchain archive that could write outside its staging directory.  Names are checked, and so are
+    links: a symlink to an absolute path (or one that climbs out of the top directory) followed by a regular
+    member beneath it would otherwise be written through the link.  Relative links inside the tree are fine (real
+    toolchains have many); devices and fifos are not."""
+    for m in members:
+        name = m.name
+        parts = name.split("/")
+        if name.startswith("/") or ".." in parts:
+            raise FlashError("toolchain archive contains an unsafe path: %s" % name, code="bad_archive")
+        if m.isdev() or m.isfifo():
+            raise FlashError("toolchain archive contains a device or fifo: %s" % name, code="bad_archive")
+        if m.issym():
+            target = m.linkname
+            joined = posixpath.normpath(posixpath.join(posixpath.dirname(name), target))
+            top = parts[0]
+            if target.startswith("/") or not (joined == top or joined.startswith(top + "/")):
+                raise FlashError("toolchain archive contains a link that leaves the toolchain: %s -> %s" % (name, target), code="bad_archive")
+        elif m.islnk():
+            target = m.linkname
+            tparts = target.split("/")
+            if target.startswith("/") or ".." in tparts or tparts[0] != parts[0]:
+                raise FlashError("toolchain archive contains a hard link that leaves the toolchain: %s -> %s" % (name, target), code="bad_archive")
+
+
+def _list_archive(archive: str) -> List[Any]:
+    """Members of a .tar.zst / .tar.xz, read without extracting anything."""
+    try:
+        if archive.endswith(".zst"):
+            proc = subprocess.Popen(["zstd", "-dc", archive], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                with tarfile.open(fileobj=proc.stdout, mode="r|") as tf:
+                    members = list(tf)
+            finally:
+                proc.stdout.close()
+                err = proc.stderr.read().decode("utf-8", "replace")
+                proc.stderr.close()
+                if proc.wait() != 0:
+                    raise FlashError("cannot read the toolchain archive: %s" % err.strip(), code="bad_archive")
+            return members
+        with tarfile.open(archive, mode="r:xz") as tf:
+            return list(tf)
+    except (tarfile.TarError, OSError, EOFError) as exc:
+        raise FlashError("cannot read the toolchain archive: %s" % exc, code="bad_archive") from exc
+
+
+def check_tree_contained(root: str) -> None:
+    """After extraction: every path must resolve inside *root* (belt and braces for check_archive_members)."""
+    real_root = os.path.realpath(root)
+    for base, dirs, files in os.walk(root):
+        for name in dirs + files:
+            path = os.path.join(base, name)
+            if os.path.islink(path):
+                resolved = os.path.realpath(path)
+                if resolved != real_root and not resolved.startswith(real_root + os.sep):
+                    raise FlashError("the unpacked toolchain has a link that leaves it: %s -> %s" % (path, os.readlink(path)), code="bad_archive")
 
 
 class UpstreamMode:
@@ -110,7 +172,9 @@ class UpstreamMode:
 
     # -- inspection ------------------------------------------------------------
     def toolchain_installed(self) -> bool:
-        return os.path.isfile(os.path.join(self.paths.toolchain, "bin", "arm-none-eabi-gcc"))
+        """Complete = the compiler is there AND the VERSION marker, which is written last: a torn install has no marker."""
+        return (os.path.isfile(os.path.join(self.paths.toolchain, "bin", "arm-none-eabi-gcc"))
+                and self._toolchain_version() is not None)
 
     def status(self) -> Dict[str, Any]:
         link = self.paths.link
@@ -135,6 +199,8 @@ class UpstreamMode:
         flavor = self.state.flavor
         addon = manifest.addons.get("toolchain")
         have = self.toolchain_installed()
+        if have and addon is not None and self._toolchain_version() != addon.version:
+            have = False                              # a different (or unmarked) version: install the one the channel names
         if addon is None and not have:
             raise FlashError("this channel does not publish a toolchain add-on", code="no_addon")
         self.events.step("upstream", "start", msg="enabling upstream mode (%s)" % flavor)
@@ -181,26 +247,34 @@ class UpstreamMode:
         shutil.rmtree(staging, ignore_errors=True)
         os.makedirs(staging)
         flag = ["--zstd"] if archive.endswith(".zst") else ["-J"]
-        listing = self.runner(["tar"] + flag + ["-tf", archive])
-        if listing.returncode != 0:
-            raise FlashError("cannot read the toolchain archive: %s" % listing.output.strip(), code="bad_archive")
-        for name in listing.output.splitlines():
-            parts = name.split("/")
-            if name.startswith("/") or ".." in parts:
-                raise FlashError("toolchain archive contains an unsafe path: %s" % name, code="bad_archive")
+        try:
+            check_archive_members(_list_archive(archive))
+        except FlashError:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
         res = self.runner(["tar"] + flag + ["-xf", archive, "-C", staging, "--no-same-owner", "--strip-components=1"])
         if res.returncode != 0:
             shutil.rmtree(staging, ignore_errors=True)
             raise FlashError("unpacking the toolchain failed: %s" % res.output.strip(), code="bad_archive")
+        try:
+            check_tree_contained(staging)
+        except FlashError:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
         if not os.path.isfile(os.path.join(staging, "bin", "arm-none-eabi-gcc")):
             shutil.rmtree(staging, ignore_errors=True)
             raise FlashError("the toolchain archive does not contain bin/arm-none-eabi-gcc", code="bad_archive")
+        # Durable before it becomes visible: on ext4 a power cut after the rename could otherwise leave the new
+        # directory entry pointing at zero-length files.  VERSION is the completeness marker and is written last.
+        os.sync()
         atomic_write(os.path.join(staging, "VERSION"), addon.version + "\n", mode=0o644)
+        fsync_dir(staging)
         old = self.paths.toolchain + ".old"
         shutil.rmtree(old, ignore_errors=True)
         if os.path.isdir(self.paths.toolchain):
             os.rename(self.paths.toolchain, old)
         os.rename(staging, self.paths.toolchain)
+        fsync_dir(os.path.dirname(self.paths.toolchain))
         shutil.rmtree(old, ignore_errors=True)
         os.unlink(archive)
         self.events.step("toolchain-install", "ok", msg="toolchain %s installed" % addon.version)

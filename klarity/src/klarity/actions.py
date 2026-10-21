@@ -22,6 +22,11 @@ log = logging.getLogger(__name__)
 #: (no newlines, ``;`` comments or ``{}``): the screen is a user-input device, not trusted.
 _SAFE_TEXT = re.compile(r"^[\w .+\-/]*$")
 ERROR_BEEP_MS = 300
+#: Action lists allowed to run at once; further touches are dropped (with an error beep)
+#: instead of queueing behind a busy or wedged Klipper.
+MAX_CONCURRENT_RUNS = 8
+#: Verbs that talk to Moonraker.  The same action instance never runs twice at the same time.
+_HOST_VERBS = frozenset({"gcode", "print"})
 
 
 class ActionError(Exception):
@@ -64,17 +69,43 @@ class ActionRunner:
         self.smap = smap
         self.dry_run = dry_run
         self._last_run: dict[int, float] = {}
+        self._inflight: set[int] = set()
+        self._running = 0
 
     async def run(self, actions: Sequence[Action], context: Mapping[str, Any]) -> None:
         """Run actions in order.  A failing action aborts the rest of its list."""
-        ctx = dict(context)
-        for action in actions:
-            try:
-                await self._run_one(action, ctx)
-            except (ActionError, MoonrakerError, ScreenError, ProtocolError) as exc:
-                log.warning("action %s failed: %s", action.verb, exc)
-                await self._beep(ERROR_BEEP_MS)
-                return
+        if self._running >= MAX_CONCURRENT_RUNS:
+            log.warning("too many actions in flight (%d); dropping touch", self._running)
+            await self._beep(ERROR_BEEP_MS)
+            return
+        self._running += 1
+        try:
+            ctx = dict(context)
+            for action in actions:
+                try:
+                    await self._run_guarded(action, ctx)
+                except (ActionError, MoonrakerError, ScreenError, ProtocolError) as exc:
+                    log.warning("action %s failed: %s", action.verb, exc)
+                    # A failed action must not eat the user's retry: drop its cooldown stamp.
+                    self._last_run.pop(id(action), None)
+                    await self._beep(ERROR_BEEP_MS)
+                    return
+        finally:
+            self._running -= 1
+
+    async def _run_guarded(self, action: Action, ctx: dict[str, Any]) -> None:
+        if action.verb not in _HOST_VERBS:
+            await self._run_one(action, ctx)
+            return
+        key = id(action)
+        if key in self._inflight:
+            log.debug("action %s already running; ignoring repeat tap", action.verb)
+            return
+        self._inflight.add(key)
+        try:
+            await self._run_one(action, ctx)
+        finally:
+            self._inflight.discard(key)
 
     async def _run_one(self, action: Action, ctx: dict[str, Any]) -> None:
         if action.guard is not None and not action.guard.evaluate(self.state):

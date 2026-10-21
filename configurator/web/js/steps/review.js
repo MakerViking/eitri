@@ -10,7 +10,7 @@ export const meta = {
 };
 
 const ACTION_ICON = { flash: 'chip', 'flavor-switch': 'layers', toolchain: 'wave', hostname: 'wifi' };
-const STATUS = { new: ['New', 'ok'], modified: ['Changed', 'ember'], unchanged: ['Up to date', ''] };
+const STATUS = { new: ['New', 'ok'], modified: ['Changed', 'accent'], unchanged: ['Up to date', ''] };
 
 function diffView(file) {
   if (!file.hunks.length) return h('p', { class: 'help', style: { padding: '1rem' } }, 'No differences.');
@@ -75,12 +75,13 @@ export async function enter(ctx) {
   }
 
   const upToDate = changed.length === 0 && !!store.state.applied;
-  ctx.actions.set({ next: { label: upToDate ? 'Continue' : 'Write configuration', icon: upToDate ? undefined : 'flame', onClick: upToDate ? undefined : write },
+  ctx.actions.set({ next: { label: upToDate ? 'Continue' : 'Write configuration', icon: upToDate ? undefined : 'hammer', onClick: upToDate ? undefined : write },
     note: upToDate ? 'Configuration is already written.' : `${changed.length} file${changed.length === 1 ? '' : 's'} will be written.` });
 
   const firstOpen = changed[0]?.path;
   return {
     nodes: [
+      (pv.notes || []).length > 0 && alertBox('warn', ...pv.notes.map((n) => h('p', null, n))),
       h('div', null, h('div', { class: 'section-label', style: { marginTop: 0 } }, 'Actions'), actions),
       h('div', null, h('div', { class: 'section-label', style: { marginTop: 0 } }, 'Files'), h('div', { class: 'stack files' }, pv.files.map((f) => fileCard(f, f.path === firstOpen)))),
       opts.chamber_heater && alertBox('warn', h('p', null, h('strong', null, 'Chamber heater enabled.'), ' It is gated by the bed/chamber interlock, and heater runaway protection stays active.')),

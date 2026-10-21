@@ -1,6 +1,7 @@
-/* Eitri design tokens.  Theme: "forge" (dark, default) and "bone & iron" (light).
-   Heat is the one recurring idea: iron -> cherry -> orange -> yellow -> white-hot.
-   It is spent sparingly: progress, the active step, primary actions, focus. */
+/* Eitri design tokens.  Theme: "anvil" (dark, default) and "chalk & steel" (light).
+   The one recurring idea is tempered steel: a blue-black workshop, cold iron, and the
+   blue oxide sheen that shows on a blade once it is tempered. It is spent sparingly:
+   progress, the active step, primary actions, focus. */
 
 @font-face { font-family: "Instrument Serif"; font-style: normal; font-weight: 400; font-display: swap;
   src: url("../fonts/instrument-serif-latin-400-normal.woff2") format("woff2"); }
@@ -25,84 +26,88 @@
   --bar-h: 76px;
 }
 
-/* ---- dark: the forge at night ---- */
+/* ---- dark: the anvil at night ---- */
 :root, [data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0c0a09;
-  --bg-2: #130f0d;
-  --surface: #181310;
-  --surface-2: #201a16;
-  --surface-3: #2a231d;
-  --line: rgba(255, 228, 196, .09);
-  --line-2: rgba(255, 228, 196, .17);
-  --text: #f4ece1;
-  --text-2: #bcae9d;
-  --text-3: #837769;
+  --bg: #080b0f;
+  --bg-2: #0d1218;
+  --surface: #121921;
+  --surface-2: #18212b;
+  --surface-3: #202b37;
+  --line: rgba(176, 208, 240, .09);
+  --line-2: rgba(176, 208, 240, .18);
+  --text: #eaf0f7;
+  --text-2: #a8b6c6;
+  --text-3: #75869a;
 
-  --ember: #ff6f1f;
-  --ember-hi: #ff9b3d;
-  --glow: #ffc65c;
-  --hot: #fff1d2;
-  --cherry: #d23a1c;
-  --iron: #93a8b8;
-  --ok: #67d6b4;
-  --warn: #ffc65c;
-  --bad: #ff6350;
+  --accent: #3b9bff;              /* tempered blue */
+  --accent-hi: #6cb6ff;
+  --lit: #9fd0ff;                 /* focus rings, bright edges */
+  --bright: #e6f3ff;
+  --deep: #1d58b0;
+  --iron: #9db0c2;
+  --ok: #5fd6b0;
+  --warn: #f2c14e;
+  --bad: #ff6b61;
 
-  --on-ember: #1c0c04;
-  --ember-text: #ff8a3d;          /* ember as text on --bg */
-  --ok-bg: rgba(103, 214, 180, .12);
-  --warn-bg: rgba(255, 198, 92, .11);
-  --bad-bg: rgba(255, 99, 80, .12);
-  --ember-bg: rgba(255, 111, 31, .11);
+  --on-accent: #04101e;
+  --accent-text: #6cb6ff;         /* accent as text on --bg */
+  --ok-bg: rgba(95, 214, 176, .12);
+  --warn-bg: rgba(242, 193, 78, .11);
+  --bad-bg: rgba(255, 107, 97, .12);
+  --accent-bg: rgba(59, 155, 255, .11);
 
   --shadow-card: 0 1px 0 rgba(255, 255, 255, .035) inset, 0 18px 40px -22px rgba(0, 0, 0, .8);
   --shadow-pop: 0 24px 60px -20px rgba(0, 0, 0, .85);
-  --heat: linear-gradient(90deg, #5b1608 0%, #b8300f 22%, #ff6a1a 55%, #ffb347 82%, #fff1d2 100%);
-  --heat-v: linear-gradient(180deg, #3a140a 0%, #b8300f 28%, #ff6a1a 62%, #ffb347 88%, #fff1d2 100%);
+  --sheen: linear-gradient(90deg, #2c3a4c 0%, #2a64c4 30%, #3b9bff 62%, #8ccaff 86%, #e6f3ff 100%);
+  --sheen-v: linear-gradient(180deg, #1c2633 0%, #2a64c4 30%, #3b9bff 64%, #8ccaff 88%, #e6f3ff 100%);
   --grain-opacity: .07;
   --grain-blend: overlay;
-  --ember-glow-a: rgba(255, 92, 20, .20);
-  --ember-glow-b: rgba(255, 170, 70, .07);
+  --grid-dot: rgba(176, 208, 240, .10);
+  --accent-glow-a: rgba(40, 110, 220, .22);
+  --accent-glow-b: rgba(120, 170, 240, .08);
+  --console-bg: #080b0f;
 }
 
-/* ---- light: bone and iron ---- */
+/* ---- light: chalk and steel ---- */
 [data-theme="light"] {
   color-scheme: light;
-  --bg: #efe9de;
-  --bg-2: #e7dfd1;
-  --surface: #f9f6ef;
-  --surface-2: #fffdf8;
-  --surface-3: #efe8da;
-  --line: rgba(52, 36, 22, .12);
-  --line-2: rgba(52, 36, 22, .22);
-  --text: #1e1712;
-  --text-2: #594c40;
-  --text-3: #85766a;
+  --bg: #e9eef3;
+  --bg-2: #e0e7ee;
+  --surface: #f5f8fb;
+  --surface-2: #ffffff;
+  --surface-3: #e8eef4;
+  --line: rgba(20, 38, 60, .12);
+  --line-2: rgba(20, 38, 60, .22);
+  --text: #101923;
+  --text-2: #435567;
+  --text-3: #66788b;
 
-  --ember: #cf4a10;
-  --ember-hi: #e8691f;
-  --glow: #e79a2b;
-  --hot: #f7d58c;
-  --cherry: #b3281a;
-  --iron: #51697b;
-  --ok: #1d7a62;
-  --warn: #a96a07;
+  --accent: #1b66cf;
+  --accent-hi: #3a85ee;
+  --lit: #2a7be0;
+  --bright: #cfe5ff;
+  --deep: #0f4796;
+  --iron: #51697e;
+  --ok: #17775f;
+  --warn: #8f6200;
   --bad: #b3261e;
 
-  --on-ember: #fffaf3;
-  --ember-text: #b93c08;
-  --ok-bg: rgba(29, 122, 98, .10);
-  --warn-bg: rgba(169, 106, 7, .10);
+  --on-accent: #f7fbff;
+  --accent-text: #0f55b3;
+  --ok-bg: rgba(23, 119, 95, .10);
+  --warn-bg: rgba(143, 98, 0, .10);
   --bad-bg: rgba(179, 38, 30, .09);
-  --ember-bg: rgba(207, 74, 16, .08);
+  --accent-bg: rgba(27, 102, 207, .08);
 
-  --shadow-card: 0 1px 0 rgba(255, 255, 255, .8) inset, 0 14px 30px -22px rgba(60, 36, 14, .45);
-  --shadow-pop: 0 24px 50px -20px rgba(60, 36, 14, .4);
-  --heat: linear-gradient(90deg, #7a1d0a 0%, #c53a12 28%, #e8691f 62%, #f0a030 88%, #f7d58c 100%);
-  --heat-v: linear-gradient(180deg, #5a1a0c 0%, #b3281a 30%, #e8691f 65%, #f0a030 90%, #f7d58c 100%);
-  --grain-opacity: .16;
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, .85) inset, 0 14px 30px -22px rgba(20, 44, 80, .45);
+  --shadow-pop: 0 24px 50px -20px rgba(20, 44, 80, .4);
+  --sheen: linear-gradient(90deg, #7d8da1 0%, #2f6ed0 32%, #3a85ee 64%, #7db6f5 88%, #cfe5ff 100%);
+  --sheen-v: linear-gradient(180deg, #7d8da1 0%, #2f6ed0 32%, #3a85ee 66%, #7db6f5 90%, #cfe5ff 100%);
+  --grain-opacity: .14;
   --grain-blend: multiply;
-  --ember-glow-a: rgba(232, 105, 31, .13);
-  --ember-glow-b: rgba(240, 160, 48, .10);
+  --grid-dot: rgba(20, 38, 60, .13);
+  --accent-glow-a: rgba(40, 110, 220, .13);
+  --accent-glow-b: rgba(110, 160, 230, .12);
+  --console-bg: #121c27;
 }

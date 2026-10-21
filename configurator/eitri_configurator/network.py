@@ -8,8 +8,10 @@ passwords cannot inject anything.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,16 @@ from .settings import Settings
 from .state import atomic_write
 
 SYS_NET = Path("/sys/class/net")
+WIFI_PROFILE = "eitri-wifi"
+
+
+def _has_control(text: str) -> bool:
+    return any(ord(c) < 32 or ord(c) == 127 for c in text)
+
+
+def _last_line(out: str) -> str:
+    lines = out.strip().splitlines()
+    return lines[-1][:200] if lines else ""
 
 
 def _read(p: Path) -> str:
@@ -116,19 +128,40 @@ class Network:
         return {"supported": True, "networks": sorted(seen.values(), key=lambda n: -n["signal"])}
 
     async def connect(self, ssid: str, password: str | None) -> dict[str, Any]:
-        if not ssid or len(ssid) > 32 or "\x00" in ssid or (password and not 8 <= len(password) <= 63):
-            return {"ok": False, "error": "SSID or password has an invalid length (WPA passwords are 8-63 characters)."}
+        if not ssid or len(ssid.encode()) > 32 or _has_control(ssid) or (password and (not 8 <= len(password) <= 63 or _has_control(password))):
+            return {"ok": False, "error": "SSID or password is not valid (WPA passwords are 8-63 printable characters)."}
         if self.s.mock:
             await asyncio.sleep(0.8 if self.s.mock_speed else 0)
             if password == "wrongpass1":
                 return {"ok": False, "error": "Authentication failed - check the password."}
             self.mock_wifi = ssid
             return {"ok": True, "ssid": ssid}
-        argv = ["nmcli", "dev", "wifi", "connect", ssid]
+        # One saved profile, rebuilt on every attempt.  Keyword arguments (`ssid <name>`) cannot be taken for
+        # options even when an SSID starts with "-", and the passphrase never appears on a command line, where
+        # every local user could read it from /proc/<pid>/cmdline: it travels in a 0600 file that nmcli reads.
+        await run("nmcli", "connection", "delete", "id", WIFI_PROFILE, timeout=20)       # absent profile: ignore the error
+        add = ["nmcli", "connection", "add", "type", "wifi", "con-name", WIFI_PROFILE, "ssid", ssid]
         if password:
-            argv += ["password", password]
-        rc, out = await run(*argv, timeout=60)
-        return {"ok": rc == 0, "ssid": ssid, **({} if rc == 0 else {"error": out.strip().splitlines()[-1][:200] if out.strip() else "connection failed"})}
+            add += ["wifi-sec.key-mgmt", "wpa-psk"]
+        rc, out = await run(*add, timeout=30)
+        if rc != 0:
+            return {"ok": False, "ssid": ssid, "error": _last_line(out) or "could not create the connection"}
+        up = ["nmcli", "connection", "up", "id", WIFI_PROFILE]
+        secret_path: str | None = None
+        try:
+            if password:
+                fd, secret_path = tempfile.mkstemp(prefix="eitri-wifi-")        # mode 0600, in the unit's private /tmp
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(f"802-11-wireless-security.psk:{password}\n")
+                up += ["passwd-file", secret_path]
+            rc, out = await run(*up, timeout=60)
+        finally:
+            if secret_path:
+                Path(secret_path).unlink(missing_ok=True)
+        if rc != 0:
+            await run("nmcli", "connection", "delete", "id", WIFI_PROFILE, timeout=20)   # do not keep a profile that cannot connect
+            return {"ok": False, "ssid": ssid, "error": _last_line(out) or "connection failed"}
+        return {"ok": True, "ssid": ssid}
 
     async def set_hostname(self, name: str) -> dict[str, Any]:
         name = validate_hostname(name)

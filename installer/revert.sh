@@ -23,6 +23,8 @@
 #   --from-usb [DEVICE]        --full: read the image from the USB stick it was saved to (default: where backup.env says)
 #   --from-host HOST:PORT      --full: stream the image from your PC:   cat mmcblk1.img.gz | nc -l -p PORT
 #   --image PATH               --full: path of the image on the stick (default: the recorded one)
+#   --raw-sha256 HASH          --full: SHA-256 of the UNCOMPRESSED image (zcat file | sha256sum); needed with --from-host when
+#                              no backup record survives, so the image is checked before the partition table is replaced
 #   --json / --events-file F   machine-readable progress
 #
 # Exit codes: 0 ok | 2 usage | 3 not confirmed | 10 precondition failed | 13 MCU restore failed | 20 missing tools
@@ -46,7 +48,7 @@ DATA="${EITRI_DATA:-$(P /data)}"
 STATE_DIR="${EITRI_STATE_DIR:-$(P /var/lib/eitri-install)}"
 MODE=""
 ASSUME_YES=0; FORCE_DRY=0; SKIP_MCU=0; NO_REBOOT=0
-FROM_USB=""; FROM_HOST=""; IMAGE_PATH=""
+FROM_USB=""; FROM_HOST=""; IMAGE_PATH=""; RAW_SHA=""
 
 usage() { awk 'NR >= 3 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"; }
 
@@ -69,6 +71,7 @@ parse_args() {
       --from-usb) FROM_USB=auto; if [[ "${2:-}" == /dev/* ]]; then FROM_USB="$2"; shift; fi ;;
       --from-host) FROM_HOST="${2:?}"; shift ;;
       --image) IMAGE_PATH="${2:?}"; shift ;;
+      --raw-sha256) RAW_SHA="${2:?}"; shift ;;
       --json) EITRI_JSON=1 ;;
       --events-file) EITRI_EVENTS_FILE="${2:?}"; shift ;;
       *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
@@ -132,22 +135,46 @@ check_installation() {
 # ---------------------------------------------------------------------------------------------
 mcuflash() { "${EITRI_MCUFLASH:-$INSTALLER_DIR/bin/eitri-mcuflash}" "$@"; }
 
+# A one-line reason out of eitri-mcuflash's JSON event stream (its last "msg").
+mcu_reason() { sed -n 's/.*"msg": *"\([^"]*\)".*/\1/p' <<<"$1" | tail -1; }
+
 restore_mcus() {
   ((SKIP_MCU)) && { step_skip mcu "--skip-mcu: flash the MCUs back by hand before starting the stock system"; return 0; }
   if ! on_eitri; then step_skip mcu "running on the stock system: the MCU firmware is whatever is flashed now"; return 0; fi
   step_start mcu "Putting the original firmware back on the MCU boards"
-  local board rc args=(--json --stop-services --state-dir "$DATA/eitri/mcu" --firmware-root "$DATA/eitri/mcu/firmware" --no-version-lock)
-  for board in toolhead mainboard; do
-    if ((DRY_RUN)); then
-      mcuflash rollback "$board" --original "${args[@]}" >/dev/null 2>&1 && _say "    would: restore the $board firmware" || _say "    note: no saved firmware for the $board board"
-      continue
+  # The mainboard goes first: it is the board that can fail for lack of tooling (it is flashed through its SD-card
+  # bootloader), so a failure there leaves the toolhead untouched.
+  local board rc out reason problems=() restored=()
+  local boards=(mainboard toolhead)
+  local args=(--json --stop-services --state-dir "$DATA/eitri/mcu" --firmware-root "$DATA/eitri/mcu/firmware" --no-version-lock)
+  # Pass 1 changes nothing: can EVERY board really be put back (image present and intact, flashing method usable)?
+  # Flashing one board and then discovering the other cannot follow would leave the two MCUs on different firmware.
+  for board in "${boards[@]}"; do
+    rc=0
+    out="$(mcuflash rollback "$board" --original "${args[@]}" 2>&1)" || rc=$?
+    if ((rc != 0)); then
+      reason="$(mcu_reason "$out")"
+      problems+=("$board: ${reason:-$(printf '%s\n' "$out" | tail -1)}")
+    elif ((DRY_RUN)); then
+      _say "    would: restore the $board firmware"
     fi
+  done
+  if ((${#problems[@]})); then
+    local p; for p in "${problems[@]}"; do ((DRY_RUN)) && chk_warn "would fail: $p" || err "$p"; done
+    if ((DRY_RUN)); then return 0; fi
+    step_fail mcu "${problems[*]}"
+    die 13 "The original firmware cannot be put back automatically (${problems[*]}). NOTHING was changed: both boards still run Eitri's firmware and the boot selection is unchanged. Provide what is missing, or flash the boards by hand (docs/recovery.md) and re-run with --skip-mcu."
+  fi
+  ((DRY_RUN)) && return 0
+  # Pass 2: do it.
+  for board in "${boards[@]}"; do
     rc=0
     mcuflash rollback "$board" --original --apply --yes "${args[@]}" >"$STATE_DIR/mcu-rollback-$board.jsonl" 2>&1 || rc=$?
     if ((rc != 0)); then
       step_fail mcu "$board"
-      die 13 "Could not restore the $board firmware ($(tail -1 "$STATE_DIR/mcu-rollback-$board.jsonl")). Nothing else was changed. Fix that first, or re-run with --skip-mcu and flash it yourself."
+      die 13 "Could not restore the $board firmware ($(tail -1 "$STATE_DIR/mcu-rollback-$board.jsonl")). Restored so far: ${restored[*]:-none}. The boot selection was NOT changed (it still says Eitri), so run revert.sh --hard again once that is fixed, or flash the boards by hand (docs/recovery.md) and re-run with --skip-mcu. Do not boot the original system until both boards are back to the original firmware."
     fi
+    restored+=("$board")
     ok "$board firmware restored"
   done
   step_ok mcu "MCU boards restored"
@@ -261,6 +288,15 @@ do_full() {
     src="usb:$uuid:$path"
   fi
   gz="$( [[ -n "$rec" ]] && kv_get "$rec" gz_sha256 || true)"; raw="$( [[ -n "$rec" ]] && kv_get "$rec" raw_sha256 || true)"
+  if [[ -n "$RAW_SHA" ]]; then
+    [[ "${RAW_SHA,,}" =~ ^[0-9a-f]{64}$ ]] || die 2 "--raw-sha256 expects 64 hexadecimal digits"
+    raw="${RAW_SHA,,}"
+  fi
+  # A stream cannot be read twice, so the only protection against a damaged one is a known checksum that stage 2 verifies
+  # BEFORE it replaces the partition table.  Without one, do not start.
+  if [[ -n "$FROM_HOST" && -z "$raw" ]]; then
+    die 10 "--from-host needs the SHA-256 of the uncompressed image: no backup record was found, so pass --raw-sha256 HASH (on your PC: zcat mmcblk1.img.gz | sha256sum)"
+  fi
   [[ -r "$BOOT/eitri/stage2/initramfs.cpio.gz" ]] || die 10 "$BOOT/eitri/stage2/initramfs.cpio.gz is missing; re-run install.sh's staging or restore by maskrom (docs/recovery.md)"
   read_stock_boot
   _say "    source: ${src%%:*}   expected checksum: ${gz:-(unknown; stream is verified after writing)}"
@@ -280,7 +316,9 @@ do_full() {
   mv -f "$BOOT/eitri/stage2/initramfs.cpio.gz.new" "$BOOT/eitri/stage2/initramfs.cpio.gz"
   boot_rw
   kv_set "$BOOT/eitri/layout.env" eitri_s2_args "console=tty1 rdinit=/init eitri.op=restore panic=60 loglevel=4 net.ifnames=0"
-  # The stock U-Boot entry stays reachable if the RAM installer does not start: boot.scr consumes this flag first.
+  # The stock U-Boot entry stays reachable if the RAM installer does not start: boot.scr spends one of these
+  # starts each time (three, so a power cut mid-restore re-enters the installer instead of a half-written disk).
+  kv_set "$BOOT/eitri/boot.env" eitri_s2_tries 3
   kv_set "$BOOT/eitri/boot.env" eitri_mode stage2
   sync
   step_ok restore "restore armed"

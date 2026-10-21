@@ -52,8 +52,8 @@ class Stage2Rig:
             os.chmod(full, mode)
 
     def _build_boot(self):
-        # as U-Boot leaves it when it launches stage 2: the one-shot flag already consumed
-        self.put("/mnt/boot/eitri/boot.env", "eitri_mode=stock\neitri_slot=A\neitri_tries=3\neitri_state_A=unknown\neitri_state_B=unknown\n")
+        # as U-Boot leaves it when it launches stage 2: still armed (a power cut must re-enter the installer), one start spent
+        self.put("/mnt/boot/eitri/boot.env", "eitri_mode=stage2\neitri_slot=A\neitri_tries=3\neitri_state_A=unknown\neitri_state_B=unknown\neitri_s2_tries=1\n")
         self.put("/mnt/boot/wpa_supplicant-wlan0.conf", 'network={ssid="home"}\n')
         self.put("/mnt/boot/extlinux/extlinux.conf.stock", "label x\n")
 
@@ -203,6 +203,66 @@ def test_sfdisk_failure_keeps_stock_bootable(rig):
     assert r.returncode == 1 and "mke2fs" not in " ".join(rig.calls())
     assert rig.boot_env()["eitri_mode"] == "stock" and "sfdisk failed" in open(rig.p("/mnt/boot/eitri/LAST_ERROR")).read()
     assert rig.status()["state"] == "failed"
+
+
+def test_handled_failure_disarms_the_installer(rig):
+    rig.run(FAKE_FAIL_SFDISK="1", S2_FAIL_DELAY="0")
+    env = rig.boot_env()
+    assert env["eitri_mode"] == "stock" and env["eitri_s2_tries"] == "0"
+
+
+def test_power_cut_mid_conversion_leaves_the_installer_armed_and_the_rerun_finishes(rig):
+    """An unhandled stop must not look like a handled failure: boot.env keeps eitri_mode=stage2 (boot.scr re-enters
+    stage 2 until its start counter is spent) and the second run resumes from the converted partition table."""
+    r = rig.run(FAKE_KILL_PARENT="1")
+    assert r.returncode != 0 and rig.status()["state"] == "running"
+    env = rig.boot_env()
+    assert env["eitri_mode"] == "stage2" and env["eitri_s2_tries"] == "1"            # nobody touched the selection
+    assert "phase=rootfs_written" in open(rig.p("/mnt/boot/eitri/stage2.state")).read()
+    n_before = len([c for c in rig.calls() if c == "sfdisk-apply"])
+    shutil.rmtree(rig.p("/mnt/data"))
+    os.makedirs(rig.p("/mnt/data"))
+    assert rig.run().returncode == 0
+    assert len([c for c in rig.calls() if c == "sfdisk-apply"]) == n_before          # resumed: no second repartitioning
+    assert rig.boot_env()["eitri_mode"] == "eitri" and "eitri_s2_tries" not in rig.boot_env()
+
+
+def _usb_backup(rig, content=b"x" * 1000, bytes_recorded=None, present=True):
+    by_uuid = os.path.join(rig.tmp, "by-uuid")
+    os.makedirs(by_uuid, exist_ok=True)
+    if present:
+        open(os.path.join(by_uuid, "ABCD-1234"), "w").close()
+    rig.put("/mnt/usb/EITRI-BACKUP/x/mmcblk1.img.gz", content)
+    rig.write_conf(backup_method="usb", backup_usb_uuid="ABCD-1234", backup_path="/EITRI-BACKUP/x/mmcblk1.img.gz",
+                   backup_bytes=str(len(content) if bytes_recorded is None else bytes_recorded))
+    return dict(S2_BY_UUID_DIR=by_uuid, S2_DEVICE_WAIT="1", S2_FAIL_DELAY="0")
+
+
+def test_the_backup_is_looked_at_again_before_anything_is_shrunk(rig):
+    env = _usb_backup(rig)
+    r = rig.run(**env)
+    assert r.returncode == 0, r.stdout
+    assert "backup re-checked on the USB stick (1000 bytes)" in r.stdout
+
+
+@pytest.mark.parametrize("kind", ["stick-missing", "file-missing", "wrong-size"])
+def test_a_vanished_or_changed_backup_stops_before_the_shrink(rig, kind):
+    env = _usb_backup(rig, bytes_recorded=999 if kind == "wrong-size" else None, present=kind != "stick-missing")
+    if kind == "file-missing":
+        os.unlink(rig.p("/mnt/usb/EITRI-BACKUP/x/mmcblk1.img.gz"))
+    r = rig.run(**env)
+    assert r.returncode == 1 and destructive_calls(rig) == []
+    msg = open(rig.p("/mnt/boot/eitri/LAST_ERROR")).read()
+    assert "nothing was changed" in msg.lower() or "Nothing was changed" in msg
+    assert rig.boot_env()["eitri_mode"] == "stock"
+
+
+def test_split_fat32_backup_is_summed_over_its_parts(rig):
+    env = _usb_backup(rig)
+    os.unlink(rig.p("/mnt/usb/EITRI-BACKUP/x/mmcblk1.img.gz"))
+    rig.put("/mnt/usb/EITRI-BACKUP/x/mmcblk1.img.gz.part000", b"a" * 600)
+    rig.put("/mnt/usb/EITRI-BACKUP/x/mmcblk1.img.gz.part001", b"b" * 400)
+    assert rig.run(**env).returncode == 0
 
 
 def test_bad_write_readback_never_switches_to_eitri(rig):

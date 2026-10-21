@@ -10,7 +10,8 @@
 #   1  preflight          read-only checks (printer model, eMMC layout, space, not printing)
 #   2  backup             full eMMC image to a USB stick or your PC, read back and verified.   REQUIRED.
 #   3  stage              download the signed bundle, verify signature + checksums
-#   4  MCU recovery       save a way back for both MCU boards (Katapult read-back + round trip)
+#   4  MCU recovery       save a way back for both MCU boards (Katapult read-back + round trip).  This WRITES to the
+#                         toolhead (erase + same image back) before step 5, so it needs --accept-mcu-roundtrip.
 #   5  --- you type CONVERT ---
 #   6  arm stage 2        install the boot manager, one-shot RAM installer; reboot
 #      (stage 2, in RAM: shrink the stock root, add rootfs A/B + /data, write + verify, switch)
@@ -44,7 +45,7 @@ FLAVOR=""; BUNDLE_URL=""; BUNDLE_DIR=""; PUBKEYS=()
 STAGE_DIR=""; STAGE_USB=""
 BACKUP_MODE=""; BACKUP_TARGET=""; BACKUP_FILE=""; BACKUP_FILE_SHA=""; BACKUP_MAX_AGE_H=72
 MCU_MODE="auto"; PROBE_MCU=0; ACCEPT_NO_MCU_BACKUP=0; STOCK_MCU_BINS=()
-STATUS_ONLY=0; BACKUP_STREAM=0; STAGE_ONLY=0; MCU_EXTRA=()
+STATUS_ONLY=0; BACKUP_STREAM=0; STAGE_ONLY=0; MCU_EXTRA=(); ACCEPT_MCU_ROUNDTRIP=0
 
 usage() {
   awk 'NR >= 3 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
@@ -74,6 +75,10 @@ Options
   --stock-mcu-bin BOARD=FILE     stock firmware image for a board whose flash cannot be read back (mainboard: qd_mcu.bin)
   --accept-no-mcu-backup         proceed without such an image (you can re-download it from QIDI if needed)
   --mcu auto|manual|skip         auto (default): flash both MCUs on the first Eitri boot; manual: leave it to the wizard
+  --accept-mcu-roundtrip         consent to the MCU recovery proof, which WRITES to the toolhead board before the CONVERT
+                                 prompt: its application area is erased and the same image written back (a few seconds;
+                                 a power cut in that window needs a Katapult re-flash from the saved image, see
+                                 docs/recovery.md). Asked interactively if omitted; required when there is no terminal.
   --probe-mcu                    in a dry run, also stop Klipper briefly to probe the MCUs
   --mcu-arg ARG                  pass ARG to eitri-mcuflash (repeatable), e.g. --mcu-arg --assign --mcu-arg toolhead=/dev/ttyS2
   --status                       show what an earlier run did (and any stage-2 error)
@@ -103,6 +108,7 @@ parse_args() {
       --backup-max-age-hours) BACKUP_MAX_AGE_H="${2:?}"; shift ;;
       --stock-mcu-bin) STOCK_MCU_BINS+=("${2:?}"); shift ;;
       --accept-no-mcu-backup) ACCEPT_NO_MCU_BACKUP=1 ;;
+      --accept-mcu-roundtrip) ACCEPT_MCU_ROUNDTRIP=1 ;;
       --mcu) MCU_MODE="${2:?}"; shift ;;
       --probe-mcu) PROBE_MCU=1 ;;
       --mcu-arg) MCU_EXTRA+=("${2:?}"); shift ;;
@@ -133,6 +139,10 @@ parse_args() {
 # ---- small helpers -----------------------------------------------------------------
 
 hostname_now() { cat "$(P /etc/hostname)" 2>/dev/null || hostname 2>/dev/null || echo unknown; }
+# The same name, reduced to characters that are safe in a file name and in a (remote) shell command.
+safe_hostname() { local h; h="$(hostname_now | tr -cd 'A-Za-z0-9._-')"; printf '%s' "${h:-unknown}"; }
+# sh_quote STR -> STR single-quoted for a POSIX shell, whatever it contains
+sh_quote() { local q="'" s="$1"; printf "'%s'" "${s//$q/$q\\$q$q}"; }
 
 disk_sectors() { blockdev --getsz "$DISK"; }
 part_dev() { printf '%s%s%s' "$DISK" "$PART_PREFIX" "$1"; }
@@ -176,6 +186,13 @@ show_status() {
   echo "Eitri installer status"
   if [[ -r "$boot/boot.env" ]]; then echo "  boot selection:"; sed 's/^/    /' "$boot/boot.env" | tr -d '\000'; else echo "  not installed (no $boot/boot.env)"; fi
   [[ -r "$boot/stage2.state" ]] && { echo "  stage 2:"; sed 's/^/    /' "$boot/stage2.state"; }
+  if [[ -r "$boot/stage2.state" ]] && ! grep -q '^phase=committed' "$boot/stage2.state"; then
+    echo "  The conversion has not finished (see the phase above). If the printer is stuck or powered off during it:"
+    echo "    - an interrupted conversion is resumed automatically: boot.scr starts the installer again (two starts are allowed);"
+    echo "    - when the starts are used up the STOCK system boots; re-running install.sh is refused from then on because the"
+    echo "      partition table has changed. Use 'revert.sh --full' (stock system still boots) to restore the backup image, or the"
+    echo "      maskrom procedure in docs/recovery.md (rkdeveloptool) if nothing boots."
+  fi
   [[ -r "$boot/LAST_ERROR" ]] && { echo "  LAST ERROR from stage 2:"; sed 's/^/    /' "$boot/LAST_ERROR"; echo "  full log: $boot/stage2.log"; }
   [[ -r "$STATE_DIR/backup.env" ]] && { echo "  recorded backup:"; sed 's/^/    /' "$STATE_DIR/backup.env"; }
   return 0
@@ -216,7 +233,13 @@ preflight() {
   fi
 
   # Already converted?
-  if [[ -e "$(P /boot)/eitri/boot.env" || -d "$(P /data)/eitri" ]]; then pf_fail "this printer already runs (or has run) Eitri; use eitri-update, or revert.sh to go back to stock"; fi
+  if [[ -e "$(P /boot)/eitri/boot.env" || -d "$(P /data)/eitri" ]]; then
+    if [[ -r "$(P /boot)/eitri/stage2.state" ]] && ! grep -q '^phase=committed' "$(P /boot)/eitri/stage2.state"; then
+      pf_fail "an earlier conversion did not finish (stage 2 phase: $(kv_get "$(P /boot)/eitri/stage2.state" phase)). Run './install.sh --status' for what to do; it can only be undone with revert.sh --full or the maskrom procedure (docs/recovery.md)"
+    else
+      pf_fail "this printer already runs (or has run) Eitri; use eitri-update, or revert.sh to go back to stock"
+    fi
+  fi
 
   # Booted from the eMMC we are about to change?
   local rootsrc bootsrc
@@ -398,7 +421,7 @@ backup_to_usb() {
   local need=$((ROOT_USED / 2 + 2 * 1024 * 1024 * 1024))
   local free; free="$(df -B1 --output=avail "$USB_MNT" | tail -1 | tr -d ' ')"
   ((free > need)) || die 11 "$dev has $(human_bytes "$free") free; the compressed image needs about $(human_bytes "$need")"
-  local dir="$USB_MNT/EITRI-BACKUP/$(hostname_now)-$(date +%Y%m%d-%H%M%S)"
+  local dir="$USB_MNT/EITRI-BACKUP/$(safe_hostname)-$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$dir"
   local file="$dir/mmcblk1.img.gz" split=0
   [[ "$USB_FS" == vfat || "$USB_FS" == msdos ]] && split=1
@@ -431,15 +454,21 @@ backup_to_host() {
   local target="$BACKUP_TARGET" host dir name
   host="${target%%:*}"; dir="${target#*:}"
   [[ "$host" != "$target" && -n "$dir" ]] || die 2 "--backup-to-host expects USER@HOST:DIR"
-  name="eitri-backup-$(hostname_now)-$(date +%Y%m%d-%H%M%S).img.gz"
+  # HOST is an ssh destination, not an option (-oProxyCommand=... would run a command here), and DIR is quoted for the
+  # remote shell: neither may smuggle anything in.
+  [[ "$host" =~ ^([A-Za-z0-9._-]+@)?[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die 2 "--backup-to-host: '$host' is not a plain USER@HOST"
+  [[ "$dir" != *$'\n'* ]] || die 2 "--backup-to-host: DIR must not contain a line break"
+  name="eitri-backup-$(safe_hostname)-$(date +%Y%m%d-%H%M%S).img.gz"
+  local qdir qname
+  qdir="$(sh_quote "$dir")"; qname="$(sh_quote "$name")"
   step_start backup "Backing up the whole eMMC to $host:$dir/$name"
   quiesce
-  backup_pipeline | ssh "$host" "mkdir -p '$dir' && cat > '$dir/$name'"
+  backup_pipeline | ssh -- "$host" "mkdir -p -- $qdir && cat > $qdir/$qname"
   read_backup_sums
   unquiesce
   step_start backup-verify "Asking $host for the checksum of what it received"
   local remote
-  remote="$(ssh "$host" "cd '$dir' && (sha256sum '$name' 2>/dev/null || shasum -a 256 '$name') | cut -d' ' -f1" 2>/dev/null || true)"
+  remote="$(ssh -- "$host" "cd -- $qdir && (sha256sum -- $qname 2>/dev/null || shasum -a 256 -- $qname) | cut -d' ' -f1" 2>/dev/null || true)"
   if [[ "$remote" == "$BK_GZ_SUM" ]]; then
     step_ok backup-verify "checksum matches"
   elif [[ -z "$remote" ]]; then
@@ -454,6 +483,9 @@ backup_to_host() {
 
 backup_from_file() {
   [[ -r "$BACKUP_FILE" ]] || die 11 "cannot read $BACKUP_FILE"
+  case "$(df --output=source "$BACKUP_FILE" 2>/dev/null | tail -1 | tr -d ' ')" in
+    "$DISK"*) die 11 "$BACKUP_FILE is stored on the disk that is about to be converted; a backup there is not a backup. Copy it to a USB stick or your PC first." ;;
+  esac
   step_start backup-verify "Verifying the existing backup $BACKUP_FILE"
   local gz; gz="$(sha256_of "$BACKUP_FILE")"
   [[ "$gz" == "${BACKUP_FILE_SHA,,}" ]] || die 11 "checksum of $BACKUP_FILE is $gz, not $BACKUP_FILE_SHA"
@@ -625,6 +657,66 @@ mcu_recovery() {
   step_ok mcu "both boards have a saved way back"
 }
 
+# The recovery proof is the one device write that happens BEFORE the CONVERT prompt, so it gets its own, named consent.
+confirm_mcu_roundtrip() {
+  [[ "$MCU_MODE" == skip ]] && return 0
+  ((ACCEPT_MCU_ROUNDTRIP)) && return 0
+  _say ""
+  _say "${_BLD}Before anything is converted, the installer proves it can put the MCU boards back.${_OFF}"
+  _say "  It resets the toolhead board into its bootloader, reads the application back to a file, ERASES the application"
+  _say "  area and writes the same image back (a few seconds), then waits for the toolhead to answer again."
+  _say "  If power is lost in those seconds the toolhead has no application until it is re-flashed through Katapult from"
+  _say "  the saved image (docs/recovery.md); the saved copy is made first and is synced to disk before the erase."
+  _say "  The mainboard cannot be read back; it is not written."
+  local a=""
+  if [[ -t 0 ]]; then
+    printf 'Allow this write to the toolhead board? [y/N] ' >&2; read -r a || true
+  elif { true </dev/tty; } 2>/dev/null; then
+    printf 'Allow this write to the toolhead board? [y/N] ' >&2; read -r a </dev/tty || true
+  fi
+  [[ "${a,,}" == y* ]] || die 3 "the MCU recovery proof writes to the toolhead board and needs your consent: pass --accept-mcu-roundtrip (or --mcu skip to leave the boards alone). Nothing was changed."
+}
+
+# The recorded backup is only a promise until it is looked at again: the stick may have been pulled, the file deleted or
+# moved during the (long) download.  Checked right before the point of no return, and again by stage 2 before it shrinks.
+revalidate_backup() {
+  step_start backup-recheck "Making sure the backup is still there"
+  local method dest gz bytes uuid path dev mnt here=0 f total=0 files=() remote host rest
+  method="$(kv_get "$BK_FILE" method)"; dest="$(kv_get "$BK_FILE" dest)"; gz="$(kv_get "$BK_FILE" gz_sha256)"; bytes="$(kv_get "$BK_FILE" bytes_gz)"
+  case "$method" in
+    usb)
+      uuid="$(kv_get "$BK_FILE" usb_uuid)"; path="${dest#usb:*:}"
+      dev="$(blkid -U "$uuid" 2>/dev/null || true)"
+      [[ -n "$dev" ]] || die 11 "the USB stick that holds the backup (filesystem UUID $uuid) is not plugged in any more. Plug it back in and run the installer again - nothing was changed."
+      mnt="$(findmnt -no TARGET "$dev" 2>/dev/null | head -1 || true)"
+      if [[ -z "$mnt" ]]; then
+        mnt="$(P /mnt/eitri-usb-check)"; mkdir -p "$mnt"
+        mount -o ro "$dev" "$mnt" || die 11 "cannot mount $dev to re-check the backup - nothing was changed"
+        here=1
+      fi
+      if [[ -f "$mnt$path" ]]; then files=("$mnt$path"); else files=("$mnt$path".part*); fi
+      for f in "${files[@]}"; do
+        if [[ ! -f "$f" ]]; then ((here)) && umount "$mnt" 2>/dev/null; die 11 "the backup file ${path} is no longer on the USB stick - nothing was changed. Run the installer again to make a new backup."; fi
+        total=$((total + $(wc -c <"$f")))
+      done
+      ((here)) && umount "$mnt" 2>/dev/null
+      [[ -z "$bytes" || "$total" == "$bytes" ]] || die 11 "the backup on the USB stick is $total bytes but $bytes were recorded - nothing was changed. Run the installer again to make a new backup."
+      ;;
+    host)
+      need_cmd ssh
+      host="${dest%%:*}"; rest="${dest#*:}"
+      remote="$(ssh -- "$host" "sha256sum -- $(sh_quote "$rest") 2>/dev/null || shasum -a 256 -- $(sh_quote "$rest")" 2>/dev/null | cut -d' ' -f1 || true)"
+      [[ "$remote" == "$gz" ]] || die 11 "the backup copy on $host cannot be found or no longer matches its checksum - nothing was changed. Run the installer again to make a new backup."
+      ;;
+    file)
+      [[ -r "$dest" ]] || die 11 "the backup file $dest is gone - nothing was changed. Run the installer again."
+      [[ "$(sha256_of "$dest")" == "$gz" ]] || die 11 "the backup file $dest has changed since it was verified - nothing was changed."
+      ;;
+    *) die 11 "the backup record has an unknown method '$method' - nothing was changed" ;;
+  esac
+  step_ok backup-recheck "backup is still in place"
+}
+
 # ===========================================================================================
 # 5/6. arm stage 2
 # ===========================================================================================
@@ -637,6 +729,9 @@ write_stage2_conf() {
     "stock_partuuid=${LABEL_ID#0x}-02" "stock_fs_uuid=$STOCK_FS_UUID" "stock_soc=$STOCK_SOC" \
     "payload_loc=$loc" "flavor=$FLAVOR" "mcu_mode=$MCU_MODE" "backup_sha256=$(kv_get "$BK_FILE" gz_sha256)" \
     "kernel_cmdline=$KERNEL_CMDLINE" \
+    "backup_method=$(kv_get "$BK_FILE" method)" "backup_usb_uuid=$(kv_get "$BK_FILE" usb_uuid)" \
+    "backup_path=$([[ "$(kv_get "$BK_FILE" method)" == usb ]] && kv_get "$BK_FILE" dest | sed 's/^usb:[^:]*://')" \
+    "backup_bytes=$(kv_get "$BK_FILE" bytes_gz)" \
     "s2_kernel=$STOCK_KERNEL" "s2_fdt=$STOCK_FDT" "s2_initrd=/eitri/stage2/initramfs.cpio.gz" "s2_args=$S2_ARGS"
 }
 
@@ -678,7 +773,9 @@ arm_stage2() {
     "eitri_part_A=5" "eitri_part_B=6" "eitri_partuuid_A=$ptuuid-05" "eitri_partuuid_B=$ptuuid-06" \
     "eitri_cmdline=$KERNEL_CMDLINE" \
     "eitri_s2_kernel=$STOCK_KERNEL" "eitri_s2_fdt=$STOCK_FDT" "eitri_s2_initrd=/eitri/stage2/initramfs.cpio.gz" "eitri_s2_args=$S2_ARGS"
-  kv_write "$boot/eitri/boot.env" "eitri_mode=stage2" "eitri_slot=A" "eitri_tries=3" "eitri_state_A=unknown" "eitri_state_B=unknown"
+  # eitri_s2_tries: how many times U-Boot may start the RAM installer. Two, so that a power cut during the conversion
+  # re-enters it (stage 2 resumes from its phase markers) instead of leaving a half-converted disk to boot stock.
+  kv_write "$boot/eitri/boot.env" "eitri_mode=stage2" "eitri_slot=A" "eitri_tries=3" "eitri_state_A=unknown" "eitri_state_B=unknown" "eitri_s2_tries=2"
   kv_write "$boot/eitri/stock-changes.env" "extlinux_renamed=1" "boot_scr_installed=1" "installed_by=install.sh" "when=$(_now)"
 
   if systemctl mask armbian-resize-filesystem.service >/dev/null 2>&1; then
@@ -736,6 +833,7 @@ main() {
   stage_manifest          # small, signed: gives the layout numbers
   plan_layout
   ensure_backup           # nothing big is downloaded and nothing is armed before a verified backup exists
+  if ((! DRY_RUN)); then confirm_mcu_roundtrip; fi     # consent for the one device write that precedes the CONVERT prompt
   stage_download
   mcu_recovery
 
@@ -748,6 +846,7 @@ main() {
   fi
   if ((STAGE_ONLY)); then ok "Payload staged and MCU recovery proven. Not arming (--stage-only)."; emit result ok=true "msg=staged"; return 0; fi
 
+  revalidate_backup
   confirm_typed "$CONFIRM_PHRASE" "POINT OF NO RETURN.
   Next the printer reboots into the Eitri installer. It will shrink the stock system, create new partitions
   and write Eitri. Until it finishes, the stock system still boots; afterwards the original is kept in its

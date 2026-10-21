@@ -51,7 +51,15 @@ class EventSink:
         self._human_out = human_out
         self._file: Optional[IO[str]] = None
         if events_file:
-            self._file = open(events_file, "a", buffering=1, encoding="utf-8")
+            # The log is a convenience: a missing directory (first boot, before /data/eitri/logs exists) or an
+            # unwritable one must never stop an update check, a verify or a rollback from running.
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(events_file)), exist_ok=True)
+                self._file = open(events_file, "a", buffering=1, encoding="utf-8")
+            except OSError as exc:
+                self._file = None
+                if human_out is not None:
+                    human_out.write("warning: cannot write the event log %s: %s\n" % (events_file, exc.strerror))
         self._lock = threading.Lock()
         # Tests (and the configurator wrapper) can look at what was emitted.
         self.events: List[Dict[str, Any]] = [] if keep else None  # type: ignore[assignment]

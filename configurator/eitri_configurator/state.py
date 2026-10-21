@@ -30,8 +30,27 @@ def default_state() -> dict[str, Any]:
     }
 
 
+def fsync_dir(path: Path) -> None:
+    """Make a rename or a new file in `path` durable (best effort: some filesystems refuse a directory fsync)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def atomic_write(path: Path, data: str | bytes, mode: int = 0o644) -> None:
-    """Write via tmp+rename so a power cut never leaves a torn file on /data."""
+    """Write via tmp+rename so a power cut never leaves a torn file on /data.
+
+    The data is fsynced before the rename and the directory afterwards, so after a power cut
+    the file is either entirely the old content or entirely the new content.  The temporary
+    file is created 0600 by mkstemp and only receives its final mode once it is complete.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
@@ -41,6 +60,7 @@ def atomic_write(path: Path, data: str | bytes, mode: int = 0o644) -> None:
             os.fsync(fh.fileno())
         os.chmod(tmp, mode)
         os.replace(tmp, path)
+        fsync_dir(path.parent)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise

@@ -23,7 +23,7 @@ mcu_baud = 500000
 
 # --- optional hardware ---------------------------------------------------------
 # The chamber heater is off by default. Enabling it adds the [heater_generic
-# chamber], its [verify_heater chamber], the independent over-temperature
+# chamber], its [verify_heater chamber], the second chamber thermistor
 # sensor and the bed<->chamber power interlock (qd_power_interlock) to the
 # rendered printer.cfg.
 chamber_enabled = false
@@ -85,6 +85,10 @@ chamber_pid_kd = 749.125
 # verify_heater limits stay LIVE; these keep the stock chamber tolerances
 chamber_verify_max_error = 400
 chamber_verify_check_gain_time = 600
+# Limit of the second chamber thermistor (see the comment in printer.cfg.tmpl).
+# 140 is the stock value, kept until the sensor's location is confirmed on
+# hardware; then 85-90 gives a real backstop.
+chamber_backstop_max_temp = 140
 
 # --- probe (the PA10 offset probe on the toolhead MCU) -----------------------------
 probe_x_offset = 25.0

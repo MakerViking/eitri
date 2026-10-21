@@ -10,7 +10,8 @@ export const meta = {
 };
 
 export function enter(ctx) {
-  post('complete').then((s) => { store.state = s; }).catch(() => {});
+  // Finishing locks the configurator: other browsers are signed out and pairing closes until it is unlocked on the printer.
+  post('complete').then(({ auth, ...s }) => { store.state = s; store.boot.auth = auth; }).catch(() => {});
   const st = store.state;
   const flavor = store.boot.flavors.find((f) => f.id === st.flavor);
   const host = `${st.hostname || 'eitri'}.local`;
@@ -37,21 +38,11 @@ export function enter(ctx) {
   const link = (label, href, ic) => h('a', { class: 'btn', href, target: '_blank', rel: 'noopener' }, icon(ic), h('span', null, label), icon('external'));
   const links = h('div', { class: 'row wrap' },
     opts.camera && link('Camera stream', `${origin}/webcam/stream`, 'camera'),
-    link('Moonraker API', `${origin}:7125/server/info`, 'layers'));
+    link('Moonraker API', `${origin}/server/info`, 'layers'));
 
-  ctx.actions.set({ next: { label: `Open ${ui}`, icon: 'external', onClick: () => { window.location.href = `${origin}/`; } }, note: 'Setup complete. You can reopen this wizard any time at port 8099.' });
-  burst();
+  ctx.actions.set({ next: { label: `Open ${ui}`, icon: 'external', onClick: () => { window.location.href = `${origin}/`; } }, note: 'Setup complete. The configurator is now locked.' });
   return { nodes: [receipt, klarity, h('div', null, h('div', { class: 'section-label', style: { marginTop: 0 } }, 'Quick links'), links),
+    h('div', { class: 'card lock-note' }, h('span', { class: 'link-ico' }, icon('lock')),
+      h('p', null, h('strong', null, 'The configurator is locked. '), 'Nothing on your network can flash or rewrite the printer now. To run the wizard again, connect over SSH and run ', h('code', null, 'eitri-configurator unlock'), '.')),
     h('div', { class: 'card forged-note' }, h('p', null, h('strong', null, 'What stays yours. '), 'Your Klipper tree is a plain git clone (', h('code', null, '/data/firmware/klipper'), '), your config lives in ', h('code', null, '/data/printer_data/config'), ', and your own tweaks go in ', h('code', null, 'user.cfg'), ', which Eitri never overwrites.'))] };
-}
-
-// A one-off shower of sparks. Pure CSS animation, removed afterwards.
-function burst() {
-  const host = h('div', { class: 'burst', 'aria-hidden': 'true' });
-  for (let i = 0; i < 34; i++) {
-    const a = Math.random() * Math.PI * 2, r = 120 + Math.random() * 380;
-    host.append(h('i', { style: { '--x': `${Math.cos(a) * r}px`, '--y': `${Math.sin(a) * r - 120}px`, '--s': `${2 + Math.random() * 4}px`, '--d': `${1.1 + Math.random() * 1.4}s`, '--delay': `${Math.random() * 0.35}s` } }));
-  }
-  document.body.append(host);
-  setTimeout(() => host.remove(), 3200);
 }

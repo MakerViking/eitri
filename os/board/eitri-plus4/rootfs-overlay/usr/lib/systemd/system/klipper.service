@@ -8,11 +8,16 @@ Wants=eitri-data-init.service
 ConditionPathExists=/data/firmware/klipper/klippy/klippy.py
 ConditionPathExists=/data/venv/klippy/bin/python
 ConditionPathExists=/data/printer_data/config/printer.cfg
+# Never give up restarting: Klipper is what keeps the heaters safe. RestartSec already bounds the rate.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 User=eitri
 Group=eitri
+# Neither needs to gain privileges (unit control and reboot go through polkit over D-Bus, which
+# NoNewPrivileges does not affect), so a flaw in them cannot be turned into root through sudo.
+NoNewPrivileges=true
 WorkingDirectory=/data/firmware/klipper
 ExecStart=/data/venv/klippy/bin/python /data/firmware/klipper/klippy/klippy.py \
     /data/printer_data/config/printer.cfg \
@@ -21,7 +26,9 @@ ExecStart=/data/venv/klippy/bin/python /data/firmware/klipper/klippy/klippy.py \
     -a /data/printer_data/comms/klippy.sock
 Restart=always
 RestartSec=10
-# Klipper keeps the heaters safe; make it the last process the OOM killer picks.
+# Klipper keeps the heaters safe; make it the last process the OOM killer picks. It has no
+# MemoryMax/MemoryHigh on purpose: a limit could throttle or kill it while a heater is on.
+# The other services below have MemoryHigh, so a leak there slows that service first.
 OOMScoreAdjust=-500
 
 [Install]

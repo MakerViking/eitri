@@ -364,3 +364,36 @@ def test_missing_spi_flash_tooling_falls_back_to_the_microsd_card_when_offered(r
     plan = rig.plan()
     assert not plan.blocked
     assert [b.method for b in plan.boards if b.board.name == "mainboard"] == ["sdcard-file"]
+
+
+def test_backup_metadata_is_written_atomically_and_made_durable(rig, monkeypatch):
+    synced = []
+    import eitri_mcuflash.backup as backup_mod
+    monkeypatch.setattr(backup_mod, "fsync_dir", lambda path: synced.append(path))
+    entry = rig.flasher.store.save("toolhead", app=b"firmware", dictionary={"version": "x"}, info={"origin": "stock"})
+    assert entry.directory in synced and os.path.dirname(entry.directory) in synced
+    # no temp files left behind, and the entry is findable again
+    assert sorted(os.listdir(entry.directory)) == ["app.bin", "dictionary.json", "meta.json"]
+    assert rig.flasher.store.latest_restorable("toolhead").directory == entry.directory
+
+
+def test_entry_with_unreadable_meta_is_reported_not_silently_ignored(rig):
+    entry = rig.flasher.store.save("toolhead", app=b"firmware", dictionary=None, info={})
+    open(os.path.join(entry.directory, "meta.json"), "w").write("{trunc")
+    assert rig.flasher.store.latest_restorable("toolhead") is None
+    assert rig.flasher.store.damaged("toolhead") == [entry.directory]
+
+
+def test_rollback_refuses_a_backup_image_that_no_longer_matches_its_checksum(rig):
+    rig.opt.origin = "stock"
+    assert rig.flasher.backup_only(rig.plan(), apply=True)[0] == EX_OK
+    entry = rig.flasher.store.original_restorable("toolhead")
+    with open(entry.app_path, "r+b") as fh:
+        fh.seek(10)
+        fh.write(b"\xff\xff")
+    tool_plan = [b for b in rig.plan().boards if b.board.name == "toolhead"][0]
+    from eitri_mcuflash.errors import FlashError
+    before = rig.tool.app_dictionary()["version"]
+    with pytest.raises(FlashError) as e:
+        rig.flasher.rollback_board(tool_plan, original=True)
+    assert e.value.code == "backup_corrupt" and rig.tool.app_dictionary()["version"] == before

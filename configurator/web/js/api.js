@@ -5,26 +5,37 @@ export class ApiError extends Error {
   constructor(message, status, data) { super(message); this.status = status; this.data = data; }
 }
 
-export async function api(path, { method = 'GET', body } = {}) {
+// The browser's pairing: the session itself is an HttpOnly cookie the page cannot read; what the page
+// holds is the CSRF token the server derived for it, sent on every write (cross-site pages cannot).
+export const session = { csrf: null };
+// Fired when the server says this browser is not (or no longer) paired, or the configurator is locked.
+export const authEvents = new EventTarget();
+
+export async function api(path, { method = 'GET', body, gate = true } = {}) {
   let res;
   try {
+    const headers = {};
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    if (method !== 'GET' && session.csrf) headers['X-Eitri-CSRF'] = session.csrf;
     res = await fetch(`api/${path}`, {
       method,
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      headers,
       body: body === undefined ? undefined : JSON.stringify(body),
       cache: 'no-store',
+      credentials: 'same-origin',
     });
   } catch {
     throw new ApiError('Cannot reach the configurator. Check that the printer is powered and on your network.', 0);
   }
   let data = null;
   try { data = await res.json(); } catch { /* non-JSON error page */ }
+  if (gate && (res.status === 423 || (res.status === 401 && data?.pairing_required))) authEvents.dispatchEvent(new CustomEvent('gate', { detail: data }));
   if (!res.ok) throw new ApiError(data?.error || `Request failed (${res.status})`, res.status, data);
   return data;
 }
 
 export const get = (p) => api(p);
-export const post = (p, body = {}) => api(p, { method: 'POST', body });
+export const post = (p, body = {}, opts = {}) => api(p, { method: 'POST', body, ...opts });
 export const put = (p, body) => api(p, { method: 'PUT', body });
 
 /**

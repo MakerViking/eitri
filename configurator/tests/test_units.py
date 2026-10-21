@@ -278,3 +278,141 @@ def test_klarity_cfg_preserves_existing_file(tmp_path):
     (s.config_dir / "klarity.cfg").write_text(KLARITY)
     out = render.klarity_cfg(s, opts.validate({"klarity_port": "/dev/ttyS1", "camera": False}))
     assert "serial_port: /dev/ttyS1" in out and "[learn]\nenabled: true" in out and "enabled: false\nsnapshot_url" in out
+
+
+# --- security regressions ---------------------------------------------------------------
+def test_port_names_are_matched_in_full():
+    """`$` matches before a trailing newline; fullmatch does not."""
+    for bad in ("/dev/ttyS1\n", " /dev/ttyS1", "/dev/ttyS1 ", "/dev/ttyS123", "/dev/ttyS", "/dev/ttyUSB0"):
+        assert not mcuflash.PORT_RE.fullmatch(bad), bad
+    assert mcuflash.assign_args({"mainboard": "/dev/ttyS1\n", "toolhead": "/dev/ttyS0"}) == ["--assign", "toolhead=/dev/ttyS0"]
+    assert "klarity_port" in _errors({"klarity_port": "/dev/ttyS1\n"})
+    with pytest.raises(opts.ValidationError):
+        opts.validate_hostname("anvil\n-x")
+
+
+def _errors(raw):
+    try:
+        opts.validate(raw)
+    except opts.ValidationError as e:
+        return e.errors
+    return {}
+
+
+def test_assign_endpoint_rejects_padded_ports(srv):
+    for port in ("/dev/ttyS0\n", " /dev/ttyS0", "/dev/ttyS0 "):
+        assert srv.post("/api/detect", {"assign": {"mainboard": port, "toolhead": "/dev/ttyS2"}})[0] == 422, repr(port)
+
+
+def access(tmp_path, hostname="eitri", **kw):
+    s = Settings(data_dir=tmp_path)
+    return render.access_conf(s, opts.validate(kw), hostname)
+
+
+def test_moonraker_listens_on_loopback_and_cors_has_no_wildcards(tmp_path):
+    conf = access(tmp_path, hostname="anvil")
+    assert "host: 127.0.0.1" in conf and "host: 0.0.0.0" not in conf
+    assert "*" not in conf                                           # no http://*.lan / *.local
+    assert "http://anvil.local" in conf and "http://localhost" in conf
+    assert "trusted_proxies" not in conf                             # not a Moonraker option: it would be ignored or rejected
+    assert "192.168.0.0/16" in conf and "force_logins" not in conf
+
+
+def test_signin_mode_trusts_only_the_printer_itself(tmp_path):
+    conf = access(tmp_path, api_access="signin")
+    assert "127.0.0.0/8" in conf and "::1/128" in conf
+    assert not any(net in conf for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "FE80::/10"))
+    assert "force_logins: True" in conf
+
+
+def test_moonraker_conf_includes_the_managed_access_file_first(tmp_path):
+    s = Settings(data_dir=tmp_path)
+    seeded = render.seed_files(s, opts.validate({}))["moonraker.conf"]
+    sections = [ln for ln in seeded.splitlines() if ln.startswith("[")]
+    assert "[server]" not in sections and "[authorization]" not in sections
+    assert seeded.index(render.ACCESS_INCLUDE) < seeded.index("[file_manager]")
+
+
+def test_hostname_reaches_the_rendered_access_file(tmp_path):
+    ctx = render.build_context(flavor="klipper", options=opts.validate({}), detect=None, lock={}, hostname="anvil")
+    s = Settings(data_dir=tmp_path)
+    assert "http://anvil" in render.render_all(s, ctx)[render.ACCESS_CONF_NAME]
+
+
+def test_backups_are_whole_files_written_before_the_live_file(tmp_path, monkeypatch):
+    """The backup goes through atomic_write (fsync + rename); the live file is only touched afterwards."""
+    s = Settings(data_dir=tmp_path)
+    s.config_dir.mkdir(parents=True)
+    live = s.config_dir / "printer.cfg"
+    live.write_text("old\n")
+    live.chmod(0o640)
+    calls = []
+    real = render.atomic_write
+    monkeypatch.setattr(render, "atomic_write", lambda path, data, mode=0o644: (calls.append(path), real(path, data, mode))[1])
+    render.write(s, render.plan(s, render.render_all(s, make_ctx())))
+    backups = [p for p in calls if ".eitri-backups" in str(p)]
+    assert backups and calls.index(backups[0]) < calls.index(live)
+    assert backups[0].read_text() == "old\n"
+    assert backups[0].stat().st_mode & 0o777 == 0o640                # keeps the original's mode
+    assert not [p for p in backups[0].parent.iterdir() if p.name.startswith(".")]      # no temp file left behind
+
+
+def test_atomic_write_leaves_no_partial_file_on_failure(tmp_path):
+    from eitri_configurator.state import atomic_write
+    target = tmp_path / "x.json"
+    atomic_write(target, "one")
+    with pytest.raises(TypeError):
+        atomic_write(target, 5)                                      # type: ignore[arg-type]
+    assert target.read_text() == "one" and [p.name for p in tmp_path.iterdir()] == ["x.json"]
+
+
+# --- Wi-Fi: the passphrase never appears in argv ---------------------------------------------
+class Recorder:
+    def __init__(self, fail_up=False):
+        self.calls, self.secret, self.fail_up = [], None, fail_up
+
+    async def __call__(self, *argv, timeout=30):
+        self.calls.append(argv)
+        if "passwd-file" in argv:
+            path = argv[argv.index("passwd-file") + 1]
+            self.secret = (open(path).read(), oct(__import__("os").stat(path).st_mode & 0o777), path)
+        if self.fail_up and argv[:3] == ("nmcli", "connection", "up"):
+            return 4, "Error: Connection activation failed: (7) Secrets were required, but not provided.\n"
+        return 0, ""
+
+
+def test_wifi_passphrase_goes_through_a_private_file_not_argv(tmp_path, monkeypatch):
+    import asyncio
+    import os
+    from eitri_configurator import network
+    rec = Recorder()
+    monkeypatch.setattr(network, "run", rec)
+    net = network.Network(Settings(data_dir=tmp_path))
+    res = asyncio.run(net.connect("-oops Net", "s3cret-passphrase"))
+    assert res == {"ok": True, "ssid": "-oops Net"}
+    assert not any("s3cret-passphrase" in a for argv in rec.calls for a in argv)
+    text, mode, path = rec.secret
+    assert text == "802-11-wireless-security.psk:s3cret-passphrase\n" and mode == "0o600"
+    assert not os.path.exists(path)                                  # removed afterwards
+    add = next(a for a in rec.calls if a[:3] == ("nmcli", "connection", "add"))
+    assert add[add.index("ssid") + 1] == "-oops Net" and "wpa-psk" in add     # SSID is a keyword value, never an option
+
+
+def test_wifi_failure_removes_the_profile_and_the_secret(tmp_path, monkeypatch):
+    import asyncio
+    import os
+    from eitri_configurator import network
+    rec = Recorder(fail_up=True)
+    monkeypatch.setattr(network, "run", rec)
+    res = asyncio.run(network.Network(Settings(data_dir=tmp_path)).connect("Home", "wrong-passphrase"))
+    assert not res["ok"] and "Secrets were required" in res["error"]
+    assert rec.calls[-1][:4] == ("nmcli", "connection", "delete", "id")
+    assert not os.path.exists(rec.secret[2])
+
+
+def test_wifi_rejects_control_characters(tmp_path):
+    import asyncio
+    from eitri_configurator import network
+    net = network.Network(Settings(data_dir=tmp_path))
+    for ssid, pw in (("a\nb", None), ("ok", "pass\nword12"), ("x" * 33, None), ("", None)):
+        assert not asyncio.run(net.connect(ssid, pw))["ok"], (ssid, pw)

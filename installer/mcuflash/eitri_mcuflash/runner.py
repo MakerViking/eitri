@@ -656,6 +656,28 @@ class Flasher:
         )
 
     # -- rollback ----------------------------------------------------------------------
+    def rollback_problems(self, bp: BoardPlan, original: bool = False) -> List[str]:
+        """Everything that would stop rollback_board from succeeding, found WITHOUT touching the board.  revert.sh
+        runs this for every board before it flashes any, so a board that cannot go back never leaves the other one
+        already reverted."""
+        name = bp.board.name
+        if bp.method == KATAPULT_METHOD:
+            entry = self.store.original_restorable(name) if original else self.store.latest_restorable(name)
+            if entry is None or not entry.app_path:
+                damaged = self.store.damaged(name)
+                return ["no saved firmware image for the %s board%s" % (name, (" (unreadable backup entries: %s)" % ", ".join(damaged)) if damaged else "")]
+            try:
+                entry.verify_image()
+            except FlashError as exc:
+                return [exc.message]
+            return []
+        stock = self.store.stock_image(name) or self.opt.stock_bins.get(name)
+        if bp.method == SDCARD_SERIAL:
+            if not stock:
+                return ["no stock firmware image for the %s board (pass --stock-bin %s=FILE)" % (name, name)]
+            return ["the %s board: %s" % (name, p) for p in SdcardSerialMethod(self.ctx, bp.board, bp.role.port).preflight_problems()]
+        return ["the %s board cannot be rolled back automatically (method %s)" % (name, bp.method or "unknown")]
+
     def rollback_board(self, bp: BoardPlan, original: bool = False) -> None:
         """Put back the firmware saved before the last flash - or, with *original*, the one the printer
         shipped with (the revert-to-stock target, whatever Eitri updates happened since)."""
@@ -663,7 +685,10 @@ class Flasher:
         if bp.method == KATAPULT_METHOD:
             entry = self.store.original_restorable(name) if original else self.store.latest_restorable(name)
             if entry is None or not entry.app_path:
-                raise FlashError("no saved firmware image for the %s board" % name, code="no_backup", step="rollback", board=name)
+                damaged = self.store.damaged(name)
+                raise FlashError("no saved firmware image for the %s board%s" % (
+                    name, (" (unreadable backup entries: %s)" % ", ".join(damaged)) if damaged else ""), code="no_backup", step="rollback", board=name)
+            entry.verify_image()
             method = KatapultMethod(self.ctx, bp.board, bp.role.port)
             image = open(entry.app_path, "rb").read()
             with method.bootloader() as client:

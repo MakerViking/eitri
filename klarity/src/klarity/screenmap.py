@@ -13,7 +13,8 @@ sets ``allow_todo`` -- a wrong id on a *cancel print* button would otherwise be 
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator, Mapping
+import string
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -122,6 +123,40 @@ class Test:
 # --------------------------------------------------------------------------- bindings
 
 
+def _check_format(fmt: str, nargs: int, ctx: str) -> None:
+    """Reject format strings that could only fail at render time.
+
+    Only plain positional fields are allowed: ``{}``, ``{0}``, ``{1:.0f}``.  Attribute and
+    index access (``{0.foo}``, ``{0[1]}``) and out-of-range or named fields are refused at
+    load time so a bad map surfaces as a MapError, not as an exception inside the push loop.
+    """
+    try:
+        fields = list(string.Formatter().parse(fmt))
+    except ValueError as exc:
+        raise MapError(f"{ctx}.format: {exc}") from exc
+    auto = 0
+    for _, name, spec, conv in fields:
+        if name is None:
+            continue
+        if conv is not None and conv not in "rsa":
+            raise MapError(f"{ctx}.format: unknown conversion !{conv}")
+        if spec and ("{" in spec or "}" in spec):
+            raise MapError(f"{ctx}.format: nested replacement fields are not supported")
+        if name == "":
+            index = auto
+            auto += 1
+        elif name.isdigit():
+            index = int(name)
+        else:
+            raise MapError(
+                f"{ctx}.format: field {{{name}}} not supported (use {{}}, {{0}}, {{1}}...)"
+            )
+        if index >= nargs:
+            raise MapError(
+                f"{ctx}.format: field {{{name}}} refers to source #{index} but only {nargs} given"
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class Binding:
     """State -> one Nextion attribute."""
@@ -149,6 +184,8 @@ class Binding:
         if not isinstance(attr, str) or not attr.isidentifier():
             raise MapError(f"{ctx}.attr: invalid attribute {attr!r}")
         fmt = _opt_str(node, "format", ctx)
+        if fmt is not None:
+            _check_format(fmt, len(sources), ctx)
         if len(sources) > 1 and (fmt is None or attr not in STRING_ATTRS):
             raise MapError(f"{ctx}: multiple sources need a string attribute and a 'format'")
         scale = node.get("scale")
@@ -181,7 +218,11 @@ class Binding:
             value = self.test.evaluate(state, value)
         if self.value_map is not None:
             for key in (value, str(value)):
-                if key in self.value_map:
+                try:
+                    hit = key in self.value_map
+                except TypeError:  # unhashable state value (list/dict)
+                    continue
+                if hit:
                     value = self.value_map[key]
                     break
             else:
@@ -194,7 +235,7 @@ class Binding:
                 args = [args[0] * self.scale]
             try:
                 return self.format.format(*args) if self.format else str(args[0])
-            except (ValueError, IndexError, KeyError):
+            except (ValueError, IndexError, KeyError, AttributeError, TypeError):
                 return None
         if self.scale is not None and _is_number(value):
             value = value * self.scale
@@ -228,7 +269,23 @@ def _color(value: Any, ctx: str) -> int:
 # ------------------------------------------------------------------------------ actions
 
 _ACTION_VERBS = {"gcode", "print", "page", "beep", "set", "log"}
-_ACTION_MODS = {"guard", "cooldown", "read", "file", "else_beep", "clamp", "scale", "zero_ok"}
+_ACTION_MODS = {
+    "guard",
+    "cooldown",
+    "read",
+    "file",
+    "else_beep",
+    "clamp",
+    "scale",
+    "zero_ok",
+    "unguarded",
+}
+#: Print-control verbs that must never run on a bare touch: each needs a state ``guard``
+#: (e.g. cancel only while printing/paused).  ``emergency_stop`` is the one verb that has to
+#: work in any state, so it instead demands an explicit ``unguarded: true`` acknowledgement.
+GUARDED_PRINT_VERBS = frozenset(
+    {"pause", "resume", "cancel", "start", "restart", "firmware_restart"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,6 +336,19 @@ class Action:
         guard = None
         if "guard" in node:
             guard = Test.parse(node["guard"], f"{ctx}.guard", need_source=True)
+        if verb == "print" and guard is None:
+            if arg in GUARDED_PRINT_VERBS:
+                raise MapError(
+                    f"{ctx}: 'print: {arg}' needs a 'guard' (a state test) so a stray touch "
+                    "cannot run it in the wrong state"
+                )
+            if arg == "emergency_stop" and node.get("unguarded") is not True:
+                raise MapError(
+                    f"{ctx}: 'print: emergency_stop' without a 'guard' needs an explicit "
+                    "'unguarded: true' (an e-stop must work in every state, so say so)"
+                )
+        if "unguarded" in node and not isinstance(node["unguarded"], bool):
+            raise MapError(f"{ctx}.unguarded: expected true/false")
         cooldown = node.get("cooldown", 0.0)
         if isinstance(cooldown, bool) or not isinstance(cooldown, int | float) or cooldown < 0:
             raise MapError(f"{ctx}.cooldown: expected seconds >= 0")
@@ -310,6 +380,10 @@ class Action:
             scale,
             bool(node.get("zero_ok", False)),
         )
+
+
+def has_emergency_stop(actions: Iterable[Action]) -> bool:
+    return any(a.verb == "print" and a.arg == "emergency_stop" for a in actions)
 
 
 def _parse_actions(node: Any, ctx: str) -> tuple[Action, ...]:
@@ -423,13 +497,25 @@ class ScreenMap:
     def marker(self, code: int) -> Marker | None:
         """The marker definition for ``code`` if it is confirmed (or TODO ids are allowed)."""
         m = self.markers.get(code)
-        return m if m is not None and (self.allow_todo or not m.todo) else None
+        if m is None or not (self.allow_todo or not m.todo):
+            return None
+        # An unconfirmed (todo) marker never fires the e-stop, even with allow_todo.
+        if m.todo and has_emergency_stop(m.actions):
+            return None
+        return m
 
     def _active_page(self, page: Page) -> bool:
         return self.allow_todo or not page.todo
 
     def _active(self, widget: Widget) -> bool:
-        return self.allow_todo or not (widget.todo or self.pages[widget.page_key].todo)
+        unconfirmed = widget.todo or self.pages[widget.page_key].todo
+        if not unconfirmed:
+            return True
+        # allow_todo lets placeholder ids run, but never an unconfirmed emergency stop: a
+        # wrong id there would halt a live print.  Confirm the widget (drop `todo`) to arm it.
+        return self.allow_todo and not has_emergency_stop(
+            (*widget.on_press, *widget.on_release, *widget.on_number)
+        )
 
     @property
     def has_active_content(self) -> bool:

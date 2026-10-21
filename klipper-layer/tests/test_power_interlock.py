@@ -172,7 +172,9 @@ def test_pending_request_dies_when_the_bed_is_turned_off():
 
 
 def test_blocked_too_long_turns_the_chamber_off(monkeypatch):
-    il, printer, bed, chamber, heaters, raw = build(blocked_timeout=60.)
+    # park_delay is pushed out so this exercises the blocked_timeout fallback
+    il, printer, bed, chamber, heaters, raw = build(blocked_timeout=60.,
+                                                    park_delay=1e6)
     chamber.target = 50.
     set_bed(bed, 40., 80.)
     printer.reactor.now = 1000.
@@ -218,3 +220,99 @@ def test_wait_times_out():
     with pytest.raises(fakes.ConfigError, match="Timed out"):
         il.cmd_QD_SET_CHAMBER(FakeGcmd({"TARGET": 55, "WAIT": 1,
                                         "TIMEOUT": 5}))
+
+
+# --- the gate closing while the chamber is already armed --------------------
+
+def armed_print(**opts):
+    """Chamber armed at 55 C with the bed in its window, mid-print."""
+    il, printer, bed, chamber, heaters, raw = build(
+        chamber_max_target=65, park_delay=30., **opts)
+    set_bed(bed, 80., 80.)
+    chamber.target = 55.
+    printer.reactor.now = 1000.
+    tick(il, printer)
+    assert il.power_allowed() and chamber.target == 55.
+    return il, printer, bed, chamber, heaters, raw
+
+
+def test_lowered_bed_target_parks_the_chamber_then_restores_it():
+    il, printer, bed, chamber, heaters, raw = armed_print()
+    set_bed(bed, 75., 60.)             # slicer lowers M140 below bed_min_target
+    printer.reactor.now = 1001.
+    tick(il, printer)
+    assert not il.power_allowed()
+    assert chamber.target == 55.       # inside the grace period: untouched
+    printer.reactor.now = 1032.
+    tick(il, printer)                  # grace over, well before verify_heater
+    assert chamber.target == 0. and il.parked_target == 55.
+    assert any("paused" in m and "55" in m for m in printer.gcode.infos)
+    printer.reactor.now = 1100.
+    tick(il, printer)
+    assert chamber.target == 0.        # bed still outside its window
+    set_bed(bed, 80., 80.)             # bed target raised again
+    printer.reactor.now = 1101.
+    tick(il, printer)
+    assert il.power_allowed()
+    assert chamber.target == 55. and il.parked_target is None
+    assert any("resumed" in m for m in printer.gcode.infos)
+
+
+def test_short_bed_dip_inside_the_grace_period_changes_nothing():
+    il, printer, bed, chamber, heaters, raw = armed_print()
+    set_bed(bed, 70., 80.)
+    printer.reactor.now = 1010.
+    tick(il, printer)
+    assert not il.power_allowed()
+    set_bed(bed, 80., 80.)
+    printer.reactor.now = 1020.
+    tick(il, printer)
+    printer.reactor.now = 1100.
+    tick(il, printer)
+    assert chamber.target == 55. and il.parked_target is None
+
+
+def test_bed_turned_off_turns_the_chamber_off_and_is_not_restored():
+    il, printer, bed, chamber, heaters, raw = armed_print()
+    set_bed(bed, 60., 0.)              # a real turn-off of the bed
+    printer.reactor.now = 1001.
+    tick(il, printer)
+    printer.reactor.now = 1040.
+    tick(il, printer)
+    assert chamber.target == 0. and il.parked_target is None
+    assert any("turned off" in m for m in printer.gcode.infos)
+    set_bed(bed, 80., 80.)             # heated again by hand much later
+    printer.reactor.now = 1100.
+    tick(il, printer)
+    assert chamber.target == 0.
+
+
+def test_parked_target_yields_to_a_new_request():
+    il, printer, bed, chamber, heaters, raw = armed_print()
+    set_bed(bed, 75., 60.)
+    printer.reactor.now = 1001.
+    tick(il, printer)
+    printer.reactor.now = 1040.
+    tick(il, printer)
+    assert il.parked_target == 55.
+    il.cmd_QD_SET_CHAMBER(FakeGcmd({"TARGET": 0}))   # M141 S0 at print end
+    assert il.parked_target is None
+    set_bed(bed, 80., 80.)
+    printer.reactor.now = 1100.
+    tick(il, printer)
+    assert chamber.target == 0.
+
+
+def test_wait_keeps_waiting_while_the_target_is_parked():
+    il, printer, bed, chamber, heaters, raw = armed_print()
+    set_bed(bed, 75., 60.)
+    printer.reactor.now = 1001.
+    tick(il, printer)
+    printer.reactor.now = 1040.
+    tick(il, printer)
+    assert il.parked_target == 55.
+    chamber.temp = 30.
+    gcmd = FakeGcmd({"TARGET": 55, "WAIT": 1})
+    # call the waiter directly: a parked target is not "cancelled", it times out
+    with pytest.raises(fakes.ConfigError, match="Timed out"):
+        il._wait_for_chamber(gcmd, 55., 5.)

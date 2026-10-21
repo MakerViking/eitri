@@ -12,6 +12,14 @@
 #     the bed is ready, so the stock verify_heater check never sees a heater
 #     that was asked to heat but was held off.
 #
+#   * If the gate closes while the chamber is already armed (a slicer lowers
+#     M140 after the first layers, the bed sags, ...), the chamber target is
+#     parked at 0 after park_delay seconds and restored once the bed is back in
+#     its window. Without that, the chamber would sit gated off with a target
+#     it cannot reach until the stock [verify_heater chamber] check ends the
+#     print with a shutdown. A bed target of 0 is a real turn-off: the chamber
+#     is switched off and nothing is restored.
+#
 # SAFETY: this module only ever *removes* heater power. It does not touch
 # [verify_heater chamber] or any other heater check, it does not change the
 # chamber heater's PID, and it fails closed: if the gate cannot be installed
@@ -24,6 +32,10 @@
 # tuple (allowed, timestamp) refreshed from the main-thread timer; the serial
 # thread only reads it. This keeps all toolhead/heater state access on the
 # reactor thread (the fork read the toolhead from the sensor thread).
+#
+# The gate sits on the heater output, so SET_HEATER_TEMPERATURE HEATER=chamber
+# is also gated, but it does NOT raise the bed first and is not range-checked
+# like QD_SET_CHAMBER. Use QD_SET_CHAMBER / M141 for normal operation.
 #
 # PID_CALIBRATE HEATER=chamber goes through the same gate, so run it only once
 # the bed is in its window (for example M141 S55 first and wait for the bed).
@@ -78,10 +90,15 @@ class QdPowerInterlock:
         self.wait_tolerance = config.getfloat("wait_tolerance", 2., minval=0.)
         self.wait_timeout = config.getfloat("wait_timeout", 3600., minval=0.)
         self.stale_timeout = config.getfloat("stale_timeout", 3., above=0.)
+        # How long an armed chamber may be gated off before its target is
+        # parked. Must stay well below the verify_heater check window.
+        self.park_delay = config.getfloat("park_delay", 30., minval=0.)
         self.chamber = self.bed = self.pheaters = None
         self.gate = (False, 0.)          # (allowed, monotonic timestamp)
         self.reason = "starting"
         self.pending_target = None       # chamber target waiting for the bed
+        self.parked_target = None        # armed target parked while gated off
+        self.closed_since = None         # armed chamber, gate closed since
         self.blocked_since = None
         self.blocked_count = 0
         self.timer = None
@@ -188,6 +205,25 @@ class QdPowerInterlock:
                 target, self.pending_target = self.pending_target, None
                 self.pheaters.set_temperature(self.chamber, target)
                 chamber_target = target
+        if self.parked_target is not None:
+            if chamber_target > 0.:
+                # The chamber was set again meanwhile; that request wins
+                self.parked_target = None
+            elif allowed:
+                target, self.parked_target = self.parked_target, None
+                self.pheaters.set_temperature(self.chamber, target)
+                chamber_target = target
+                self._respond("Chamber heater resumed at %.0fC: bed is back "
+                              "in its interlock window" % (target,))
+        if chamber_target > 0. and not allowed:
+            if self.closed_since is None:
+                self.closed_since = eventtime
+            elif eventtime - self.closed_since > self.park_delay:
+                self._park(chamber_target, bed_target)
+                chamber_target = 0.
+                self.closed_since = None
+        else:
+            self.closed_since = None
         wanted = chamber_target > 0. or self.pending_target is not None
         if wanted and not allowed:
             if self.blocked_since is None:
@@ -203,6 +239,19 @@ class QdPowerInterlock:
         else:
             self.blocked_since = None
 
+    def _park(self, chamber_target, bed_target):
+        """Take an armed chamber target off while the gate is closed."""
+        self.pheaters.set_temperature(self.chamber, 0.)
+        if bed_target > 0.:
+            self.parked_target = chamber_target
+            self._respond("Chamber heater paused (target %.0fC kept): %s. It "
+                          "resumes when the bed is back in its interlock "
+                          "window." % (chamber_target, self.reason))
+        else:
+            self.parked_target = None
+            self._respond("Chamber heater turned off: the bed was turned off "
+                          "(%s)" % (self.reason,))
+
     def _respond(self, msg):
         logging.info("qd_power_interlock: %s", msg)
         self.gcode.respond_info(msg)
@@ -217,6 +266,7 @@ class QdPowerInterlock:
         target = gcmd.get_float("TARGET", minval=0.)
         wait = gcmd.get_int("WAIT", 0, minval=0, maxval=1)
         timeout = gcmd.get_float("TIMEOUT", self.wait_timeout, minval=0.)
+        self.parked_target = None
         if target == 0.:
             self.pending_target = None
             self.pheaters.set_temperature(self.chamber, 0.)
@@ -252,7 +302,9 @@ class QdPowerInterlock:
         start = eventtime = reactor.monotonic()
         while not self.printer.is_shutdown():
             temp, cur_target = self.chamber.get_temp(eventtime)
-            if self.pending_target is None and cur_target != target:
+            # A parked target is still wanted: keep waiting (until timeout)
+            if (self.pending_target is None and self.parked_target is None
+                    and cur_target != target):
                 raise gcmd.error("Chamber heating cancelled (%s)"
                                  % (self.reason,))
             if self.pending_target is None and temp >= (target
@@ -281,6 +333,7 @@ class QdPowerInterlock:
             "power_allowed": self.power_allowed(),
             "reason": self.reason,
             "pending_target": self.pending_target,
+            "parked_target": self.parked_target,
             "blocked_count": self.blocked_count,
             "bed_min_target": self.bed_min_target,
             "chamber_min_target": self.chamber_min_target,

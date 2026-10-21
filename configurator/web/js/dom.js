@@ -63,7 +63,8 @@ const ICONS = {
   camera: '<path d="M4 8h3.500L9 5.500h6L16.500 8H20a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.500"/>',
   screen: '<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/>',
   chip: '<rect x="7" y="7" width="10" height="10" rx="1.500"/><path d="M10 3.500v3.500M14 3.500v3.500M10 17v3.500M14 17v3.500M3.500 10H7M3.500 14H7M17 10h3.500M17 14h3.500"/>',
-  flame: '<path d="M12 3c.5 3.500 5 5.500 5 10.500a5 5 0 0 1-10 0c0-2 1-3.200 2-4.200.2 1.500 1 2.200 1.800 2.500C10.600 8.800 10.800 5.800 12 3z"/>',
+  hammer: '<path d="M4.500 19.500l8-8"/><path d="M10.500 6.500l3.500-3.500 6.500 6.500-3.500 3.500z"/>',
+  nozzle: '<rect x="7" y="3.500" width="10" height="8" rx="1.800"/><path d="M10 7h4M9.500 11.500L12 19l2.500-7.500"/>',
   refresh: '<path d="M20 11a8 8 0 0 0-14.500-3.500M4 4v4h4M4 13a8 8 0 0 0 14.500 3.500M20 20v-4h-4"/>',
   chevron: '<path d="M9 6l6 6-6 6"/>',
   chevronDown: '<path d="M6 9l6 6 6-6"/>',
@@ -101,7 +102,7 @@ export const RUNES = {
   flavor:    'M5 4v16M19 4v16M5 4l14 16M19 4L5 20',               // dagaz
   options:   'M8 3l8 7-8 5 8 6',                                  // sowilo
   review:    'M6 3v18M6 3l10 5-10 5M10 13l7 8',                   // raidho
-  flash:     'M16 4L7 12l9 8',                                    // kenaz: the torch
+  flash:     'M7 3v18M7 7l9 5-9 5',                               // thurisaz: the hammer
   calibrate: 'M12 21V3M6 9l6-6 6 6',                              // tiwaz
   done:      'M12 3l7 6-7 6-7-6zM9.500 12L5 21M14.500 12L19 21',  // othala
 };
@@ -110,5 +111,5 @@ export function rune(step) {
   return svgFromString(`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${RUNES[step] || ''}"/></svg>`);
 }
 
-export const LOGO = `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffb347"/><stop offset=".55" stop-color="#ff6a1a"/><stop offset="1" stop-color="#b3260f"/></linearGradient></defs><path fill="url(#lg)" d="M2 12.6C5.2 12.3 7.2 11 10 11H28V14.6H22C22 17 21 18.6 19.8 19.6V21.2H24V26H8.2V21.2H12.4V19.6C11.2 18.6 10.4 17 10.4 14.6H9.2C6.2 14.6 3.6 13.8 2 12.6Z"/><path class="spark" fill="#ffd98a" d="M23.5 3.2L24.5 6.2 27.5 7.2 24.5 8.2 23.5 11 22.5 8.2 19.5 7.2 22.5 6.2Z"/></svg>`;
+export const LOGO = `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d4eaff"/><stop offset=".5" stop-color="#3b9bff"/><stop offset="1" stop-color="#1d58b0"/></linearGradient></defs><path fill="url(#lg)" d="M2 12.6C5.2 12.3 7.2 11 10 11H28V14.6H22C22 17 21 18.6 19.8 19.6V21.2H24V26H8.2V21.2H12.4V19.6C11.2 18.6 10.4 17 10.4 14.6H9.2C6.2 14.6 3.6 13.8 2 12.6Z"/><path d="M11 12.4H27" stroke="#f2f9ff" stroke-opacity=".6" stroke-width=".9" stroke-linecap="round"/></svg>`;
 export const logo = () => svgFromString(LOGO);

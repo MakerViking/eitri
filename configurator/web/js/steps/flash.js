@@ -6,7 +6,7 @@ import { BOOTLOADER, ROLE_LABEL } from './detect.js';
 
 export const meta = {
   id: 'flash', title: 'Flash', hint: 'Update the MCUs',
-  headline: 'Strike while the *iron* is hot.',
+  headline: 'Hammer in the *firmware*.',
   lead: 'Both control boards get firmware that exactly matches your chosen host. Each board is backed up first, written over its serial link, then read back and verified.',
 };
 
@@ -53,10 +53,10 @@ export async function enter(ctx) {
     const state = b.result ? (b.result.ok ? 'ok' : b.result.skipped ? 'skipped' : 'fail') : b.started ? 'live' : 'idle';
     return h('div', { class: `card fboard ${state}` },
       h('div', { class: 'row' },
-        h('span', { class: 'link-ico' }, icon(b.role === 'toolhead' ? 'flame' : 'cpu')),
+        h('span', { class: 'link-ico' }, icon(b.role === 'toolhead' ? 'nozzle' : 'cpu')),
         h('div', { class: 'grow' }, h('h3', { class: 'card-title' }, ROLE_LABEL[b.role]), h('p', { class: 'card-sub mono' }, `${b.port || '-'} · ${b.chip || '-'}`)),
         b.result ? h('span', { class: `chip ${b.result.ok ? 'ok' : b.result.skipped ? '' : 'bad'}` }, b.result.ok ? 'Verified' : b.result.skipped ? 'Skipped' : 'Failed')
-          : b.started ? h('span', { class: 'chip ember' }, h('span', { class: 'dot live' }), 'Flashing') : h('span', { class: `chip ${blKind}` }, blLabel)),
+          : b.started ? h('span', { class: 'chip accent' }, h('span', { class: 'dot live' }), 'Flashing') : h('span', { class: `chip ${blKind}` }, blLabel)),
       h('div', { class: 'pct-row' }, h('span', { class: 'display pct' }, String(Math.floor(pct)), h('small', null, '%')),
         h('span', { class: 'pct-msg' }, b.result?.ok ? `Now running ${b.result.version || 'the new firmware'}` : b.message || (b.started ? 'Working...' : 'Waiting'))),
       h('div', { class: `forge ${b.result?.ok ? 'done' : b.started ? '' : 'idle'}`, style: { '--p': String(pct) }, role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.floor(pct), 'aria-label': `${ROLE_LABEL[b.role]} progress` }, h('span', { class: 'fill' })),
@@ -100,7 +100,7 @@ export async function enter(ctx) {
     if (running) return ctx.actions.set({ back: { disabled: true }, next: { disabled: true, label: 'Flashing...', icon: null, onClick: null }, note: h('span', null, h('span', { class: 'dot live' }), 'Do not power off the printer.') });
     if (allOk) return ctx.actions.set({ back: { disabled: false }, next: { label: 'Continue', disabled: false, icon: 'arrowRight', onClick: null }, note: 'Both boards verified.' });
     if (failed || finished) return ctx.actions.set({ back: { disabled: false }, next: { label: 'Retry', icon: 'refresh', disabled: false, onClick: () => start(true) }, note: 'Nothing was lost. Retry flashes the remaining board(s).' });
-    ctx.actions.set({ back: { disabled: false }, next: { label: 'Start flashing', icon: 'flame', disabled: !ack || !detect?.flash_ready, onClick: () => start(false) }, note: ack ? null : 'Tick the box above to enable flashing.' });
+    ctx.actions.set({ back: { disabled: false }, next: { label: 'Start flashing', icon: 'hammer', disabled: !ack || !detect?.flash_ready, onClick: () => start(false) }, note: ack ? null : 'Tick the box above to enable flashing.' });
   }
 
   // ------------------------------------------------------------ events

@@ -11,6 +11,7 @@
 #     printer_data/{config,logs,gcodes,database,comms}
 #     eitri/{extras,klarity,toolchain,configurator,home}
 #     eitri/state/                   OS state, root only (etc overlay, RAUC)
+#     eitri/logs/                    eitri-update event log (update.jsonl), root only
 #
 # Environment overrides, used by the tests: EITRI_DATA, EITRI_FACTORY,
 # EITRI_BOOTFS, EITRI_OWNER, EITRI_RUN, EITRI_NO_RESIZE, EITRI_PYTHON,
@@ -64,7 +65,8 @@ first_boot=0
 # Root-only OS state. The etc overlay directories must exist before eitri-etc
 # mounts the overlay.
 dir "" 0755 "$DATA/eitri" "$DATA/eitri/state" "$DATA/eitri/state/etc" \
-	"$DATA/eitri/state/etc/upper" "$DATA/eitri/state/etc/work"
+	"$DATA/eitri/state/etc/upper" "$DATA/eitri/state/etc/work" \
+	"$DATA/eitri/logs"
 
 # The application layer belongs to the service user.
 dir "$OWNER" 0755 \

@@ -30,6 +30,21 @@ def atomic_write(path: str, text: str, *, mode: Optional[int] = None, prefix: st
         raise
 
 
+def fsync_dir(path: str) -> None:
+    """Make the directory entries of *path* durable (a new file, rename or symlink in it).  atomic_write fsyncs the
+    file's data but not the directory that names it."""
+    try:
+        fd = os.open(path or ".", os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass                                     # some filesystems cannot fsync a directory; nothing more to do
+    finally:
+        os.close(fd)
+
+
 def sha256_file(path: str) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as fh:

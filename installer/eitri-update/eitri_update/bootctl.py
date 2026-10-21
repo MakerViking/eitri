@@ -5,7 +5,8 @@ RAUC calls the handler configured as `bootloader-custom-backend` with:
 
     get-primary | set-primary SLOT | get-state SLOT | set-state SLOT good|bad | get-current
 
-where SLOT is the bootname (A or B).  Extra operator commands: status, mark-good.
+where SLOT is the bootname (A or B).  Extra operator commands: status, mark-good.  Works on both layouts (see
+bootenv.py): the in-place boot.env, and the flash-once image's raw state sector via rauc-bootloader.
 """
 from __future__ import annotations
 
@@ -38,7 +39,7 @@ def main(argv: Optional[List[str]] = None, control: Optional[BootControl] = None
         elif cmd == "mark-good":
             ctl.set_state(ctl.current_slot(), "good")
         elif cmd == "status":
-            for key, value in sorted(ctl.read().items()):
+            for key, value in sorted(ctl.status().items()):
                 print("%s=%s" % (key, value))
         else:
             sys.stderr.write("eitri-bootctl: bad arguments\n")

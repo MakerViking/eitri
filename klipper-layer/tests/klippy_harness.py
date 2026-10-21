@@ -16,14 +16,14 @@ import time
 
 import pytest
 
-from conftest import (DICT_DIR, EXTRAS, PYTHON, SCRIPTS)
+from conftest import (DICT_DIR, EXTRAS, PYTHON, SCRIPTS, TESTS)
 
 # Waiting for real temperatures is impossible in batch mode (sensors read 0)
 STUBS = """
 [gcode_macro TEMPERATURE_WAIT]
 rename_existing: BASE_TEMPERATURE_WAIT
 gcode:
-    RESPOND MSG="stub TEMPERATURE_WAIT {rawparams}"
+    { action_respond_info("stub TEMPERATURE_WAIT " ~ rawparams) }
 """
 
 ERROR_PATTERNS = [
@@ -105,6 +105,12 @@ class Env:
         """Expose an extra under another module name (test-only, in the clone)."""
         (self.clone / "klippy" / "extras" / link_name).symlink_to(
             EXTRAS / source_name)
+
+    def add_test_extra(self, name):
+        """Install tests/klippy_extras/<name>.py in the clone and load it."""
+        (self.clone / "klippy" / "extras" / (name + ".py")).symlink_to(
+            TESTS / "klippy_extras" / (name + ".py"))
+        self.append("[%s]\n" % name)
 
     def run(self, gcode, timeout=240, wait_for=None):
         """Feed `gcode` to klippy and return the Result.

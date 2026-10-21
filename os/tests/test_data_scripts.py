@@ -123,6 +123,7 @@ def test_data_init_builds_the_whole_layout(data_env):
         "printer_data/config", "printer_data/logs", "printer_data/gcodes", "printer_data/database",
         "printer_data/comms", "eitri/extras", "eitri/klarity", "eitri/toolchain", "eitri/home",
         "eitri/state/etc/upper", "eitri/state/etc/work",
+        "eitri/logs",  # eitri-prepare and eitri-verify write update.jsonl here
     ]:
         assert (data / rel).is_dir(), rel
     assert (data / "printer_data/moonraker.asvc").read_text() == "klipper\nmoonraker\n"
@@ -207,10 +208,11 @@ def stubs(tmp_path):
     return {"bin": bin_dir, "calls": calls, "inactive": inactive}
 
 
-def mark_good(stubs, cmdline_path, timeout="6"):
+def mark_good(stubs, cmdline_path, timeout="6", *args, update_bin=None):
+    # By default no eitri-update exists (an image without it), so mark-good is the committer.
     env = {**os.environ, "PATH": f"{stubs['bin']}:{os.environ['PATH']}", "EITRI_CMDLINE": str(cmdline_path),
-           "EITRI_TIMEOUT": timeout}
-    return run([LIBEXEC / "mark-good"], env=env)
+           "EITRI_TIMEOUT": timeout, "EITRI_UPDATE_BIN": str(update_bin or stubs["bin"] / "no-eitri-update")}
+    return run([LIBEXEC / "mark-good", *args], env=env)
 
 
 def test_mark_good_when_healthy(stubs, cmdline):
@@ -236,3 +238,34 @@ def test_mark_good_defers_to_rauc_when_another_boot_manager_started_the_system(s
     result = mark_good(stubs, cmdline("root=PARTUUID=6a783df4-05 ro eitri.slot=A"))
     assert result.returncode == 0, result.stderr
     assert stubs["calls"].read_text().strip() == "status mark-good"
+
+
+def test_mark_good_leaves_the_commit_to_eitri_verify_when_eitri_update_is_installed(stubs, cmdline, tmp_path):
+    # Committing before eitri-verify has looked at Klipper, Moonraker and the MCUs would refill the boot
+    # attempts on every boot and make the fall-back unreachable.
+    update = tmp_path / "eitri-update"
+    update.write_text("#!/bin/sh\n")
+    update.chmod(0o755)
+    result = mark_good(stubs, cmdline("eitri.disk=/dev/mmcblk1 rauc.slot=B"), "6", update_bin=update)
+    assert result.returncode == 0, result.stderr
+    assert "commits the slot" in result.stdout
+    assert not stubs["calls"].exists()
+
+
+def test_mark_good_check_gates_without_committing(stubs, cmdline, tmp_path):
+    update = tmp_path / "eitri-update"
+    update.write_text("#!/bin/sh\n")
+    update.chmod(0o755)
+    line = cmdline("eitri.disk=/dev/mmcblk1 rauc.slot=B")
+    result = mark_good(stubs, line, "6", "--check", update_bin=update)
+    assert result.returncode == 0, result.stderr
+    assert not stubs["calls"].exists(), "--check must never touch the boot state"
+    stubs["inactive"].write_text("sshd.service\n")
+    result = mark_good(stubs, line, "6", "--check", update_bin=update)
+    assert result.returncode != 0 and "sshd.service is not active" in result.stderr
+    assert not stubs["calls"].exists()
+
+
+def test_mark_good_rejects_unknown_arguments(stubs, cmdline):
+    result = mark_good(stubs, cmdline("eitri.disk=/dev/mmcblk1"), "6", "--force")
+    assert result.returncode == 2 and not stubs["calls"].exists()

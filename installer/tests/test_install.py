@@ -3,6 +3,7 @@
 import gzip
 import json
 import os
+import shutil
 import subprocess
 
 import pytest
@@ -234,7 +235,9 @@ def test_real_run_arms_stage_two_and_reboots(printer, tmp_path):
     scr = subprocess.run(["python3", os.path.join(INSTALLER, "boot", "mkscr.py"), "--check", boot + "/boot.scr"], stdout=subprocess.PIPE, universal_newlines=True)
     assert scr.returncode == 0 and scr.stdout == open(os.path.join(INSTALLER, "boot", "boot.cmd")).read()
     env = dict(l.split("=", 1) for l in open(boot + "/eitri/boot.env").read().splitlines())
-    assert env == {"eitri_mode": "stage2", "eitri_slot": "A", "eitri_tries": "3", "eitri_state_A": "unknown", "eitri_state_B": "unknown"}
+    # armed with a start counter, not a one-shot flag: a power cut mid-conversion re-enters the installer
+    assert env == {"eitri_mode": "stage2", "eitri_slot": "A", "eitri_tries": "3", "eitri_state_A": "unknown", "eitri_state_B": "unknown",
+                   "eitri_s2_tries": "2"}
     layout = dict(l.split("=", 1) for l in open(boot + "/eitri/layout.env").read().splitlines())
     assert layout["eitri_partuuid_A"] == "6a783df4-05" and layout["eitri_partuuid_B"] == "6a783df4-06"
     assert layout["eitri_s2_kernel"] == "/Image" and layout["eitri_s2_fdt"] == "/dtb/rockchip/rk3328-roc-cc.dtb"
@@ -287,7 +290,7 @@ def test_mcu_recovery_failure_blocks_arming(printer, tmp_path):
     stub.chmod(0o755)
     path, digest = make_backup_file(printer)
     r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--backup-file", path, "--backup-sha256", digest,
-                        "--confirm", "CONVERT", EITRI_MCUFLASH=str(stub))
+                        "--confirm", "CONVERT", "--accept-mcu-roundtrip", EITRI_MCUFLASH=str(stub))
     assert r.returncode == 13 and "could not be proven recoverable" in r.stdout
     assert not os.path.exists(printer.p("/boot/eitri")) and "systemctl reboot" not in printer.calls()
     logged = [l for l in printer.calls() if l.startswith("backup")][0]
@@ -300,7 +303,7 @@ def test_mcu_recovery_success_passes_stock_binaries_through(printer, tmp_path):
     stub.chmod(0o755)
     path, digest = make_backup_file(printer)
     r = printer.install("--flavor", "kalico", "--i-have-a-backup", "--yes", "--backup-file", path, "--backup-sha256", digest, "--confirm", "CONVERT",
-                        "--stock-mcu-bin", "mainboard=/x/qd_mcu.bin", "--accept-no-mcu-backup", EITRI_MCUFLASH=str(stub))
+                        "--stock-mcu-bin", "mainboard=/x/qd_mcu.bin", "--accept-no-mcu-backup", "--accept-mcu-roundtrip", EITRI_MCUFLASH=str(stub))
     assert r.returncode == 0, r.stdout
     logged = [l for l in printer.calls() if l.startswith("backup")][0]
     assert "--flavor kalico" in logged and "--stock-bin mainboard=/x/qd_mcu.bin" in logged and "--accept-no-mcu-backup" in logged
@@ -379,3 +382,181 @@ def test_install_into_rootfs_places_the_on_device_tools(tmp_path):
     for unit in ("eitri-prepare.service", "eitri-verify.service", "eitri-update-check.timer"):
         assert (dest / "usr/lib/systemd/system" / unit).is_file()
     assert (dest / "usr/lib/systemd/system/multi-user.target.wants/eitri-verify.service").is_symlink()
+
+
+# ---- consent for the device write that precedes the CONVERT prompt -----------------------------------------------
+def _ok_stub(tmp_path):
+    stub = tmp_path / "mcuflash-stub"
+    stub.write_text("#!/bin/sh\necho \"$@\" >>\"$FAKE_LOG\"\necho '{\"type\":\"result\",\"ok\":true}'\nexit 0\n")
+    stub.chmod(0o755)
+    return stub
+
+
+def test_the_mcu_roundtrip_needs_explicit_consent_before_any_board_is_written(printer, tmp_path):
+    stub = _ok_stub(tmp_path)
+    path, digest = make_backup_file(printer)
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--backup-file", path, "--backup-sha256", digest,
+                        "--confirm", "CONVERT", EITRI_MCUFLASH=str(stub))
+    assert r.returncode == 3 and "--accept-mcu-roundtrip" in r.stdout and "ERASES the application" in r.stdout
+    assert not [l for l in printer.calls() if l.startswith("backup")]                       # no board was touched
+    assert not os.path.exists(os.path.join(printer.state, "payload"))                       # and nothing big was downloaded either
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--backup-file", path, "--backup-sha256", digest,
+                        "--confirm", "CONVERT", "--accept-mcu-roundtrip", EITRI_MCUFLASH=str(stub))
+    assert r.returncode == 0, r.stdout
+    assert [l for l in printer.calls() if l.startswith("backup")]
+
+
+def test_mcu_skip_needs_no_roundtrip_consent(printer):
+    r = real_run(printer)                                    # --mcu skip
+    assert r.returncode == 0, r.stdout
+
+
+def test_the_help_names_the_toolhead_write():
+    out = subprocess.run([os.path.join(INSTALLER, "install.sh"), "--help"], stdout=subprocess.PIPE, universal_newlines=True).stdout
+    assert "--accept-mcu-roundtrip" in out and "WRITES to the toolhead" in out
+
+
+# ---- the backup must still exist when the point of no return is reached -------------------------------------------
+def test_a_backup_file_that_disappeared_stops_the_conversion(printer):
+    path, digest = make_backup_file(printer)
+    assert printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--mcu", "skip", "--backup-file", path, "--backup-sha256", digest,
+                           "--stage-only").returncode == 0
+    os.unlink(path)                                          # the stick was pulled / the file deleted during the download
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--mcu", "skip", "--confirm", "CONVERT")
+    assert r.returncode == 11 and "is gone" in r.stdout
+    assert not os.path.exists(printer.p("/boot/eitri")) and "systemctl reboot" not in printer.calls()
+
+
+def test_a_backup_file_changed_after_verification_stops_the_conversion(printer):
+    path, digest = make_backup_file(printer)
+    printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--mcu", "skip", "--backup-file", path, "--backup-sha256", digest, "--stage-only")
+    with open(path, "ab") as fh:
+        fh.write(b"x")
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--mcu", "skip", "--confirm", "CONVERT")
+    assert r.returncode == 11 and "has changed since it was verified" in r.stdout
+
+
+def test_a_usb_backup_with_the_stick_pulled_stops_the_conversion(printer, tmp_path):
+    usb = tmp_path / "usbstick"
+    usb.mkdir()
+    env = dict(FAKE_USB_MNT=str(usb), FAKE_USB_FS="ext4", FAKE_USB_UUID="ABCD-1234", FAKE_USB_DEV="/dev/sda1")
+    assert printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--mcu", "skip", "--backup-to-usb", "/dev/sda1", "--stage-only", **env).returncode == 0
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--mcu", "skip", "--confirm", "CONVERT", **env)
+    assert r.returncode == 0, r.stdout                       # stick still there: fine
+    assert "Making sure the backup is still there" in r.stdout
+    shutil.rmtree(printer.p("/boot/eitri"))                  # (undo the arming to run the check again)
+    shutil.move(printer.p("/boot/extlinux/extlinux.conf.stock"), printer.p("/boot/extlinux/extlinux.conf"))
+    for f in (usb / "EITRI-BACKUP").rglob("mmcblk1.img.gz*"):
+        f.unlink()                                           # the file is gone from the stick
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--mcu", "skip", "--confirm", "CONVERT", **env)
+    assert r.returncode == 11 and "no longer on the USB stick" in r.stdout
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--mcu", "skip", "--confirm", "CONVERT", FAKE_USB_DEV="", FAKE_USB_UUID="ABCD-1234")
+    assert r.returncode == 11 and "not plugged in" in r.stdout
+
+
+def test_stage2_is_told_where_the_backup_is(printer, tmp_path):
+    usb = tmp_path / "usbstick"
+    usb.mkdir()
+    env = dict(FAKE_USB_MNT=str(usb), FAKE_USB_FS="vfat", FAKE_USB_UUID="ABCD-1234", FAKE_USB_DEV="/dev/sda1")
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--mcu", "skip", "--backup-to-usb", "/dev/sda1", "--confirm", "CONVERT", **env)
+    assert r.returncode == 0, r.stdout
+    conf = open(os.path.join(printer.state, "stage2.conf")).read()
+    assert "backup_method=usb" in conf and "backup_usb_uuid=ABCD-1234" in conf and "backup_path=/EITRI-BACKUP/" in conf and "backup_bytes=" in conf
+
+
+def test_a_backup_image_stored_on_the_disk_being_converted_is_refused(printer):
+    path, digest = make_backup_file(printer)
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--mcu", "skip", "--backup-file", path, "--backup-sha256", digest,
+                        FAKE_USB_DEV=printer.disk + "p2")
+    assert r.returncode == 11 and "not a backup" in r.stdout
+
+
+# ---- backup-to-host must not let USER@HOST:DIR run anything ---------------------------------------------------------
+def _fake_ssh(tmp_path):
+    """An ssh that 'connects' to a sandbox directory: the remote command runs in a local sh, so a command injected through
+    DIR or HOST would visibly happen."""
+    root = tmp_path / "remote"
+    root.mkdir()
+    shim = tmp_path / "sshbin"
+    shim.mkdir()
+    (shim / "ssh").write_text("#!/bin/sh\necho \"ssh $*\" >>\"$FAKE_LOG\"\n"
+                             "[ \"$1\" = -- ] || exit 97\nshift\nshift\ncd \"$FAKE_SSH_ROOT\" || exit 98\nexec sh -c \"$*\"\n")
+    (shim / "ssh").chmod(0o755)
+    return root, shim
+
+
+def test_backup_to_host_quotes_the_directory_and_passes_the_host_after_double_dash(printer, tmp_path):
+    root, shim = _fake_ssh(tmp_path)
+    evil = "bk'; touch pwned; echo '"
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--mcu", "skip", "--stage-only",
+                        "--backup-to-host", "me@pc:" + evil, PATH=str(shim) + os.pathsep + printer.env()["PATH"], FAKE_SSH_ROOT=str(root))
+    assert r.returncode == 0, r.stdout
+    assert not (root / "pwned").exists()
+    stored = list((root / evil).glob("eitri-backup-*.img.gz"))
+    assert len(stored) == 1 and gzip.decompress(stored[0].read_bytes()) == open(printer.disk, "rb").read()
+
+
+@pytest.mark.parametrize("host", ["-oProxyCommand=touch /tmp/x", "me@pc -oX", "a b@c", "@pc", "me@"])
+def test_backup_to_host_rejects_anything_but_a_plain_host(printer, tmp_path, host):
+    root, shim = _fake_ssh(tmp_path)
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--mcu", "skip", "--stage-only",
+                        "--backup-to-host", host + ":/d", PATH=str(shim) + os.pathsep + printer.env()["PATH"], FAKE_SSH_ROOT=str(root))
+    assert r.returncode == 2 and "plain USER@HOST" in r.stdout
+    assert not [l for l in printer.calls() if l.startswith("ssh")]
+
+
+def test_hostile_hostname_cannot_reach_a_file_name_or_remote_command(printer, tmp_path):
+    root, shim = _fake_ssh(tmp_path)
+    printer.write("/etc/hostname", "mk'$(touch pwned)spi\n")
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--mcu", "skip", "--stage-only", "--backup-to-host", "me@pc:d",
+                        PATH=str(shim) + os.pathsep + printer.env()["PATH"], FAKE_SSH_ROOT=str(root))
+    assert r.returncode == 0, r.stdout
+    assert not (root / "pwned").exists() and [p.name for p in (root / "d").iterdir()][0].startswith("eitri-backup-mktouchpwnedspi-")
+
+
+def test_status_explains_an_unfinished_conversion(printer):
+    printer.write("/boot/eitri/boot.env", "eitri_mode=stage2\neitri_s2_tries=1\n")
+    printer.write("/boot/eitri/stage2.state", "phase=partitioned\n")
+    r = printer.install("--status")
+    assert "has not finished" in r.stdout and "revert.sh --full" in r.stdout and "maskrom" in r.stdout
+    r = printer.install("--flavor", "klipper")
+    assert r.returncode == 10 and "earlier conversion did not finish" in r.stdout
+
+
+# ---- release builds must carry a trust root -------------------------------------------------------------------------
+def _rootfs_install(tmp_path, keys_dir=None, **env):
+    dest = tmp_path / "rootfs"
+    (dest / "usr" / "lib" / "python3.14" / "site-packages").mkdir(parents=True, exist_ok=True)
+    tool_root = tmp_path / "installer-copy"
+    if not tool_root.exists():
+        shutil.copytree(INSTALLER, tool_root, ignore=shutil.ignore_patterns("__pycache__", "tests", "keys"))
+        (tool_root / "keys").mkdir()
+    if keys_dir:
+        for f in os.listdir(keys_dir):
+            shutil.copy(os.path.join(keys_dir, f), tool_root / "keys" / f)
+    e = dict(os.environ)
+    e.update(env)
+    r = subprocess.run([str(tool_root / "tools" / "install-into-rootfs.sh"), str(dest)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       universal_newlines=True, env=e)
+    return dest, r
+
+
+def test_a_build_that_requires_a_release_key_fails_without_one(tmp_path):
+    dest, r = _rootfs_install(tmp_path, EITRI_REQUIRE_UPDATE_KEY="1")
+    assert r.returncode == 1 and "EITRI_REQUIRE_UPDATE_KEY=1" in r.stdout
+    dest, r = _rootfs_install(tmp_path / "dev")
+    assert r.returncode == 0 and "warning: no keys/*.pub" in r.stdout            # development builds only warn
+
+
+def test_a_release_build_ships_the_key_the_revocations_and_the_sequence_floor(tmp_path):
+    keys = tmp_path / "k"
+    keys.mkdir()
+    signer = Signer(tmp_path)
+    shutil.copy(signer.pub, keys / "eitri-release.pub")
+    (keys / "revoked-keys.txt").write_text("# none yet\n")
+    dest, r = _rootfs_install(tmp_path, str(keys), EITRI_REQUIRE_UPDATE_KEY="1", EITRI_MIN_MANIFEST_SEQUENCE="42")
+    assert r.returncode == 0, r.stdout
+    assert (dest / "usr/share/eitri/keys/eitri-release.pub").is_file() and (dest / "usr/share/eitri/keys/revoked-keys.txt").is_file()
+    assert (dest / "usr/share/eitri/min-manifest-sequence").read_text() == "42\n"
+    dest, r = _rootfs_install(tmp_path / "bad", str(keys), EITRI_MIN_MANIFEST_SEQUENCE="soon")
+    assert r.returncode == 2

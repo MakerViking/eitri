@@ -92,3 +92,9 @@ def test_image_is_reproducible(image, tmp_path_factory):
     # Same inputs, same GUIDs: no timestamps or random ids in the partition table.
     dump = run(["sfdisk", "-d", image], check=True).stdout
     assert "7B1F9F0E-3A5C-4F6E-9C41-0E17A1D00001" in dump.upper()
+
+
+def test_data_partition_stops_writing_on_a_filesystem_error():
+    # The mount unit says errors=remount-ro too (test_generator); the superblock default must agree.
+    cfg = (BOARD / "genimage.cfg").read_text()
+    assert re.search(r'extraargs = "[^"]*-e remount-ro\b', cfg)

@@ -59,6 +59,21 @@ ln -sf ../eitri-update-check.timer "$DEST/usr/lib/systemd/system/timers.target.w
 
 shopt -s nullglob
 for key in "$HERE"/keys/*.pub; do install -m 0644 "$key" "$DEST/usr/share/eitri/keys/"; done
+# Keys that must stop being trusted (listed by key id): shipped inside the RAUC-verified image, so retiring a key never
+# depends on the key being retired.  See keys/README.md.
+if [[ -f "$HERE/keys/revoked-keys.txt" ]]; then install -m 0644 "$HERE/keys/revoked-keys.txt" "$DEST/usr/share/eitri/keys/revoked-keys.txt"; fi
+# The lowest channel-manifest sequence this image accepts; survives a reset of /data (which forgets how far the channel got).
+if [[ -n "${EITRI_MIN_MANIFEST_SEQUENCE:-}" ]]; then
+  [[ "$EITRI_MIN_MANIFEST_SEQUENCE" =~ ^[0-9]+$ ]] || { echo "error: EITRI_MIN_MANIFEST_SEQUENCE must be a number" >&2; exit 2; }
+  printf '%s\n' "$EITRI_MIN_MANIFEST_SEQUENCE" >"$DEST/usr/share/eitri/min-manifest-sequence"
+  chmod 0644 "$DEST/usr/share/eitri/min-manifest-sequence"
+fi
 if ! compgen -G "$DEST/usr/share/eitri/keys/*.pub" >/dev/null; then
+  if [[ "${EITRI_REQUIRE_UPDATE_KEY:-0}" == 1 ]]; then
+    # A tag build without a trust root would ship an updater that refuses every manifest (or, worse, gets one added later
+    # from somewhere unverified).  The tag workflow sets EITRI_REQUIRE_UPDATE_KEY=1 so that never gets out.
+    echo "error: EITRI_REQUIRE_UPDATE_KEY=1 but installer/keys/ has no *.pub: commit the release public key before tagging" >&2
+    exit 1
+  fi
   echo "warning: no keys/*.pub in the installer tree: eitri-update will refuse every manifest until a release key is installed" >&2
 fi

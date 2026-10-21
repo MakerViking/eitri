@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import configparser
 import re
+import shutil
 import subprocess
 import sys
 
@@ -11,6 +12,7 @@ import pytest
 from conftest import BOARD, OS_DIR, OVERLAY, REPO_ROOT, need, run
 
 UNIT_DIR = OVERLAY / "usr/lib/systemd/system"
+LIBEXEC_DIR = OVERLAY / "usr/libexec/eitri"
 # klarity.service and eitri-configurator.service belong to their components; post-build.sh installs them.
 COMPONENT_UNITS = [REPO_ROOT / "klarity/systemd/klarity.service", REPO_ROOT / "configurator/systemd/eitri-configurator.service"]
 UNITS = sorted(UNIT_DIR.glob("*.service")) + COMPONENT_UNITS
@@ -157,3 +159,102 @@ def test_polkit_rule_is_valid_javascript_shape():
     result = subprocess.run(["node", "-e", probe], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == ["yes", "no", "yes", "no"]
+
+
+# --- commit policy, privileges and resilience ----------------------------------
+
+def dropin(unit, name="10-eitri-os.conf"):
+    return parse(UNIT_DIR / f"{unit}.d" / name)
+
+
+def test_only_eitri_verify_commits_a_slot_when_eitri_update_is_installed():
+    # eitri-mark-good must not run next to eitri-update: it would commit within seconds of the boot
+    # and refill the boot attempts, so a bad system never falls back.
+    unit = parse(UNIT_DIR / "eitri-mark-good.service")
+    assert unit["Unit"]["ConditionPathExists"] == "!/usr/bin/eitri-update"
+    assert {"eitri-prepare.service", "eitri-verify.service"} <= set(unit["Unit"]["After"].split())
+    # The OS health checks gate eitri-verify instead.
+    verify = dropin("eitri-verify.service")
+    assert verify["Service"]["ExecStartPre"] == "/usr/libexec/eitri/mark-good --check"
+    assert "rauc.service" in verify["Unit"]["After"].split()
+    assert "--check" in (LIBEXEC_DIR / "mark-good").read_text()
+
+
+def test_prepare_waits_for_the_data_layout():
+    unit = dropin("eitri-prepare.service")["Unit"]
+    assert "eitri-data-init.service" in unit["After"].split() and "eitri-data-init.service" in unit["Wants"].split()
+
+
+def test_update_units_the_os_adds_to_exist_in_the_installer_component():
+    for unit in ("eitri-prepare.service", "eitri-verify.service"):
+        assert (REPO_ROOT / "installer/eitri-update/systemd" / unit).is_file()
+
+
+def test_sudo_is_scoped_not_blanket():
+    for path in (OVERLAY / "etc/sudoers.d").iterdir():
+        for raw in path.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "NOPASSWD" in line:
+                commands = [c.strip() for c in line.split("NOPASSWD:", 1)[1].split(",")]
+                assert "ALL" not in commands, f"{path.name}: passwordless sudo for every command: {line}"
+                assert all(c.startswith("/") for c in commands), line
+    text = (OVERLAY / "etc/sudoers.d/eitri").read_text()
+    assert "/usr/bin/eitri-update" in text
+    if shutil.which("visudo"):
+        assert run(["visudo", "-cf", OVERLAY / "etc/sudoers.d/eitri"]).returncode == 0
+
+
+def test_sshd_takes_keys_only():
+    config = dict(
+        line.split(None, 1) for line in (OVERLAY / "etc/ssh/sshd_config").read_text().splitlines()
+        if line.strip() and not line.startswith("#"))
+    assert config["PasswordAuthentication"] == "no"
+    assert config["PermitRootLogin"] == "no" and config["AllowTcpForwarding"] == "no"
+    assert int(config["MaxAuthTries"]) <= 3
+
+
+def test_nginx_limits_uploads_and_is_lan_only():
+    conf = (OVERLAY / "etc/nginx/nginx.conf").read_text()
+    # Only one body-size rule outside the upload route may exist, and it is small.
+    sizes = re.findall(r"client_max_body_size\s+(\S+);", conf)
+    assert sizes[0] == "1m" and "0" not in sizes
+    upload = re.search(r"location ~ \^/\(server/files/upload[^{]*\{(.*?)\}", conf, re.S)
+    assert upload and "client_max_body_size 1g;" in upload.group(1)
+    assert "include /etc/nginx/eitri-lan-only.conf;" in conf
+    acl = (OVERLAY / "etc/nginx/eitri-lan-only.conf").read_text().splitlines()
+    rules = [ln.strip() for ln in acl if ln.strip() and not ln.startswith("#")]
+    assert rules[-1] == "deny all;" and "allow 192.168.0.0/16;" in rules
+    assert "allow 0.0.0.0/0;" not in rules and "allow all;" not in rules
+
+
+def test_root_is_not_checked_at_every_boot():
+    for line in (OVERLAY / "etc/fstab").read_text().splitlines():
+        fields = line.split()
+        if fields and not line.startswith("#") and fields[1] == "/":
+            assert fields[-1] == "0", "a pass of 1 makes systemd-fsck-root fail against the mounted read-only root"
+
+
+def test_python_pip_is_not_in_the_image():
+    # data-init creates the configurator venv with --without-pip; pip and setuptools are ~25 MB per slot.
+    defconfig = (OS_DIR / "configs/eitri_plus4_defconfig").read_text().splitlines()
+    assert "BR2_PACKAGE_PYTHON_PIP=y" not in defconfig
+    assert "--without-pip" in (LIBEXEC_DIR / "data-init").read_text()
+
+
+def test_klipper_is_never_limited_and_the_rest_only_softly():
+    klipper = parse(UNIT_DIR / "klipper.service")
+    for key in ("MemoryMax", "MemoryHigh", "MemoryLimit", "CPUQuota"):
+        assert key not in klipper["Service"], key
+    assert klipper["Unit"]["StartLimitIntervalSec"] == "0"
+    limited = [UNIT_DIR / "moonraker.service"] + [
+        UNIT_DIR / f"{n}.service.d/10-eitri-limits.conf" for n in ("eitri-camera", "go2rtc", "eitri-configurator")]
+    for path in limited:
+        service = parse(path)["Service"]
+        assert "MemoryMax" not in service and service["MemoryHigh"].endswith("M"), path
+
+
+def test_klipper_and_moonraker_cannot_gain_privileges():
+    for name in ("klipper", "moonraker"):
+        assert parse(UNIT_DIR / f"{name}.service")["Service"]["NoNewPrivileges"] == "true"

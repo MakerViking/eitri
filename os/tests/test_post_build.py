@@ -91,6 +91,15 @@ def test_development_password_hash(tree):
     result = post_build(target, base, EITRI_DEV_PASSWORD_HASH="$6$salt$a&b|c\\d")
     assert result.returncode == 0, result.stderr
     assert (target / "etc/shadow").read_text().splitlines()[1].startswith("eitri:$6$salt$a&b|c\\d:")
+    # A bench image gets passwordless sudo in its own drop-in; the shipped rule stays scoped.
+    dev = target / "etc/sudoers.d/eitri-dev"
+    assert "NOPASSWD: ALL" in dev.read_text() and stat.S_IMODE(dev.stat().st_mode) == 0o440
+
+
+def test_a_normal_build_has_no_passwordless_root(tree):
+    target, base = tree
+    post_build(target, base)
+    assert not (target / "etc/sudoers.d/eitri-dev").exists()
 
 
 def test_development_password_is_refused_in_a_release(tree, tmp_path):

@@ -33,14 +33,14 @@ def parse_env(text):
 
 
 class BootSim:
-    STATE_KEYS = ("eitri_mode", "eitri_slot", "eitri_tries", "eitri_state_A", "eitri_state_B")
+    STATE_KEYS = ("eitri_mode", "eitri_slot", "eitri_tries", "eitri_state_A", "eitri_state_B", "eitri_s2_tries")
 
-    def __init__(self, tmp, boot_env=None, shim_sysboot=True, slot_a=True, slot_b=True, stage2=True, script=None):
+    def __init__(self, tmp, boot_env=None, shim_sysboot=True, slot_a=True, slot_b=True, stage2=True, script=None, booti_returns=True):
         self.dir = str(tmp)
         self.img = os.path.join(self.dir, "disk.img")
         self.env = dict(os.environ, MTOOLS_SKIP_CHECK="1")
         self.boot_env = boot_env
-        self._build(shim_sysboot, slot_a, slot_b, stage2, script)
+        self._build(shim_sysboot, slot_a, slot_b, stage2, script, booti_returns)
 
     def _run(self, *argv, **kw):
         return subprocess.run(argv, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=self.env, **kw)
@@ -48,7 +48,7 @@ class BootSim:
     def _mcopy(self, src, dest):
         self._run("mcopy", "-o", "-i", self.img + "@@%d" % FAT_OFFSET, src, "::" + dest)
 
-    def _build(self, shim_sysboot, slot_a, slot_b, stage2, script):
+    def _build(self, shim_sysboot, slot_a, slot_b, stage2, script, booti_returns=True):
         with open(self.img, "wb") as fh:
             fh.truncate(64 * 1024 * 1024)
         sfdisk = "label: dos\nunit: sectors\nstart=2048, size=40960, type=e\nstart=43008, size=40960, type=83\nstart=83968, size=40960, type=83\n"
@@ -80,7 +80,13 @@ class BootSim:
                 fh.write(content)
             self._mcopy(tmpf, "/" + dest)
         text = open(script or os.path.join(BOOT_DIR, "boot.cmd")).read()
-        text = re.sub(r"(?m)^(\s*)booti ", r"\1echo BOOTI bootargs=[${bootargs}] ARGS: ", text)
+        # A booti that works never returns.  The default shim returns (a kernel that cannot start); with
+        # booti_returns=False the sandbox resets right there (its `exit` does not end a sourced script), like a kernel
+        # that took over and then hung.
+        if booti_returns:
+            text = re.sub(r"(?m)^(\s*)booti ", r"\1echo BOOTI bootargs=[${bootargs}] ARGS: ", text)
+        else:
+            text = re.sub(r"(?m)^(\s*)booti (.*)$", r"\1echo BOOTI bootargs=[${bootargs}] ARGS: \2; reset", text)
         if shim_sysboot:
             text = re.sub(r"(?m)^sysboot ", "echo SYSBOOT: ", text)
         scr_src = os.path.join(self.dir, "boot.cmd")

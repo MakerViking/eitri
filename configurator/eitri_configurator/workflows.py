@@ -37,7 +37,7 @@ def analyze_boards(boards: list[dict[str, Any]]) -> dict[str, Any]:
     for b in boards:
         if b["role"] in by_role:
             by_role[b["role"]].append(b)
-        if b.get("port") and not mcuflash.PORT_RE.match(b["port"]):
+        if b.get("port") and not mcuflash.PORT_RE.fullmatch(b["port"]):
             blockers.append({"code": "bad-port", "message": f"Unexpected serial device {b['port']}."})
     for role, found in by_role.items():
         if not found:
@@ -142,8 +142,18 @@ def current_context(ctx: Context) -> dict[str, Any]:
     st = ctx.state.data
     return render.build_context(
         flavor=st["flavor"], options=opts.validate(st["options"]), detect=st["detect"],
-        lock=ctx.lock,
+        lock=ctx.lock, hostname=_hostname(ctx),
     )
+
+
+def _hostname(ctx: Context) -> str:
+    """The name the printer answers to: this run's choice, else what was applied before, else the default."""
+    if ctx.state.data["hostname"]:
+        return ctx.state.data["hostname"]
+    try:
+        return opts.validate_hostname((ctx.settings.eitri_dir / "hostname").read_text())
+    except (OSError, opts.ValidationError):
+        return "eitri"
 
 
 def preview(ctx: Context) -> dict[str, Any]:
@@ -159,7 +169,13 @@ def preview(ctx: Context) -> dict[str, Any]:
         actions.append({"kind": "toolchain", "text": "Install the compiler add-on (about 300 MB) for upstream mode."})
     if ctx.state.data["hostname"]:
         actions.append({"kind": "hostname", "text": f"Set the hostname to {ctx.state.data['hostname']}."})
-    return {"files": render.public(files), "actions": actions,
+    notes = []
+    mr_conf = ctx.settings.config_dir / "moonraker.conf"
+    if mr_conf.is_file() and render.ACCESS_INCLUDE not in mr_conf.read_text(errors="replace"):
+        notes.append("moonraker.conf was written before the Access option existed and does not include eitri-access.conf, "
+                     "so its own [server] and [authorization] sections stay in effect. Add the line "
+                     f"{render.ACCESS_INCLUDE} at the top of moonraker.conf (and remove those two sections) to manage access here.")
+    return {"files": render.public(files), "actions": actions, "notes": notes,
             "stale_detect": ctx.state.data["detect"] is None, "_plan": files}
 
 
@@ -266,12 +282,20 @@ async def run_flash(ctx: Context, job: Job, roles: list[str]) -> dict[str, Any]:
 PHASE_ALIAS = mcuflash.PHASE_ALIASES
 
 
-async def flash_guard(ctx: Context) -> str | None:
-    """Return a reason to refuse flashing, or None."""
+async def print_guard(ctx: Context, what: str) -> str | None:
+    """Return a reason to refuse `what` because a print is running or paused, or None.
+
+    The configurator must never disturb a print: it writes files, restarts services and takes
+    the board UARTs, all of which a running job depends on."""
     try:
         state = await ctx.moonraker.print_state()
     except MoonrakerError:
         return None        # Moonraker/Klipper down: nothing can be printing
     if state in ("printing", "paused"):
-        return f"A print is {state}. Wait for it to finish before flashing the MCUs."
+        return f"A print is {state}. Wait for it to finish before {what}."
     return None
+
+
+async def flash_guard(ctx: Context) -> str | None:
+    """Return a reason to refuse flashing, or None."""
+    return await print_guard(ctx, "flashing the MCUs")

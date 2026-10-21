@@ -11,13 +11,14 @@ PermitRootLogin no
 AllowUsers eitri
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys
-PasswordAuthentication yes
+PasswordAuthentication no
+MaxAuthTries 3
 PermitEmptyPasswords no
 KbdInteractiveAuthentication no
 UsePAM no
 
 X11Forwarding no
-AllowTcpForwarding yes
+AllowTcpForwarding no
 ClientAliveInterval 30
 ClientAliveCountMax 4
 PrintMotd no

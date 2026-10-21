@@ -151,8 +151,16 @@ with its home in `/data/eitri/home`; it has no password, so login is by key.
 
 The `eitri` user may start and stop the Eitri services, reboot, change the host
 name and manage network profiles through polkit
-(`usr/share/polkit-1/rules.d/50-eitri.rules`); it also has passwordless sudo.
-Moonraker's `machine` component therefore works over D-Bus without extra setup.
+(`usr/share/polkit-1/rules.d/50-eitri.rules`). Its sudo rights are scoped:
+`eitri-update` and `eitri-bootctl` without a password, anything else only with
+the account's own password, which is locked until its owner sets one
+(`etc/sudoers.d/eitri`). The account runs several network-facing programs, so
+it must not be a blanket root; bench images get a separate passwordless drop-in.
+Moonraker's `machine` component works over D-Bus without extra setup. sshd takes
+public keys only, with no TCP forwarding. nginx answers the local network only
+(`etc/nginx/eitri-lan-only.conf`: loopback, private and link-local IPv4; IPv6 is
+not restricted, see the comments in the file) and accepts bodies above 1 MiB only
+on the G-code upload routes.
 
 The web UIs are installed under `/usr/share/eitri/ui/{fluidd,mainsail}`;
 `/data/eitri/ui` selects the one nginx serves.
@@ -161,11 +169,18 @@ The web UIs are installed under `/usr/share/eitri/ui/{fluidd,mainsail}`;
 
 Releases arrive as RAUC bundles: signed, `verity` format, one `rootfs.ext4`
 image that contains the kernel. RAUC writes the inactive slot and makes it the
-primary one. U-Boot gives each slot three boot attempts; `eitri-mark-good` marks
-the running slot good only after D-Bus, NetworkManager, sshd, nginx and the
-configurator are active and `/data` is mounted, so an image that cannot even
-bring up the network rolls back by itself. Klipper and Moonraker are not part of
-that check: the application layer on `/data` has its own rollback.
+primary one. U-Boot gives each slot three boot attempts. The slot is committed
+in exactly one place, `eitri-verify.service` (installed with `eitri-update`):
+it runs after `eitri-prepare` (pending data bundles, first-boot MCU flash),
+Klipper and Moonraker, and first requires the OS to be healthy
+(`mark-good --check`: D-Bus, NetworkManager, sshd, nginx and the configurator
+active, `/data` mounted; a drop-in in `eitri-verify.service.d`). An image that
+cannot bring up the network, or whose Klipper cannot reach its MCUs, therefore
+never commits and rolls back by itself. `eitri-mark-good.service` commits on its
+own only on images without `eitri-update`; with it installed, the unit is
+skipped (`ConditionPathExists=!/usr/bin/eitri-update`), because committing any
+earlier would refill the boot attempts on every boot and make the fallback
+unreachable.
 
 Switching to the other slot by hand, from a PC: put `eitri_force_slot=A` or `B`
 into `eitri-boot.env` on the FAT partition.

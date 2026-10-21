@@ -58,10 +58,10 @@ export async function enter(ctx) {
     const [blLabel, blKind, blNote] = BOOTLOADER[rec.bootloader] || BOOTLOADER.unknown;
     return h('div', { class: `card board ${final ? 'found' : 'probing'}` },
       h('div', { class: 'row' },
-        h('span', { class: 'link-ico' }, icon(rec.role === 'toolhead' ? 'flame' : 'cpu')),
+        h('span', { class: 'link-ico' }, icon(rec.role === 'toolhead' ? 'nozzle' : 'cpu')),
         h('div', { class: 'grow' }, h('h3', { class: 'card-title' }, known ? ROLE_LABEL[rec.role] : final ? 'Board, role unclear' : 'A board answered'),
           h('p', { class: 'card-sub mono' }, `${rec.port}${rec.baud ? ` @ ${rec.baud}` : ''}`)),
-        final ? h('span', { class: `chip ${known ? 'ok' : 'warn'}` }, h('span', { class: `dot ${known ? 'ok' : 'warn'}` }), known ? 'Identified' : 'Unassigned') : h('span', { class: 'chip ember' }, h('span', { class: 'dot live' }), 'Answered')),
+        final ? h('span', { class: `chip ${known ? 'ok' : 'warn'}` }, h('span', { class: `dot ${known ? 'ok' : 'warn'}` }), known ? 'Identified' : 'Unassigned') : h('span', { class: 'chip accent' }, h('span', { class: 'dot live' }), 'Answered')),
       h('dl', { class: 'board-facts' },
         h('div', null, h('dt', null, 'MCU'), h('dd', { class: 'mono' }, rec.chip || '-')),
         h('div', null, h('dt', null, 'Running'), h('dd', { class: 'mono' }, rec.version || '-')),
@@ -79,7 +79,7 @@ export async function enter(ctx) {
         h('span', { class: 'link-ico big' }, icon('cpu')),
         h('div', null, h('h3', { class: 'card-title' }, 'Host'), h('p', { class: 'card-sub' }, store.boot.system.board.model),
           h('p', { class: 'help' }, 'Linux, Klipper, Moonraker')),
-        h('span', { class: 'host-glow', 'aria-hidden': 'true' })),
+        h('span', { class: 'host-sheen', 'aria-hidden': 'true' })),
       h('div', { class: 'wires', style: { '--n': String(rows.length) } }, rows.map((rec) => h('div', { class: `wire ${rec?.state === 'found' && result ? 'on' : live ? 'scan' : ''}` },
         h('span', { class: 'wire-label mono' }, rec?.port || 'UART'), h('span', { class: 'wire-line' }, h('i'))))),
       h('div', { class: 'boards' }, rows.map(boardCard)));

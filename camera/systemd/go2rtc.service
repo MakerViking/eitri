@@ -2,6 +2,11 @@
 # Enable with: systemctl enable --now go2rtc
 # Config: /data/printer_data/config/go2rtc.yaml (defaults to the shipped
 # go2rtc.yaml, copied there at install time).
+#
+# RTSP is password protected. The first start generates the credentials into
+# /data/printer_data/config/go2rtc-auth.env (user "eitri", mode 0600); read the
+# password from there. eitri-go2rtc-auth check then refuses to start go2rtc if the
+# config would serve RTSP, WebRTC or the API to the LAN without authentication.
 
 [Unit]
 Description=go2rtc camera gateway (RTSP for OBS)
@@ -13,6 +18,11 @@ Wants=eitri-camera.service
 Type=simple
 User=eitri
 Group=eitri
+# The credentials file is created by the first ExecStartPre; systemd loads
+# EnvironmentFile for each command just before it runs, so later steps see it.
+EnvironmentFile=-/data/printer_data/config/go2rtc-auth.env
+ExecStartPre=/usr/lib/eitri/camera/eitri-go2rtc-auth ensure
+ExecStartPre=/usr/lib/eitri/camera/eitri-go2rtc-auth check
 ExecStart=/usr/bin/go2rtc -config /data/printer_data/config/go2rtc.yaml
 Restart=on-failure
 RestartSec=3

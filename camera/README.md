@@ -25,6 +25,7 @@ Design rules:
 | Path | Purpose | Installed to (suggested) |
 |---|---|---|
 | `bin/eitri-camera-tune` | `wait` for the node; `tune` V4L2 controls (never fatal) | `/usr/lib/eitri/camera/` |
+| `bin/eitri-go2rtc-auth` | `ensure` RTSP credentials exist; `check` that go2rtc's config is not open to the LAN | `/usr/lib/eitri/camera/` |
 | `bin/eitri-camera-probe-mpp` | Honest report of V4L2 H.264 encoders and MPP | `/usr/lib/eitri/camera/` |
 | `bench/bench.sh` | FPS and bandwidth: `/stream` vs raw V4L2 | `/usr/lib/eitri/camera/` |
 | `systemd/eitri-camera.service` | ustreamer unit | `/usr/lib/systemd/system/` |
@@ -49,6 +50,7 @@ Runtime dependencies on the image (pins belong in `release.lock`):
 ```sh
 install -Dm0755 bin/eitri-camera-tune            /usr/lib/eitri/camera/eitri-camera-tune
 install -Dm0755 bin/eitri-camera-probe-mpp       /usr/lib/eitri/camera/eitri-camera-probe-mpp
+install -Dm0755 bin/eitri-go2rtc-auth            /usr/lib/eitri/camera/eitri-go2rtc-auth
 install -Dm0755 bench/bench.sh                   /usr/lib/eitri/camera/bench.sh
 install -Dm0644 systemd/eitri-camera.service     /usr/lib/systemd/system/eitri-camera.service
 install -Dm0644 systemd/go2rtc.service           /usr/lib/systemd/system/go2rtc.service
@@ -58,9 +60,13 @@ udevadm control --reload && udevadm trigger --subsystem-match=video4linux
 systemctl daemon-reload && systemctl enable --now eitri-camera
 ```
 
-Notes on the unit: the `ExecStartPre` wait fails the start if the node is missing, and
-`Restart=on-failure` retries after 3 s. The `tune` step is prefixed with `-`, so a
-v4l2 problem can never block the stream. The udev rule also starts the unit on hotplug (`SYSTEMD_WANTS`).
+Notes on the unit: `ConditionPathExists=/dev/eitri-cam` skips the unit when no camera is attached, so
+boot never waits on an absent camera and nothing loops. Both udev rules start the unit on hotplug
+(`SYSTEMD_WANTS`), which is what brings it up when a camera appears later. After that the
+`ExecStartPre` wait (5 s) only bridges the moment between the udev event and the symlink; it fails the start if the
+node is missing, and `Restart=on-failure` retries after 3 s. The `tune` step is prefixed with `-`, so a
+v4l2 problem can never block the stream. If you set `EITRI_CAMERA_DEVICE` to another node in `camera.env`, clear the
+condition with a drop-in (`[Unit]` then `ConditionPathExists=`).
 
 ## Frame-rate tuning (why the camera might fall to ~24 fps)
 
@@ -120,8 +126,10 @@ The camera is MJPEG, so OBS needs one of two ways to read it:
 3. If the stream stops after a scene change, enable *Refresh browser when scene becomes active*.
 
 **B. Media Source over RTSP (lower overhead, needs go2rtc.service).**
-1. Enable `go2rtc.service` on the printer. This serves `rtsp://<printer-ip>:8554/eitri_cam`.
-2. Add a *Media Source*. Input: `rtsp://<printer-ip>:8554/eitri_cam`.
+1. Enable `go2rtc.service` on the printer. The first start creates the RTSP credentials in
+   `/data/printer_data/config/go2rtc-auth.env` (user `eitri`, random password, readable by root and `eitri` only). This serves
+   `rtsp://eitri:<password>@<printer-ip>:8554/eitri_cam`.
+2. Add a *Media Source*. Input: that URL.
 3. Turn off *Local file*, enable *Restart playback when source becomes active*.
 4. Disable hardware decoding if it causes trouble. MJPEG decodes fine in software on the OBS PC.
 5. Turn off any network or input buffering option your OBS version offers. Lower buffering trades smoothness for latency, so check both.
@@ -139,14 +147,21 @@ Latency tips:
 
 ## WebRTC
 
-WebRTC does not carry MJPEG. The go2rtc `webrtc` listener is configured but serves nothing for
-`eitri_cam`. A WebRTC view needs the transcoded profile in `go2rtc/profiles/`, which is software
-x264 on the A53 cores and is unlikely to keep up at 1080p30. Benchmark it before relying on it.
+WebRTC does not carry MJPEG, and go2rtc's WebRTC has no authentication, so the shipped config switches it off
+(`webrtc: listen: ""`; go2rtc would otherwise listen on `:8555` on every interface). A WebRTC view needs the
+transcoded profile in `go2rtc/profiles/`, which is software x264 on the A53 cores and is unlikely to keep up at
+1080p30. Benchmark it before relying on it. `eitri-go2rtc-auth check` refuses to start go2rtc with WebRTC on a
+non-loopback address; keep it on loopback, or set `EITRI_GO2RTC_ALLOW_UNSAFE=1` in `go2rtc-auth.env` to accept the exposure knowingly.
 
 ## Security
 
-- `/webcam/` (nginx) and `rtsp://…:8554` (go2rtc) are **unauthenticated**. Keep the printer on a trusted LAN,
-  or add nginx basic auth to the `/webcam/` location and RTSP credentials to go2rtc.
+- `rtsp://…:8554` (go2rtc) needs a password. `go2rtc.service` runs `eitri-go2rtc-auth ensure` (generates the
+  credentials once) and `eitri-go2rtc-auth check` (refuses to start if the config leaves RTSP open, the API off loopback,
+  or WebRTC on). The config reads `${EITRI_RTSP_USER}` and `${EITRI_RTSP_PASS}` from `go2rtc-auth.env`.
+  go2rtc skips authentication for clients on the printer itself (loopback); it applies to every LAN client.
+  go2rtc is disabled by default.
+- `/webcam/` (nginx) is **unauthenticated**, like the rest of the printer UI on port 80: a login on this one path would
+  protect nothing while the UI itself is open. Keep the printer on a trusted LAN until the UI has authentication.
 - ustreamer and the go2rtc API listen on loopback only.
 
 ## Hardware checks
@@ -160,6 +175,7 @@ These need the real printer or board. The offline suite does not cover them. Rec
    frame size matches the raw capture's (`bench.sh --mode both`), since a re-encode would change the bytes.
 4. CPU load during 1080p30 passthrough (`top` during `bench.sh --mode stream`), with Klipper and Moonraker running.
 5. The udev rule on a real plug: `udevadm test` shows the `eitri-cam` symlink, and the unit starts via `SYSTEMD_WANTS`.
+   Boot once with the camera unplugged (the unit must be skipped, with no ~20 s delay and no restart loop), then plug it in.
 6. The unit's `ProtectSystem=strict` and `NoNewPrivileges` do not block the camera on the real image.
 7. OBS: Browser Source and Media Source (RTSP, MJPEG) both render, with measured latency.
 8. `eitri-camera-probe-mpp` on the board. Expected verdict: no V4L2 H.264 encoder. Keep the output with the release.

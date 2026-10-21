@@ -124,8 +124,9 @@ class Shooter:
         await self.cdp.js("document.querySelector('.actionbar .btn-primary').click()")
 
 
-def start_server(port: int, *extra: str) -> subprocess.Popen:
-    p = subprocess.Popen([sys.executable, "-m", "eitri_configurator", "--mock", "--port", str(port), *extra], cwd=ROOT,
+def start_server(port: int, data_dir: Path, *extra: str) -> subprocess.Popen:
+    shutil.rmtree(data_dir, ignore_errors=True)
+    p = subprocess.Popen([sys.executable, "-m", "eitri_configurator", "--mock", "--port", str(port), "--data-dir", str(data_dir), *extra], cwd=ROOT,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(60):
         try:
@@ -136,7 +137,26 @@ def start_server(port: int, *extra: str) -> subprocess.Popen:
     raise RuntimeError("mock server did not start")
 
 
-async def walk(session, chrome_port, server_port, vp_name, theme, folder):
+def pairing_code(data_dir: Path) -> str:
+    """What the printer's screen would show."""
+    return json.loads((data_dir / "eitri" / "configurator" / "pairing.json").read_text())["code"]
+
+
+def api_pair(server_port: int, data_dir: Path) -> tuple[str, str]:
+    """Pair over the API like a script would; returns (bearer token, session cookie value is the same token)."""
+    req = urllib.request.Request(f"http://127.0.0.1:{server_port}/api/pair", method="POST", data=json.dumps({"code": pairing_code(data_dir)}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    body = json.load(urllib.request.urlopen(req))
+    return body["token"], body["csrf"]
+
+
+async def adopt_session(cdp: Cdp, server_port: int, token: str) -> None:
+    """Give the browser the cookie a paired user would have."""
+    await cdp.call("Network.enable")
+    await cdp.call("Network.setCookie", name="eitri_session", value=token, url=f"http://127.0.0.1:{server_port}/", httpOnly=True, sameSite="Strict")
+
+
+async def walk(session, chrome_port, server_port, data_dir, vp_name, theme, folder):
     vp = VIEWPORTS[vp_name]
     cdp = await Cdp.connect(chrome_port, session)
     s = Shooter(cdp, vp, folder)
@@ -146,7 +166,16 @@ async def walk(session, chrome_port, server_port, vp_name, theme, folder):
     base = f"http://127.0.0.1:{server_port}"
     extras = folder / "extras" if theme == "dark" else folder
     ex = Shooter(cdp, vp, extras)
+    # The door first: nothing works until the browser is paired with the code the printer shows.
     await cdp.call("Page.navigate", url=f"{base}/#/welcome")
+    await s.wait("document.querySelector('.code-input')")
+    await s.shot("00-pair", settle=1.4)
+    if theme == "dark":
+        await cdp.js("(() => { const i = document.querySelector('.code-input'); i.value = '00000000'; i.dispatchEvent(new Event('input', {bubbles: true})); document.querySelector('.gate-form').requestSubmit(); })()")
+        await s.wait("document.querySelector('.gate-form .field-error').textContent.length > 0")
+        await ex.shot("00b-pair-wrong-code", settle=0.5)
+    code = pairing_code(data_dir)
+    await cdp.js(f"(() => {{ const i = document.querySelector('.code-input'); i.value = {json.dumps(code)}; i.dispatchEvent(new Event('input', {{bubbles: true}})); document.querySelector('.gate-form').requestSubmit(); }})()")
     await s.wait("document.querySelector('.step-head h1')")
 
     await s.shot("01-welcome", settle=1.6)
@@ -219,21 +248,29 @@ async def walk(session, chrome_port, server_port, vp_name, theme, folder):
     await s.shot("08c-calibrate-shaper")
     await s.click("Bed mesh", scope="document.querySelector('.tools')")
     await s.click("Probe the bed", scope="document.querySelector('.tool-detail')")
-    await s.wait("document.querySelector('.heatmap')", timeout=60)
+    await s.wait("document.querySelector('.meshmap')", timeout=60)
     await s.shot("08d-calibrate-mesh", settle=2.2)
     await s.next()
 
     await s.wait("document.querySelector('[data-step=done].current') && document.querySelector('.klarity-card')")
     await s.shot("09-done", settle=2.6)
-    await cdp.reader_cancel() if False else None
+    if theme == "dark":
+        # Finishing locked the configurator: a browser that is not paired now meets the locked door.
+        await cdp.call("Network.enable")
+        await cdp.call("Network.clearBrowserCookies")
+        await cdp.call("Page.navigate", url=f"{base}/#/welcome")
+        await cdp.call("Page.reload")
+        await ex.wait("document.querySelector('.gate-steps')")
+        await ex.shot("09b-locked", settle=1.2)
 
 
-async def fail_pass(session, chrome_port, server_port, vp_name, folder):
+async def fail_pass(session, chrome_port, server_port, data_dir, vp_name, folder):
     """A flash that fails halfway, to show the error and recovery state."""
     import urllib.request as ur
+    token, _csrf = api_pair(server_port, data_dir)
     def call(method, path, data=None):
         req = ur.Request(f"http://127.0.0.1:{server_port}/api/{path}", method=method, data=json.dumps(data).encode() if data is not None else None,
-                         headers={"Content-Type": "application/json"})
+                         headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
         return json.load(ur.urlopen(req))
     job = call("POST", "detect")["job"]["id"]
     while call("GET", f"jobs/{job}")["status"] == "running":
@@ -243,6 +280,7 @@ async def fail_pass(session, chrome_port, server_port, vp_name, folder):
     vp = VIEWPORTS[vp_name]
     s = Shooter(cdp, vp, folder / "extras")
     await cdp.call("Page.enable")
+    await adopt_session(cdp, server_port, token)
     await s.viewport(vp["height"])
     await cdp.call("Page.navigate", url=f"http://127.0.0.1:{server_port}/#/flash")
     await s.wait("document.querySelector('.ack')")
@@ -252,15 +290,18 @@ async def fail_pass(session, chrome_port, server_port, vp_name, folder):
     await s.shot("07d-flash-failed", settle=1.0)
 
 
-async def assign_pass(session, chrome_port, server_port, vp_name, folder):
+async def assign_pass(session, chrome_port, server_port, data_dir, vp_name, folder):
     """Probing found two boards but cannot say which is which: the manual assignment card."""
     cdp = await Cdp.connect(chrome_port, session)
     vp = VIEWPORTS[vp_name]
     s = Shooter(cdp, vp, folder / "extras")
     await cdp.call("Page.enable")
+    token, _csrf = api_pair(server_port, data_dir)
+    await adopt_session(cdp, server_port, token)
     await s.viewport(vp["height"])
     import urllib.request as ur
-    req = ur.Request(f"http://127.0.0.1:{server_port}/api/state", method="PUT", data=b'{"step":"detect"}', headers={"Content-Type": "application/json"})
+    req = ur.Request(f"http://127.0.0.1:{server_port}/api/state", method="PUT", data=b'{"step":"detect"}',
+                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
     ur.urlopen(req).read()
     await cdp.call("Page.navigate", url=f"http://127.0.0.1:{server_port}/#/detect")
     await s.wait("document.querySelector('.assign')", timeout=40)
@@ -280,34 +321,37 @@ async def main():
             for theme in a.themes.split(","):
                 folder = OUT / (vp_name if theme == "dark" else f"{vp_name}-light")
                 print(f"== {vp_name} / {theme}")
-                server = start_server(server_port, "--mock-speed", "2")
+                data_dir = work / "data"
+                server = start_server(server_port, data_dir, "--mock-speed", "2")
                 chrome = subprocess.Popen([CHROMIUM, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--force-color-profile=srgb",
                                            f"--remote-debugging-port={chrome_port}", f"--user-data-dir={work / (vp_name + theme)}", "about:blank"],
                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 try:
-                    await walk(session, chrome_port, server_port, vp_name, theme, folder)
+                    await walk(session, chrome_port, server_port, data_dir, vp_name, theme, folder)
                 finally:
                     chrome.terminate(); server.terminate()
                     chrome.wait(); server.wait()
         for vp_name in [a.only] if a.only else VIEWPORTS:
-            server = start_server(server_port, "--mock-speed", "3", "--mock-fail", "toolhead:flash")
+            data_dir = work / "data"
+            server = start_server(server_port, data_dir, "--mock-speed", "3", "--mock-fail", "toolhead:flash")
             chrome = subprocess.Popen([CHROMIUM, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--force-color-profile=srgb",
                                        f"--remote-debugging-port={chrome_port}", f"--user-data-dir={work / (vp_name + 'fail')}", "about:blank"],
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
                 print(f"== {vp_name} / flash failure")
-                await fail_pass(session, chrome_port, server_port, vp_name, OUT / vp_name)
+                await fail_pass(session, chrome_port, server_port, data_dir, vp_name, OUT / vp_name)
             finally:
                 chrome.terminate(); server.terminate()
                 chrome.wait(); server.wait()
         for vp_name in [a.only] if a.only else VIEWPORTS:
-            server = start_server(server_port, "--mock-speed", "3", "--mock-unassigned")
+            data_dir = work / "data"
+            server = start_server(server_port, data_dir, "--mock-speed", "3", "--mock-unassigned")
             chrome = subprocess.Popen([CHROMIUM, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--force-color-profile=srgb",
                                        f"--remote-debugging-port={chrome_port}", f"--user-data-dir={work / (vp_name + 'assign')}", "about:blank"],
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
                 print(f"== {vp_name} / manual assignment")
-                await assign_pass(session, chrome_port, server_port, vp_name, OUT / vp_name)
+                await assign_pass(session, chrome_port, server_port, data_dir, vp_name, OUT / vp_name)
             finally:
                 chrome.terminate(); server.terminate()
                 chrome.wait(); server.wait()

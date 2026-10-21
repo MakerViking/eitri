@@ -18,6 +18,10 @@ from eitri_update.rauc import RaucClient
 from eitri_update.state import State
 
 
+RAUC_BOOTLOADER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "os", "board", "eitri-plus4",
+                                      "rootfs-overlay", "usr", "libexec", "eitri", "rauc-bootloader")
+
+
 class Signer:
     def __init__(self, tmp, name="release"):
         self.sk = ed25519.Ed25519PrivateKey.generate()
@@ -110,6 +114,7 @@ class Dispatcher:
         self.mcu_done_before_fail = []       # boards that were flashed before the failing one
         self.mcu_rollbacks = []
         self.passthrough = ("tar", "git")
+        self.helper_calls = []
 
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
@@ -122,7 +127,8 @@ class Dispatcher:
             return RunResult(0, "")
         if "eitri_mcuflash" in argv:
             return self._mcuflash(argv, kw)
-        if a0 in self.passthrough:
+        if a0 in self.passthrough or os.path.basename(a0) == "rauc-bootloader":
+            self.helper_calls.append(list(argv))
             return run(argv, **kw)
         return RunResult(127, "unexpected command %r" % (argv,))
 
@@ -172,7 +178,7 @@ class Dispatcher:
 
 class Rig:
     def __init__(self, tmp, versions=("2026.10.0",), installed="2026.09.0", flavor="klipper", slot="A", sequence=1,
-                 health_ok=True, tries="3"):
+                 health_ok=True, tries="3", configured=True, gpt=False):
         tmp = str(tmp)
         self.tmp = tmp
         self.signer = Signer(tmp)
@@ -182,14 +188,36 @@ class Rig:
         for name, value in (("flavor", flavor), ("channel", "eitri")):
             with open(os.path.join(self.data, "eitri", name), "w") as fh:
                 fh.write(value + "\n")
+        if configured:       # what klipper.service / moonraker.service need before they start (their ConditionPathExists=)
+            for rel in ("firmware/klipper/klippy/klippy.py", "venv/klippy/bin/python", "printer_data/config/printer.cfg",
+                        "firmware/moonraker/moonraker/moonraker.py", "venv/moonraker/bin/python", "printer_data/config/moonraker.conf"):
+                path = os.path.join(self.data, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                open(path, "w").close()
         self.boot = os.path.join(tmp, "boot")
-        os.makedirs(os.path.join(self.boot, "eitri"))
-        with open(os.path.join(self.boot, "eitri", "boot.env"), "w") as fh:
-            fh.write(serialize({"eitri_mode": "eitri", "eitri_slot": slot, "eitri_tries": tries,
-                                "eitri_state_A": "good", "eitri_state_B": "bad"}))
         self.cmdline = os.path.join(tmp, "cmdline")
-        with open(self.cmdline, "w") as fh:
-            fh.write("root=PARTUUID=x ro eitri.slot=%s quiet\n" % slot)
+        self.gpt = gpt
+        bootctl_kw = {}
+        if gpt:
+            # The flash-once image: no boot.env, U-Boot's state lives in a raw sector owned by rauc-bootloader.
+            # The real script runs here, against a plain file.
+            os.makedirs(self.boot)
+            self.state_dev = os.path.join(tmp, "state.img")
+            with open(self.state_dev, "wb") as fh:
+                fh.truncate(4 * 512)
+            with open(self.cmdline, "w") as fh:
+                fh.write("root=/dev/mmcblk1p%d ro rootwait rauc.slot=%s\n" % (2 if slot == "A" else 3, slot))
+            self.helper_env = {"EITRI_STATE_DEV": self.state_dev, "EITRI_STATE_SECTOR": "1", "EITRI_CMDLINE": self.cmdline,
+                               "EITRI_LOCK": os.path.join(tmp, "state.lock")}
+            bootctl_kw = dict(helper=RAUC_BOOTLOADER_SCRIPT, helper_env=self.helper_env,
+                              confirmed_path=os.path.join(self.data, "eitri", "state", "slot-confirmed.json"))
+        else:
+            os.makedirs(os.path.join(self.boot, "eitri"))
+            with open(os.path.join(self.boot, "eitri", "boot.env"), "w") as fh:
+                fh.write(serialize({"eitri_mode": "eitri", "eitri_slot": slot, "eitri_tries": tries,
+                                    "eitri_state_A": "good", "eitri_state_B": "bad"}))
+            with open(self.cmdline, "w") as fh:
+                fh.write("root=PARTUUID=x ro eitri.slot=%s quiet\n" % slot)
         self.run = Dispatcher()
         self.events = EventSink(keep=True, run_id="t")
         self.cfg = Config(manifest_url=self.channel_url(), key_paths=[self.signer.pub], data_root=self.data,
@@ -198,7 +226,7 @@ class Rig:
         self.state = State(os.path.join(self.data, "eitri"))
         if installed:
             self.state.update(installed_version=installed)
-        self.bootctl = BootControl(self.boot, runner=self.run, cmdline_path=self.cmdline, lock_path=os.path.join(tmp, "lock"))
+        self.bootctl = BootControl(self.boot, runner=self.run, cmdline_path=self.cmdline, lock_path=os.path.join(tmp, "lock"), **bootctl_kw)
         self.rebooted = 0
         self.health = lambda url, **kw: type("H", (), {"ok": health_ok, "detail": "ok" if health_ok else "klippy not connected"})()
         self.updater = Updater(self.cfg, self.events, runner=self.run, rauc=RaucClient(self.run), bootctl=self.bootctl, state=self.state,
@@ -212,6 +240,10 @@ class Rig:
 
     def boot_env(self):
         return self.bootctl.read()
+
+    def gpt_raw_state(self, slot):
+        """What rauc-bootloader itself reports for *slot* (attempts left > 0 -> good), bypassing the confirmation rule."""
+        return run([RAUC_BOOTLOADER_SCRIPT, "get-state", slot], env=self.helper_env).output.strip()
 
     def results(self):
         return [e for e in self.events.events if e["type"] == "result"]

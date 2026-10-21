@@ -3,14 +3,17 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 import tempfile
 from pathlib import Path
 
 from aiohttp import web
 
 from . import __version__
+from . import auth
 from .app import create_app
 from .settings import DEFAULT_REPO_ROOT, Settings, parse_cmd
+from .state import StateStore
 
 
 def build_settings(argv: list[str] | None = None) -> Settings:
@@ -28,6 +31,9 @@ def build_settings(argv: list[str] | None = None) -> Settings:
     ap.add_argument("--mock-fail", help="make a mock flash fail, e.g. toolhead:flash")
     ap.add_argument("--mock-freeze", help="stall a mock stage, e.g. flash:62")
     ap.add_argument("--mock-unassigned", action="store_true", help="mock probing cannot tell which UART is which")
+    ap.add_argument("--retire-when-locked", action="store_true",
+                    help="exit cleanly at start-up when setup is complete and the configurator is locked (frees its memory; "
+                         "`systemctl start eitri-configurator` after `eitri-configurator unlock` brings it back)")
     ap.add_argument("--version", action="version", version=__version__)
     a = ap.parse_args(argv)
 
@@ -42,6 +48,7 @@ def build_settings(argv: list[str] | None = None) -> Settings:
             s.mcuflash_cmd = a.mcuflash_cmd
     s.host = a.host or ("127.0.0.1" if a.mock else "0.0.0.0")
     s.port = a.port
+    s.retire_when_locked = a.retire_when_locked
     s.repo_root = a.repo_root
     s.layer_dir = a.layer_dir
     if a.web_dir:
@@ -49,9 +56,41 @@ def build_settings(argv: list[str] | None = None) -> Settings:
     return s
 
 
+ADMIN_COMMANDS = ("pairing", "unlock", "lock")
+
+
+def admin(argv: list[str]) -> int:
+    """`eitri-configurator pairing|unlock|lock [--data-dir DIR]`: run on the printer, never through the API."""
+    ap = argparse.ArgumentParser(prog="eitri-configurator", description="Pairing and lock control for the first-run configurator")
+    ap.add_argument("command", choices=ADMIN_COMMANDS, help="pairing: show the code; unlock: allow pairing after setup; lock: close it again")
+    ap.add_argument("--data-dir", type=Path, default=Path("/data"))
+    a = ap.parse_args(argv)
+    if a.command == "pairing":
+        info = auth.show_pairing(a.data_dir)
+        if info.get("code"):
+            print(f"Pairing code: {info['code']}")
+        else:
+            print(f"No code is shown ({info.get('state', 'unknown')}). After setup, run `eitri-configurator unlock` to pair again.")
+    elif a.command == "unlock":
+        auth.unlock(a.data_dir)
+        print("Unlocked: browsers can pair again with the code on the printer screen (`eitri-configurator pairing`).\n"
+              "It locks again when you finish the wizard, or run `eitri-configurator lock`.\n"
+              "If the service was retired, start it: systemctl start eitri-configurator")
+    else:
+        auth.lock(a.data_dir)
+        print("Locked: the maintenance flag is removed.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> None:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] in ADMIN_COMMANDS:
+        sys.exit(admin(args))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    s = build_settings(argv)
+    s = build_settings(args)
+    if s.retire_when_locked and StateStore(s.state_file).data.get("completed") and not (s.configurator_dir / "unlock").exists():
+        logging.info("setup is complete and the configurator is locked: exiting (--retire-when-locked)")
+        return
     if s.mock:
         logging.info("MOCK mode: scratch data dir %s", s.data_dir)
     web.run_app(create_app(s), host=s.host, port=s.port, access_log=None, print=lambda m: logging.info(m))

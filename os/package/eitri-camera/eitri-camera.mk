@@ -8,7 +8,14 @@ EITRI_CAMERA_VERSION = local
 EITRI_CAMERA_SITE = $(BR2_EXTERNAL_EITRI_PATH)/../camera
 EITRI_CAMERA_SITE_METHOD = local
 EITRI_CAMERA_LICENSE = Apache-2.0
-EITRI_CAMERA_LICENSE_FILES = $(BR2_EXTERNAL_EITRI_PATH)/../LICENSE
+EITRI_CAMERA_LICENSE_FILES = LICENSE
+
+# The licence lives at the repository root, outside this package's source tree;
+# Buildroot reads LICENSE_FILES relative to the build directory.
+define EITRI_CAMERA_COPY_LICENSE
+	cp $(BR2_EXTERNAL_EITRI_PATH)/../LICENSE $(@D)/LICENSE
+endef
+EITRI_CAMERA_POST_RSYNC_HOOKS += EITRI_CAMERA_COPY_LICENSE
 
 # Only runtime files are installed. bench/ and tests/ stay in the source tree.
 define EITRI_CAMERA_INSTALL_TARGET_CMDS

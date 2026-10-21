@@ -1,6 +1,7 @@
 """HTTP API + static frontend."""
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import logging
@@ -10,6 +11,7 @@ from urllib.parse import urlsplit
 from aiohttp import web
 
 from . import __version__, mcuflash, options as opts, releaselock, sysinfo, workflows
+from .auth import COOKIE, CSRF_HEADER, SESSION_TTL, PairError
 from .calibrate import CalibrationError
 from .context import Context
 from .jobs import JobBusy
@@ -22,6 +24,7 @@ log = logging.getLogger("eitri.configurator")
 
 CTX = web.AppKey("ctx", Context)
 MOCK_MR = web.AppKey("mock_mr", web.AppRunner)
+WATCH = web.AppKey("auth_watch", asyncio.Future)
 
 CSP = ("default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
        "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
@@ -34,6 +37,8 @@ def jerr(status: int, message: str, **extra: Any) -> web.Response:
 async def body(request: web.Request) -> dict[str, Any]:
     if not request.can_read_body:
         return {}
+    if request.content_type != "application/json":
+        raise web.HTTPUnsupportedMediaType(text=json.dumps({"ok": False, "error": "send the body as application/json"}), content_type="application/json")
     try:
         data = await request.json()
     except ValueError as exc:
@@ -57,16 +62,63 @@ def _host_allowed(host: str) -> bool:
     return name == "localhost" or "." not in name or name.endswith(".local")
 
 
+SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+PUBLIC_WRITES = ("/api/pair",)
+
+
+def _bearer(request: web.Request) -> str | None:
+    value = request.headers.get("Authorization", "")
+    return value[7:].strip() or None if value[:7].lower() == "bearer " else None
+
+
+def session_token(request: web.Request) -> tuple[str | None, str]:
+    """(token, how it arrived): a bearer token wins over the cookie."""
+    token = _bearer(request)
+    if token:
+        return token, "bearer"
+    return request.cookies.get(COOKIE), "cookie"
+
+
+def _write_precheck(request: web.Request) -> web.Response | None:
+    """Defence in depth before authentication: only this very origin may write, in a browser or not."""
+    origin = request.headers.get("Origin")
+    if origin and urlsplit(origin).netloc != request.host:
+        return jerr(403, "cross-origin request refused")
+    if request.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none"):
+        return jerr(403, "cross-site request refused")
+    if request.can_read_body and request.content_type != "application/json":
+        return jerr(415, "send the body as application/json")
+    return None
+
+
+def _authenticate(request: web.Request) -> web.Response | None:
+    """Every state-changing /api call needs a paired session: proof of standing at the printer."""
+    ctx = ctx_of(request)
+    token, how = session_token(request)
+    if ctx.auth.session(token) is None:
+        if ctx.auth.locked:
+            return jerr(423, "Setup is complete and the configurator is locked. Unlock it on the printer (eitri-configurator unlock).", locked=True)
+        return jerr(401, "Pair this browser first: enter the code shown on the printer.", pairing_required=True)
+    if how == "cookie" and not ctx.auth.csrf_ok(token, request.headers.get(CSRF_HEADER)):
+        # A cookie is sent by the browser on any request; only our own page knows the CSRF token.
+        return jerr(403, "missing or wrong CSRF token")
+    request["session_token"] = token
+    return None
+
+
 @web.middleware
 async def guard(request: web.Request, handler):
     if not _host_allowed(request.host):
         return jerr(403, "unexpected Host header refused")
-    # State-changing calls must come from this very origin: the configurator can flash
-    # firmware, so a web page elsewhere on the LAN must not be able to drive it.
-    if request.method not in ("GET", "HEAD", "OPTIONS"):
-        origin = request.headers.get("Origin")
-        if origin and urlsplit(origin).netloc != request.host:
-            return jerr(403, "cross-origin request refused")
+    ctx = ctx_of(request)
+    ctx.auth.sync()
+    if request.method not in SAFE_METHODS:
+        if (bad := _write_precheck(request)) is not None:
+            _secure(bad)
+            return bad
+        if request.path.startswith("/api/") and request.path not in PUBLIC_WRITES and (bad := _authenticate(request)) is not None:
+            _secure(bad)
+            return bad
     try:
         resp = await handler(request)
     except web.HTTPException as exc:
@@ -124,6 +176,7 @@ async def bootstrap(request: web.Request) -> web.Response:
         "flavors": flavors,
         "options_schema": opts.SCHEMA,
         "active_job": job_json(active) if active else None,
+        "auth": ctx.auth.status(session_token(request)[0]),
     })
 
 
@@ -161,6 +214,42 @@ async def put_state(request: web.Request) -> web.Response:
     return web.json_response(public_state(ctx))
 
 
+# --- pairing ---------------------------------------------------------------
+
+def _set_session_cookie(resp: web.Response, token: str, max_age: int) -> None:
+    # HttpOnly + SameSite=Strict: scripts and other sites cannot read or ride it.  No Secure flag:
+    # the printer serves plain HTTP on the LAN.
+    resp.set_cookie(COOKIE, token, max_age=max_age, path="/", httponly=True, samesite="Strict")
+
+
+async def auth_status(request: web.Request) -> web.Response:
+    return web.json_response(ctx_of(request).auth.status(session_token(request)[0]))
+
+
+async def pair(request: web.Request) -> web.Response:
+    ctx = ctx_of(request)
+    data = await body(request)
+    try:
+        token, expires = ctx.auth.pair(data.get("code"))
+    except PairError as exc:
+        resp = jerr(exc.status, exc.message, **exc.extra)
+        if exc.retry_after:
+            resp.headers["Retry-After"] = str(exc.retry_after)
+        return resp
+    # The token is returned once, for scripts (Authorization: Bearer); the browser keeps it in the cookie.
+    resp = web.json_response({"ok": True, "token": token, **ctx.auth.status(token)})
+    _set_session_cookie(resp, token, SESSION_TTL)
+    return resp
+
+
+async def logout(request: web.Request) -> web.Response:
+    ctx = ctx_of(request)
+    ctx.auth.revoke(request["session_token"])
+    resp = web.json_response({"ok": True})
+    resp.del_cookie(COOKIE, path="/")
+    return resp
+
+
 async def reset(request: web.Request) -> web.Response:
     ctx = ctx_of(request)
     if ctx.jobs.active():
@@ -172,7 +261,10 @@ async def reset(request: web.Request) -> web.Response:
 async def complete(request: web.Request) -> web.Response:
     ctx = ctx_of(request)
     ctx.state.update(completed=True, step="done")
-    return web.json_response(public_state(ctx))
+    # Lock the configurator: other sessions end, this browser keeps a few minutes of grace, and pairing
+    # closes until `eitri-configurator unlock` is run on the printer.
+    ctx.auth.complete(request["session_token"])
+    return web.json_response({**public_state(ctx), "auth": ctx.auth.status(request["session_token"])})
 
 
 async def klarity(request: web.Request) -> web.Response:
@@ -220,7 +312,7 @@ async def detect_start(request: web.Request) -> web.Response:
     if "assign" in data:
         # Operator override of which UART is which (used when probing could not tell).
         raw = data["assign"] or {}
-        if not isinstance(raw, dict) or set(raw) - set(mcuflash.ROLES) or any(not mcuflash.PORT_RE.match(str(v)) for v in raw.values()):
+        if not isinstance(raw, dict) or set(raw) - set(mcuflash.ROLES) or any(not mcuflash.PORT_RE.fullmatch(str(v)) for v in raw.values()):
             return jerr(422, "assign must map mainboard/toolhead to /dev/ttyS<N> ports")
         if raw and (len(raw) != 2 or len(set(raw.values())) != 2):
             return jerr(422, "assign both boards, each to a different port")
@@ -244,6 +336,8 @@ async def apply_start(request: web.Request) -> web.Response:
         return jerr(422, "confirmation required")
     if ctx.state.data["detect"] is None:
         return jerr(409, "Detect the printer's boards first so the MCU ports can be written to the config.")
+    if (why := await workflows.print_guard(ctx, "writing the configuration")):
+        return jerr(409, why)
     return started(ctx.jobs.start("apply", lambda job: workflows.run_apply(ctx, job)))
 
 
@@ -269,6 +363,8 @@ async def restart_service(request: web.Request) -> web.Response:
     ctx = ctx_of(request)
     data = await body(request)
     name = data.get("service")
+    if name in ("klipper", "moonraker") and (why := await workflows.print_guard(ctx, f"restarting {name}")):
+        return jerr(409, why)
     try:
         return web.json_response(await ctx.services.act("restart", str(name)))
     except ValueError as exc:
@@ -387,6 +483,9 @@ def create_app(settings: Settings) -> web.Application:
     app[CTX] = ctx
     r = app.router
     r.add_get("/api/bootstrap", bootstrap)
+    r.add_get("/api/auth", auth_status)
+    r.add_post("/api/pair", pair)
+    r.add_post("/api/logout", logout)
     r.add_get("/api/state", get_state)
     r.add_put("/api/state", put_state)
     r.add_post("/api/reset", reset)
@@ -414,12 +513,14 @@ def create_app(settings: Settings) -> web.Application:
     r.add_static("/", settings.web_dir, follow_symlinks=False)
 
     async def on_startup(app: web.Application) -> None:
+        app[WATCH] = asyncio.ensure_future(ctx.auth.watch())
         if settings.mock:
             from .mock import moonraker as mock_mr
             app[MOCK_MR], ctx.settings.moonraker_url = await mock_mr.start(settings)
             ctx.moonraker.base = ctx.settings.moonraker_url
 
     async def on_cleanup(app: web.Application) -> None:
+        app[WATCH].cancel()
         await ctx.jobs.shutdown()
         await ctx.moonraker.close()
         if MOCK_MR in app:

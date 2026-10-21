@@ -18,3 +18,7 @@ hash=${hash//&/\\&}
 hash=${hash//|/\\|}
 sed -i "s|^eitri:[^:]*:|eitri:${hash}:|" "$TARGET_DIR/etc/shadow"
 echo "eitri qemu post-fakeroot: WARNING: bench image, the eitri user has a development password" >&2
+# The image ships scoped sudo rules; the smoke test runs "sudo bash" and "sudo systemctl poweroff"
+# non-interactively, so this bench image also gets passwordless sudo.
+printf '# QEMU bench image only.\neitri ALL=(ALL) NOPASSWD: ALL\n' >"$TARGET_DIR/etc/sudoers.d/eitri-qemu"
+chmod 0440 "$TARGET_DIR/etc/sudoers.d/eitri-qemu"

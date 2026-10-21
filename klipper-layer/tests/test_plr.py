@@ -86,7 +86,8 @@ def record(**kw):
 
 
 OPTS = {"z_lift": 10., "home_gcode": "G28 X Y", "purge_macro": "QD_PURGE LEN=15",
-        "use_interlock": True, "fan_name": "fan_generic cooling_fan"}
+        "use_interlock": True, "fan_name": "fan_generic cooling_fan",
+        "mesh_profile": "adaptive", "z_homed": False}
 
 
 def header(tmp_path, **rec_kw):
@@ -149,7 +150,8 @@ def test_absolute_extrusion_is_restored():
     lines, _ = plr.build_resume_header(record(extruder_target=0, bed_target=0,
                                               fan=None, bed_mesh_profile="",
                                               toolhead_z=None),
-                                       st, dict(OPTS, purge_macro=""))
+                                       st, dict(OPTS, purge_macro="",
+                                                mesh_profile=None))
     assert "M82" in lines and "G92 E41.25" in lines
     assert not any(ln.startswith(("M140", "M190", "M109", "BED_MESH"))
                    for ln in lines)
@@ -325,4 +327,193 @@ def test_resume_requires_confirmation_and_idle_printer(tmp_path):
     obj.cmd_QD_PLR_RESUME(gcmd)                  # no CONFIRM: explains only
     assert "CONFIRM=1" in gcmd.info[0]
     assert not (tmp_path / ".plr" / "resume-a.gcode").exists()
+    assert obj.printer.gcode.scripts == []
+
+
+# --- Z already homed, bed mesh restoration ----------------------------------
+
+def test_header_keeps_a_measured_z(tmp_path):
+    p = write(tmp_path)
+    st = plr.scan_gcode(str(p), len(PRINT))
+    lines, _ = plr.build_resume_header(record(), st, dict(OPTS, z_homed=True))
+    text = "\n".join(lines)
+    assert "SET_KINEMATIC_POSITION" not in text
+    assert "SET_HOMED" not in text
+    # it still lifts (relative, from the live position) before homing X/Y
+    assert text.index("G1 Z10 F600") < text.index("G28 X Y")
+
+
+def test_header_without_a_mesh_profile_loads_nothing(tmp_path):
+    p = write(tmp_path)
+    st = plr.scan_gcode(str(p), len(PRINT))
+    lines, _ = plr.build_resume_header(record(), st,
+                                       dict(OPTS, mesh_profile=None))
+    assert not any(ln.startswith("BED_MESH_PROFILE") for ln in lines)
+
+
+class FakeMesh:
+    def __init__(self, name, points, params):
+        self.name, self.points, self.params = name, points, params
+
+    def get_profile_name(self):
+        return self.name
+
+    def get_probed_matrix(self):
+        return self.points
+
+    def get_mesh_params(self):
+        return self.params
+
+
+class FakeProfiles:
+    def __init__(self, bed_mesh):
+        self.bed_mesh = bed_mesh
+        self.profiles = {}
+        self.loaded = []
+
+    def load_profile(self, name):
+        prof = self.profiles.get(name)
+        if prof is None:
+            raise fakes.ConfigError("bed_mesh: Unknown profile [%s]" % name)
+        if prof["mesh_params"].get("broken"):
+            raise fakes.ConfigError("bed_mesh: mesh does not fit")
+        self.loaded.append(name)
+        self.bed_mesh.set_mesh(FakeMesh(name, prof["points"],
+                                        prof["mesh_params"]))
+
+
+class FakeBedMesh:
+    def __init__(self, mesh=None):
+        self.z_mesh = mesh
+        self.pmgr = FakeProfiles(self)
+
+    def get_mesh(self):
+        return self.z_mesh
+
+    def set_mesh(self, mesh):
+        self.z_mesh = mesh
+
+    def get_status(self, eventtime=None):
+        return {"profile_name": self.z_mesh.name if self.z_mesh else "",
+                "profiles": self.pmgr.profiles}
+
+
+class FakeToolhead:
+    def __init__(self, homed="", z=0.):
+        self.homed, self.z = homed, z
+
+    def get_status(self, eventtime):
+        return {"homed_axes": self.homed, "axis_maximum": (300., 325., 285., 0.),
+                "position": (10., 20., self.z, 0.)}
+
+
+MESH = {"name": "adaptive", "points": [[0.01, 0.02], [0.0, -0.03]],
+        "mesh_params": {"min_x": 10.0, "max_x": 200.0, "x_count": 2,
+                        "y_count": 2, "algo": "bicubic", "tension": 0.2}}
+
+
+def resume_setup(tmp_path, homed="", z=0., mesh=True, **rec_kw):
+    (tmp_path / ".plr").mkdir()
+    (tmp_path / "a.gcode").write_bytes(PRINT)
+    kw = dict(file="a.gcode", position=len(PRINT))
+    if mesh:
+        kw["bed_mesh"] = MESH
+    kw.update(rec_kw)
+    plr.atomic_write(str(tmp_path / ".plr" / "state.json"),
+                     json.dumps(record(**kw)).encode())
+    obj, sd, stats, state = make_plr(tmp_path)
+    bed_mesh = FakeBedMesh()
+    obj.printer.objects["bed_mesh"] = bed_mesh
+    obj.printer.objects["toolhead"] = FakeToolhead(homed, z)
+    obj.record = plr.load_record(str(state))
+    return obj, bed_mesh
+
+
+def resume_text(tmp_path):
+    return (tmp_path / ".plr" / "resume-a.gcode").read_text()
+
+
+def test_snapshot_records_the_mesh_so_it_survives_a_restart(tmp_path):
+    obj, sd, stats, state = make_plr(tmp_path)
+    obj.printer.objects["bed_mesh"] = FakeBedMesh(
+        FakeMesh(MESH["name"], MESH["points"], MESH["mesh_params"]))
+    stats.state = "printing"
+    job(sd, tmp_path, 120)
+    obj._tick(100.)
+    assert obj.writer.drain()
+    rec = json.loads(state.read_text())
+    assert rec["bed_mesh_profile"] == "adaptive"
+    assert rec["bed_mesh"] == MESH
+    assert plr.load_record(str(state)) is not None
+
+
+def test_resume_rebuilds_an_unsaved_mesh_from_the_record(tmp_path):
+    obj, bed_mesh = resume_setup(tmp_path)
+    assert "adaptive" not in bed_mesh.get_status()["profiles"]   # RAM-only, gone
+    obj.cmd_QD_PLR_RESUME(fakes.FakeGcmd({"CONFIRM": 1}))
+    # the session-only profile exists, was checked, and the mesh state restored
+    assert bed_mesh.pmgr.loaded == [plr.RESUME_MESH_PROFILE]
+    assert bed_mesh.get_mesh() is None
+    prof = bed_mesh.pmgr.profiles[plr.RESUME_MESH_PROFILE]
+    assert prof["points"] == MESH["points"]
+    assert dict(prof["mesh_params"]) == MESH["mesh_params"]
+    head = resume_text(tmp_path)
+    assert "BED_MESH_PROFILE LOAD=%s" % plr.RESUME_MESH_PROFILE in head
+    assert "BED_MESH_PROFILE LOAD=adaptive" not in head
+    assert obj.printer.gcode.scripts == [
+        "SDCARD_PRINT_FILE FILENAME=.plr/resume-a.gcode"]
+
+
+def test_resume_refuses_a_mesh_that_cannot_exist_before_doing_anything(tmp_path):
+    obj, bed_mesh = resume_setup(tmp_path, mesh=False)    # old-style record
+    with pytest.raises(fakes.ConfigError, match="never saved"):
+        obj.cmd_QD_PLR_RESUME(fakes.FakeGcmd({"CONFIRM": 1}))
+    assert not (tmp_path / ".plr" / "resume-a.gcode").exists()
+    assert obj.printer.gcode.scripts == []
+
+
+def test_resume_uses_a_saved_profile_when_the_record_has_no_matrix(tmp_path):
+    obj, bed_mesh = resume_setup(tmp_path, mesh=False)
+    bed_mesh.pmgr.profiles["adaptive"] = {"points": [], "mesh_params": {}}
+    obj.cmd_QD_PLR_RESUME(fakes.FakeGcmd({"CONFIRM": 1}))
+    assert "BED_MESH_PROFILE LOAD=adaptive" in resume_text(tmp_path)
+
+
+def test_resume_refuses_a_mesh_that_will_not_load(tmp_path):
+    obj, bed_mesh = resume_setup(tmp_path)
+    bad = dict(MESH, mesh_params=dict(MESH["mesh_params"], broken=True))
+    obj.record = dict(obj.record, bed_mesh=bad)
+    with pytest.raises(fakes.ConfigError, match="cannot be loaded"):
+        obj.cmd_QD_PLR_RESUME(fakes.FakeGcmd({"CONFIRM": 1}))
+    assert not (tmp_path / ".plr" / "resume-a.gcode").exists()
+    assert obj.printer.gcode.scripts == []
+    assert bed_mesh.get_mesh() is None                   # state put back
+
+
+def test_print_without_a_mesh_resumes_without_one(tmp_path):
+    obj, bed_mesh = resume_setup(tmp_path, mesh=False, bed_mesh_profile="")
+    obj.cmd_QD_PLR_RESUME(fakes.FakeGcmd({"CONFIRM": 1}))
+    assert "BED_MESH_PROFILE" not in resume_text(tmp_path)
+
+
+def test_resume_does_not_overwrite_a_homed_z_with_the_recorded_one(tmp_path):
+    obj, _ = resume_setup(tmp_path, homed="xyz", z=40.)
+    gcmd = fakes.FakeGcmd({"CONFIRM": 1})
+    obj.cmd_QD_PLR_RESUME(gcmd)
+    head = resume_text(tmp_path)
+    assert "SET_KINEMATIC_POSITION" not in head
+    assert any("already homed" in m for m in gcmd.info)
+
+
+def test_resume_forces_the_recorded_z_only_while_z_is_unhomed(tmp_path):
+    obj, _ = resume_setup(tmp_path, homed="xy")
+    obj.cmd_QD_PLR_RESUME(fakes.FakeGcmd({"CONFIRM": 1}))
+    assert "SET_KINEMATIC_POSITION Z=" in resume_text(tmp_path)
+
+
+def test_homed_z_lift_is_checked_against_the_live_height(tmp_path):
+    # recorded Z is low, but the head is really near the top of the axis
+    obj, _ = resume_setup(tmp_path, homed="xyz", z=280.)
+    with pytest.raises(fakes.ConfigError, match="axis limit"):
+        obj.cmd_QD_PLR_RESUME(fakes.FakeGcmd({"CONFIRM": 1}))
     assert obj.printer.gcode.scripts == []

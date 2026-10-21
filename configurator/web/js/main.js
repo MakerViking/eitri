@@ -1,6 +1,8 @@
+import { authEvents } from './api.js';
 import { h, icon, logo, mount, rune, RUNES, svgFromString } from './dom.js';
+import { gateOnDemand, showGate } from './gate.js';
 import { load, patchState, refreshKlarity, store, subscribe } from './store.js';
-import { toggleTheme, spawnEmbers } from './theme.js';
+import { toggleTheme } from './theme.js';
 import { button, toast } from './ui.js';
 import * as welcome from './steps/welcome.js';
 import * as network from './steps/network.js';
@@ -47,7 +49,7 @@ function buildShell() {
       h('span', null, h('span', { class: 'step-title' }, s.meta.title), h('span', { class: 'step-hint' }, s.meta.hint)));
     return h('li', { class: 'step-item', dataset: { step: s.meta.id } }, btn);
   });
-  const heat = h('div', { class: 'steps-heat' });
+  const line = h('div', { class: 'steps-line' });
   const klarityHost = h('div');
   const klarityHost2 = h('div');
   const meter = h('div', { class: 'meter', 'aria-hidden': 'true' }, STEPS.map(() => h('i')));
@@ -59,12 +61,12 @@ function buildShell() {
   const backHost = h('span');
   const nextHost = h('span', { style: { display: 'contents' } });
 
-  const mockBadge = store.boot.app.mock ? h('span', { class: 'chip ember mono', title: 'Mock mode: fake printer hardware, nothing real is touched.' }, 'mock') : null;
+  const mockBadge = store.boot.app.mock ? h('span', { class: 'chip accent mono', title: 'Mock mode: fake printer hardware, nothing real is touched.' }, 'mock') : null;
 
   mount(app, h('div', { class: 'shell' },
     h('aside', { class: 'rail' },
       brand(h('span', { class: 'brand-sub' }, 'Open firmware')),
-      h('ol', { class: 'steps', 'aria-label': 'Setup steps' }, heat, stepItems),
+      h('ol', { class: 'steps', 'aria-label': 'Setup steps' }, line, stepItems),
       h('div', { class: 'rail-foot' },
         klarityHost,
         h('div', { class: 'rail-row' }, h('span', { class: 'version' }, `v${store.boot.app.version}`, mockBadge && ' '), mockBadge, themeButton()))),
@@ -75,7 +77,7 @@ function buildShell() {
       h('div', { class: 'panel-wrap' }, panel),
       h('div', { class: 'actionbar' }, h('div', { class: 'actionbar-inner' }, backHost, noteHost, nextHost)))));
 
-  shell = { stepItems, heat, klarityHost, klarityHost2, meter, meterLabel, head, body, noteHost, backHost, nextHost };
+  shell = { stepItems, line, klarityHost, klarityHost2, meter, meterLabel, head, body, noteHost, backHost, nextHost };
   paintKlarity();
 }
 
@@ -94,7 +96,7 @@ function paintProgress(idx) {
     li.querySelector('.step-btn').disabled = i > furthest;
     if (i === idx) li.querySelector('.step-btn').setAttribute('aria-current', 'step'); else li.querySelector('.step-btn').removeAttribute('aria-current');
   });
-  shell.heat.style.setProperty('--heat', String(idx / (STEPS.length - 1)));
+  shell.line.style.setProperty('--step-progress', String(idx / (STEPS.length - 1)));
   [...shell.meter.children].forEach((el, i) => { el.className = i < idx ? 'on' : i === idx ? 'cur' : ''; });
   mount(shell.meterLabel, h('span', null, 'Step ', h('b', null, String(idx + 1).padStart(2, '0')), ` / ${String(STEPS.length).padStart(2, '0')}`), h('span', null, STEPS[idx].meta.title));
 }
@@ -174,16 +176,15 @@ async function render(id) {
   document.title = `${mod.meta.title} · Eitri`;
 }
 
-// "Forge your *open* printer" -> italic ember accent on the starred words
+// "Forge your *open* printer" -> italic accent on the starred words
 function emphasise(text) {
-  // *word* -> italic ember accent; ~words~ -> kept on one line
+  // *word* -> italic accent; ~words~ -> kept on one line
   return text.split(/(\*[^*]+\*|~[^~]+~)/).filter(Boolean).map((part) =>
     part.startsWith('*') ? h('em', null, part.slice(1, -1)) : part.startsWith('~') ? h('span', { style: { 'white-space': 'nowrap' } }, part.slice(1, -1)) : part);
 }
 
 // ---------------------------------------------------------------- boot
 async function boot() {
-  spawnEmbers(document.getElementById('embers'));
   try {
     await load();
   } catch (err) {
@@ -193,6 +194,8 @@ async function boot() {
       h('p', { style: { marginTop: '1.5rem' } }, button({ label: 'Try again', kind: 'primary', onClick: () => location.reload() }))));
     return;
   }
+  authEvents.addEventListener('gate', () => gateOnDemand());
+  if (!store.boot.auth?.paired) { showGate(store.boot.auth || { pairing_open: true }); return; }
   buildShell();
   subscribe(paintKlarity);
   setInterval(() => { if (!document.hidden) refreshKlarity(); }, 8000);   // no polling from a background tab

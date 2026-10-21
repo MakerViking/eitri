@@ -44,6 +44,13 @@ Out of scope:
 
 The Moonraker API, nginx, the configurator, the camera streams, and go2rtc are **LAN services**. Do not forward any of their ports from your router to the internet. Use a VPN if you need remote access.
 
+What the image does about it (LAN trust model):
+
+- Moonraker listens on `127.0.0.1` only. nginx on port 80 is the one way in and accepts loopback, private (RFC 1918) and link-local IPv4 addresses. IPv6 is not filtered yet.
+- The setup wizard (port 8099) needs a pairing code shown by the printer, closes itself when setup is finished, and re-opens only with `eitri-configurator unlock` on the printer.
+- The camera RTSP stream is password protected (a random password is created on first start). `/webcam/` on port 80 has no login, like the rest of the web interface.
+- The `eitri` account may run only `eitri-update` and `eitri-bootctl` without a password. SSH accepts keys only.
+
 ## Safety-related reports
 
 A bug that could let a heater, motor, or probe behave unsafely is a safety issue as well as a security issue. Report it through the same channel. Until it is fixed, make sure the printer cannot run unattended.

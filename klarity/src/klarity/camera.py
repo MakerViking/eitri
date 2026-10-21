@@ -14,7 +14,7 @@ import logging
 import urllib.request
 from urllib.error import HTTPError, URLError
 
-from .protocol import Cmd
+from .protocol import Cmd, ProtocolError
 from .screen import Screen, ScreenError
 from .screenmap import CameraSpec, ScreenMap
 
@@ -79,7 +79,7 @@ def resize_jpeg(data: bytes, width: int, height: int, quality: int = 70) -> byte
             img.thumbnail((width, height), Image.Resampling.BILINEAR)
             out = io.BytesIO()
             img.save(out, "JPEG", quality=quality, progressive=False, optimize=False)
-    except OSError as exc:
+    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as exc:
         raise CameraError(f"cannot decode snapshot: {exc}") from exc
     return out.getvalue()
 
@@ -127,7 +127,7 @@ class CameraPreview:
                 await self.push_frame(spec)
                 failures = 0
                 await asyncio.sleep(spec.interval)
-            except (CameraError, ScreenError) as exc:
+            except (CameraError, ScreenError, ProtocolError) as exc:
                 failures += 1
                 log.warning("camera preview: %s", exc)
                 await asyncio.sleep(min(spec.interval * 2**failures, 30))

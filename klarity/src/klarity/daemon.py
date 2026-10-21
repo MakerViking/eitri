@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
 
@@ -100,23 +100,58 @@ class Klarity:
         self._ready_logged = False
         self.screen.on_connect = self._on_screen_connect
         self.screen.on_page = self._on_page_change
+        self.screen.is_keypad_frame = self._is_keypad_frame
 
     # ------------------------------------------------------------------ lifecycle
     async def run(self) -> None:
         self._log_map_status()
         try:
             async with asyncio.TaskGroup() as group:
-                group.create_task(self.screen.run(), name="screen")
-                group.create_task(self.moonraker.run(), name="moonraker")
-                group.create_task(self.pusher.run(), name="pusher")
-                group.create_task(self._dispatch_loop(), name="dispatch")
+                loops: dict[str, Callable[[], Coroutine[Any, Any, None]]] = {
+                    "screen": self.screen.run,
+                    "moonraker": self.moonraker.run,
+                    "pusher": self.pusher.run,
+                    "dispatch": self._dispatch_loop,
+                }
                 if self.cfg.status_file:
-                    group.create_task(self._status_loop(), name="status")
+                    loops["status"] = self._status_loop
                 if self.camera is not None:
-                    group.create_task(self.camera.run(), name="camera")
+                    loops["camera"] = self.camera.run
+                for name, factory in loops.items():
+                    group.create_task(self._supervise(name, factory), name=name)
         finally:
             if self.learn:
                 self.learn.close()
+
+    async def _supervise(
+        self,
+        name: str,
+        factory: Callable[[], Coroutine[Any, Any, None]],
+        *,
+        backoff_min: float = 1.0,
+        backoff_max: float = 30.0,
+        healthy_after: float = 60.0,
+    ) -> None:
+        """Run one long-lived loop; log and restart it with backoff if it crashes.
+
+        One unexpected exception (a bad map entry, a library error) must not cancel the
+        screen link, Moonraker link and everything else with it.  The backoff stops a
+        deterministic bug from spinning; it resets once the loop has stayed up a while.
+        """
+        delay = backoff_min
+        while True:
+            started = time.monotonic()
+            try:
+                await factory()
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("%s task crashed; restarting in %.1fs", name, delay)
+            if time.monotonic() - started >= healthy_after:
+                delay = backoff_min
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, backoff_max)
 
     def status(self) -> dict[str, Any]:
         """Link state for the configurator (written to ``[klarity] status_file``)."""
@@ -174,6 +209,11 @@ class Klarity:
         for command in (Cmd.bkcmd(self.cfg.screen.bkcmd), *self.smap.init, Cmd.sendme()):
             await self.screen.send(command)
         self.pusher.invalidate()
+
+    def _is_keypad_frame(self, event: NumberEvent) -> bool:
+        """Is this 0x71 frame the stock keypad's report for a widget the map handles?"""
+        src_page, src_widget, _ = event.stock
+        return self.smap.actions_for_number(src_page, src_widget) is not None
 
     def _on_page_change(self, page: int | None) -> None:
         log.debug("panel page -> %s", page)

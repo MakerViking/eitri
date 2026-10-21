@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import Awaitable, Callable
 
 from .protocol import (
@@ -30,8 +31,16 @@ log = logging.getLogger(__name__)
 STATUS_INVALID_VARIABLE = 0x1A
 
 
+#: After a ``get`` times out, a number/string arriving this soon is most likely its late reply.
+LATE_REPLY_GRACE = 2.0
+
+
 class ScreenError(RuntimeError):
     """The panel rejected a request or did not answer."""
+
+
+class ScreenTimeout(ScreenError):
+    """The panel did not answer in time."""
 
 
 class Screen:
@@ -60,6 +69,11 @@ class Screen:
         self.current_page: int | None = None
         self.on_connect: Callable[[], Awaitable[None]] | None = None
         self.on_page: Callable[[int | None], None] | None = None
+        #: True for a ``0x71`` frame that is the stock keypad's unsolicited report (set by the
+        #: daemon from the map).  Such a frame has the same bytes as a ``get`` reply, so it
+        #: must never be handed to a pending ``get`` waiter.
+        self.is_keypad_frame: Callable[[NumberEvent], bool] | None = None
+        self._late_reply_until = 0.0
         self._waiters: list[tuple[Callable[[Event], bool], asyncio.Future[Event]]] = []
         self._get_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
@@ -143,15 +157,30 @@ class Screen:
                 fut.set_exception(ScreenError("screen reported invalid variable"))
                 self._waiters = [w for w in self._waiters if w[1] is not fut]
                 return
+        late = time.monotonic() < self._late_reply_until
+        if (
+            late
+            and isinstance(event, NumberEvent | StringEvent)
+            and not (isinstance(event, NumberEvent) and self._keypad(event))
+        ):
+            log.debug("dropped late reply to a timed-out get: %r", event)
+            return
         if isinstance(event, Garbage):
             log.debug("dropped %d bytes: %s (%s)", len(event.raw), event.raw.hex(" "), event.reason)
         self.events.put_nowait(event)
+
+    def _keypad(self, event: NumberEvent) -> bool:
+        return self.is_keypad_frame is not None and self.is_keypad_frame(event)
 
     def set_page(self, page: int | None) -> None:
         if page != self.current_page:
             self.current_page = page
             if self.on_page is not None:
-                self.on_page(page)
+                try:
+                    self.on_page(page)
+                except Exception:
+                    # A callback bug must not break the read loop and drop the link.
+                    log.exception("on_page callback failed")
 
     def _fail_waiters(self, exc: Exception) -> None:
         for _, fut in self._waiters:
@@ -176,7 +205,7 @@ class Screen:
             async with asyncio.timeout(timeout):
                 return await fut
         except TimeoutError:
-            raise ScreenError("timed out waiting for the screen") from None
+            raise ScreenTimeout("timed out waiting for the screen") from None
         finally:
             self.release(fut)
 
@@ -212,7 +241,9 @@ class Screen:
         """Read an attribute from the panel.  Calls are serialised so replies cannot cross."""
 
         def is_reply(event: Event) -> bool:
-            return isinstance(event, StringEvent | NumberEvent)
+            if isinstance(event, NumberEvent):
+                return not self._keypad(event)
+            return isinstance(event, StringEvent)
 
         is_reply.is_get_waiter = True  # type: ignore[attr-defined]
         async with self._get_lock:
@@ -220,6 +251,9 @@ class Screen:
             try:
                 await self.send(Cmd.get(expr))
                 event = await self.resolve(fut, timeout)
+            except ScreenTimeout:
+                self._late_reply_until = time.monotonic() + LATE_REPLY_GRACE
+                raise
             finally:
                 self.release(fut)
         return event.text if isinstance(event, StringEvent) else event.value  # type: ignore[union-attr]

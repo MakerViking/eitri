@@ -94,6 +94,7 @@ start_fake_ustreamer() { # port fps width height
 echo "== static checks"
 
 for f in "$CAM"/bin/eitri-camera-tune "$CAM"/bin/eitri-camera-probe-mpp \
+    "$CAM"/bin/eitri-go2rtc-auth \
     "$CAM"/bench/bench.sh "$HERE/run-tests.sh" "$FAKE_BIN/v4l2-ctl"; do
     if sh -n "$f" 2>/dev/null; then
         ok "sh -n $(basename "$f")"
@@ -102,7 +103,8 @@ for f in "$CAM"/bin/eitri-camera-tune "$CAM"/bin/eitri-camera-probe-mpp \
     fi
 done
 
-for f in "$CAM"/bin/eitri-camera-tune "$CAM"/bin/eitri-camera-probe-mpp "$CAM"/bench/bench.sh; do
+for f in "$CAM"/bin/eitri-camera-tune "$CAM"/bin/eitri-camera-probe-mpp \
+    "$CAM"/bin/eitri-go2rtc-auth "$CAM"/bench/bench.sh; do
     if [ -x "$f" ]; then
         ok "executable $(basename "$f")"
     else
@@ -125,6 +127,9 @@ check_contains "unit: 30 fps" "$unit" "--desired-fps=30"
 check_contains "unit: port 8080" "$unit" "--port=8080"
 check_contains "unit: loopback host" "$unit" "--host=127.0.0.1"
 check_contains "unit: eitri-cam device ordering" "$unit" "After=dev-eitri\\x2dcam.device"
+check_contains "unit: skipped (not looped) when no camera is attached" "$unit" "ConditionPathExists=/dev/eitri-cam"
+check_contains "unit: wait step is a short bounded check" "$unit" "Environment=EITRI_CAMERA_WAIT_SECONDS=5"
+check_absent "unit: no Wants on the device (hotplug is udev's job)" "$(grep -v '^#' "$UNIT")" "Wants="
 check_contains "unit: wait step is fatal" "$unit" "ExecStartPre=/usr/lib/eitri/camera/eitri-camera-tune wait"
 check_contains "unit: tune step is non-fatal" "$unit" "ExecStartPre=-/usr/lib/eitri/camera/eitri-camera-tune tune"
 check_contains "unit: runs as eitri" "$unit" "User=eitri"
@@ -145,6 +150,17 @@ fi
 udev=$(cat "$UDEV")
 check_contains "udev: known camera rule" "$udev" 'ATTRS{idProduct}=="0b09"'
 check_contains "udev: generic fallback rule" "$udev" 'ATTRS{idVendor}=="?*"'
+# Both rules must start the unit on hotplug: without it a fallback UVC camera
+# plugged in after boot (the unit was skipped for lack of a node) never streams.
+rules=$(grep -c '^SUBSYSTEM==.*SYMLINK+="eitri-cam".*ENV{SYSTEMD_WANTS}+="eitri-camera.service"' "$UDEV")
+check_eq "udev: every eitri-cam rule starts eitri-camera.service" 2 "$rules"
+check_eq "udev: no eitri-cam rule without SYSTEMD_WANTS" 0 \
+    "$(grep '^SUBSYSTEM==.*SYMLINK+="eitri-cam"' "$UDEV" | grep -vc 'SYSTEMD_WANTS')"
+
+G2UNIT=$(cat "$CAM/systemd/go2rtc.service")
+check_contains "go2rtc unit: generates credentials first" "$G2UNIT" "ExecStartPre=/usr/lib/eitri/camera/eitri-go2rtc-auth ensure"
+check_contains "go2rtc unit: refuses an open config" "$G2UNIT" "ExecStartPre=/usr/lib/eitri/camera/eitri-go2rtc-auth check"
+check_contains "go2rtc unit: loads the credentials file" "$G2UNIT" "EnvironmentFile=-/data/printer_data/config/go2rtc-auth.env"
 
 if python3 -I - "$CAM/go2rtc/go2rtc.yaml" "$CAM/go2rtc/profiles/software-h264.yaml.example" <<'PY' 2>"$TMP/yaml.err"
 import sys
@@ -152,6 +168,9 @@ import yaml
 main = yaml.safe_load(open(sys.argv[1]))
 assert main["streams"]["eitri_cam"] == ["http://127.0.0.1:8080/stream"], main["streams"]
 assert main["api"]["listen"].startswith("127.0.0.1:"), "API must stay on loopback"
+assert main["webrtc"]["listen"] == "", "WebRTC is unauthenticated and cannot carry MJPEG: keep it off"
+assert main["rtsp"]["username"] == "${EITRI_RTSP_USER}", main["rtsp"]
+assert main["rtsp"]["password"] == "${EITRI_RTSP_PASS}", main["rtsp"]
 prof = yaml.safe_load(open(sys.argv[2]))
 assert prof["streams"]["eitri_cam_h264"] == ["ffmpeg:eitri_cam#video=h264"], prof
 PY
@@ -294,6 +313,181 @@ new_tune_case
 check_eq "usage: no subcommand exits 2" 2 "$?"
 
 # ----------------------------------------------------------------------------
+echo "== go2rtc credentials guard"
+
+AUTH="$CAM/bin/eitri-go2rtc-auth"
+GCASE=$(mktemp -d "$TMP/auth.XXXX") || exit 1
+export EITRI_GO2RTC_AUTH_FILE="$GCASE/go2rtc-auth.env"
+unset EITRI_GO2RTC_ALLOW_UNSAFE EITRI_RTSP_USER EITRI_RTSP_PASS
+
+"$AUTH" >/dev/null 2>&1
+check_eq "auth: no subcommand exits 2" 2 "$?"
+
+"$AUTH" ensure 2>/dev/null
+check_eq "auth ensure: exits 0" 0 "$?"
+check_eq "auth ensure: file mode is 0600" 600 "$(stat -c %a "$EITRI_GO2RTC_AUTH_FILE")"
+a_user=$(sed -n 's/^EITRI_RTSP_USER=//p' "$EITRI_GO2RTC_AUTH_FILE")
+a_pass=$(sed -n 's/^EITRI_RTSP_PASS=//p' "$EITRI_GO2RTC_AUTH_FILE")
+check_eq "auth ensure: user is eitri" eitri "$a_user"
+check_eq "auth ensure: password is 36 hex characters" 36 "${#a_pass}"
+case "$a_pass" in
+    *[!0-9a-f]*) bad "auth ensure: password is hex" "$a_pass" ;;
+    *) ok "auth ensure: password is hex" ;;
+esac
+before=$(cat "$EITRI_GO2RTC_AUTH_FILE")
+"$AUTH" ensure 2>/dev/null
+check_eq "auth ensure: existing credentials are never rewritten" "$before" "$(cat "$EITRI_GO2RTC_AUTH_FILE")"
+check_eq "auth ensure: leaves no temp files behind" 1 "$(ls -A "$GCASE" | wc -l)"
+
+rm -f "$EITRI_GO2RTC_AUTH_FILE"
+"$AUTH" ensure 2>/dev/null
+second=$(sed -n 's/^EITRI_RTSP_PASS=//p' "$EITRI_GO2RTC_AUTH_FILE")
+if [ "$second" != "$a_pass" ] && [ -n "$second" ]; then
+    ok "auth ensure: each install gets its own random password"
+else
+    bad "auth ensure: each install gets its own random password"
+fi
+
+printf 'EITRI_RTSP_USER=eitri\nEITRI_RTSP_PASS=\n' >"$EITRI_GO2RTC_AUTH_FILE"
+"$AUTH" ensure 2>/dev/null
+check_eq "auth ensure: replaces a file with an empty password" "" \
+    "$(sed -n 's/^EITRI_RTSP_PASS=$//p' "$EITRI_GO2RTC_AUTH_FILE")"
+check_eq "auth ensure: and the new password is not empty" 36 \
+    "$(sed -n 's/^EITRI_RTSP_PASS=//p' "$EITRI_GO2RTC_AUTH_FILE" | awk '{ print length($0) }')"
+
+EITRI_GO2RTC_AUTH_FILE="$GCASE/missing-dir/auth.env" "$AUTH" ensure >/dev/null 2>&1
+check_eq "auth ensure: missing directory fails" 1 "$?"
+
+# check: the shipped config, with the credentials the unit would load.
+a_user=$(sed -n 's/^EITRI_RTSP_USER=//p' "$EITRI_GO2RTC_AUTH_FILE")
+a_pass=$(sed -n 's/^EITRI_RTSP_PASS=//p' "$EITRI_GO2RTC_AUTH_FILE")
+auth_check() { # config [env assignments via caller]
+    ERR=$(EITRI_GO2RTC_CONFIG="$1" "$AUTH" check 2>&1 >/dev/null)
+    RC=$?
+}
+
+EITRI_RTSP_USER=$a_user EITRI_RTSP_PASS=$a_pass auth_check "$CAM/go2rtc/go2rtc.yaml"
+check_eq "auth check: shipped config with credentials passes" 0 "$RC"
+
+auth_check "$CAM/go2rtc/go2rtc.yaml"
+check_eq "auth check: shipped config without credentials in env fails" 1 "$RC"
+check_contains "auth check: names the unset variable problem" "$ERR" "variable that is not set"
+
+cfg() { # name; reads body from stdin
+    cat > "$GCASE/$1.yaml"
+    echo "$GCASE/$1.yaml"
+}
+
+c=$(cfg old-default <<'Y'
+api:
+  listen: "127.0.0.1:1984"
+rtsp:
+  listen: ":8554"
+  # Add username/password here before exposing RTSP beyond a trusted LAN.
+webrtc:
+  listen: ":8555"
+Y
+)
+auth_check "$c"
+check_eq "auth check: the previous shipped config (open RTSP and WebRTC) fails" 1 "$RC"
+check_contains "auth check: flags open RTSP" "$ERR" "rtsp.username and rtsp.password"
+check_contains "auth check: flags open WebRTC" "$ERR" "webrtc.listen is ':8555'"
+
+c=$(cfg no-sections <<'Y'
+streams:
+  eitri_cam:
+    - http://127.0.0.1:8080/stream
+Y
+)
+auth_check "$c"
+check_eq "auth check: omitted sections (go2rtc defaults are public) fail" 1 "$RC"
+check_contains "auth check: flags the default public API" "$ERR" "api.listen"
+check_contains "auth check: flags the default public WebRTC" "$ERR" "webrtc.listen is not set"
+
+c=$(cfg public-api <<'Y'
+api:
+  listen: ":1984"
+rtsp:
+  listen: "127.0.0.1:8554"
+webrtc:
+  listen: ""
+Y
+)
+auth_check "$c"
+check_eq "auth check: public API fails even with loopback RTSP" 1 "$RC"
+
+c=$(cfg loopback-only <<'Y'
+api:
+  listen: "127.0.0.1:1984"
+rtsp:
+  listen: "127.0.0.1:8554"
+webrtc:
+  listen: "127.0.0.1:8555"
+Y
+)
+auth_check "$c"
+check_eq "auth check: everything on loopback needs no credentials" 0 "$RC"
+
+c=$(cfg literal-creds <<'Y'
+api:
+  listen: "127.0.0.1:1984"
+rtsp:
+  listen: ":8554"
+  username: viewer
+  password: 'hunter2hunter2'   # a trailing comment
+webrtc:
+  listen: ""
+Y
+)
+auth_check "$c"
+check_eq "auth check: literal credentials in the config pass" 0 "$RC"
+
+c=$(cfg empty-password <<'Y'
+api:
+  listen: "127.0.0.1:1984"
+rtsp:
+  listen: ":8554"
+  username: viewer
+  password: ""
+webrtc:
+  listen: ""
+Y
+)
+auth_check "$c"
+check_eq "auth check: empty password fails" 1 "$RC"
+
+c=$(cfg default-substitution <<'Y'
+api:
+  listen: "127.0.0.1:1984"
+rtsp:
+  listen: ":8554"
+  username: ${EITRI_RTSP_USER:viewer}
+  password: ${EITRI_RTSP_PASS}
+webrtc:
+  listen: ""
+Y
+)
+EITRI_RTSP_PASS= auth_check "$c"
+check_eq "auth check: unset password variable is not accepted as a literal" 1 "$RC"
+EITRI_RTSP_PASS=abc auth_check "$c"
+check_eq "auth check: \${VAR:default} user with a set password passes" 0 "$RC"
+
+auth_check "$GCASE/does-not-exist.yaml"
+check_eq "auth check: unreadable config fails" 1 "$RC"
+
+c=$(cfg old-default2 <<'Y'
+api:
+  listen: ":1984"
+rtsp:
+  listen: ":8554"
+Y
+)
+ERR=$(EITRI_GO2RTC_ALLOW_UNSAFE=1 EITRI_GO2RTC_CONFIG="$c" "$AUTH" check 2>&1 >/dev/null)
+check_eq "auth check: EITRI_GO2RTC_ALLOW_UNSAFE=1 downgrades to a warning" 0 "$?"
+check_contains "auth check: and still says what is open" "$ERR" "warning"
+unset EITRI_GO2RTC_AUTH_FILE
+
+# ----------------------------------------------------------------------------
 echo "== MPP / H.264 encoder probe"
 
 probe_case() { # node names to create under a fresh nodes/ directory
@@ -397,16 +591,40 @@ if have go2rtc && have ffprobe && python3 -I -c "import PIL" 2>/dev/null; then
         # Shipped config, with ports moved onto this test's range.
         GCFG="$TMP/go2rtc.yaml"
         sed -e "s#127.0.0.1:1984#127.0.0.1:$((G_PORT + 1))#" \
-            -e "s#:8554#127.0.0.1:$((G_PORT + 2))#" \
-            -e "s#:8555#127.0.0.1:$((G_PORT + 3))#" \
+            -e "s#:8554#:$((G_PORT + 2))#" \
             -e "s#http://127.0.0.1:8080/stream#http://127.0.0.1:$G_PORT/stream#" \
             "$CAM/go2rtc/go2rtc.yaml" > "$GCFG"
-        timeout 30 go2rtc -config "$GCFG" >"$TMP/go2rtc.log" 2>&1 &
+        EITRI_RTSP_USER=eitri EITRI_RTSP_PASS=test-only-secret \
+            timeout 30 go2rtc -config "$GCFG" >"$TMP/go2rtc.log" 2>&1 &
         PIDS="$PIDS $!"
         sleep 2
         codec=$(timeout 15 ffprobe -v error -rtsp_transport tcp -show_entries stream=codec_name \
-            -of default=nw=1:nk=1 "rtsp://127.0.0.1:$((G_PORT + 2))/eitri_cam" 2>/dev/null | head -n 1)
+            -of default=nw=1:nk=1 "rtsp://eitri:test-only-secret@127.0.0.1:$((G_PORT + 2))/eitri_cam" 2>/dev/null | head -n 1)
         check_eq "go2rtc passthrough: RTSP codec is mjpeg (no transcode)" "mjpeg" "$codec"
+        # go2rtc skips RTSP authentication for loopback clients, so enforcement can
+        # only be observed from a non-loopback address of this host.
+        LAN_IP=$(ip -4 -o addr show scope global 2>/dev/null | awk '{ sub("/.*", "", $4); print $4; exit }')
+        if [ -n "$LAN_IP" ]; then
+            RTSP_LAN="$LAN_IP:$((G_PORT + 2))"
+            codec=$(timeout 15 ffprobe -v error -rtsp_transport tcp -show_entries stream=codec_name \
+                -of default=nw=1:nk=1 "rtsp://eitri:test-only-secret@$RTSP_LAN/eitri_cam" 2>/dev/null | head -n 1)
+            check_eq "go2rtc auth: non-loopback client with credentials gets mjpeg" "mjpeg" "$codec"
+            codec=$(timeout 15 ffprobe -v error -rtsp_transport tcp -show_entries stream=codec_name \
+                -of default=nw=1:nk=1 "rtsp://$RTSP_LAN/eitri_cam" 2>/dev/null | head -n 1)
+            check_eq "go2rtc auth: non-loopback client without credentials is refused" "" "$codec"
+            codec=$(timeout 15 ffprobe -v error -rtsp_transport tcp -show_entries stream=codec_name \
+                -of default=nw=1:nk=1 "rtsp://eitri:wrong@$RTSP_LAN/eitri_cam" 2>/dev/null | head -n 1)
+            check_eq "go2rtc auth: non-loopback client with a wrong password is refused" "" "$codec"
+        else
+            skip "go2rtc auth enforcement" "no non-loopback IPv4 address (go2rtc skips auth for loopback)"
+        fi
+        if ss -ltn 2>/dev/null | grep -q ':8555 '; then
+            skip "go2rtc passthrough: no WebRTC listener" "something else holds :8555 on this host"
+        elif grep -q '\[webrtc\] listen' "$TMP/go2rtc.log"; then
+            bad "go2rtc passthrough: no WebRTC listener" "$(grep '\[webrtc\]' "$TMP/go2rtc.log" | head -n 1)"
+        else
+            ok "go2rtc passthrough: starts no WebRTC listener"
+        fi
 
         # Optional software-H.264 profile, merged into a config with its own ports.
         PCFG="$TMP/go2rtc-h264.yaml"

@@ -14,6 +14,20 @@ SCHEMA = 1
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _VERSION = re.compile(r"^\d{4}\.\d{2}\.\d+(?:[-+][0-9A-Za-z.]+)?$")
 KINDS = ("os", "data")
+_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+# The printer has no battery-backed clock: until time sync it can read 1970 or the last saved time.  A manifest can
+# therefore never be judged "not expired yet" against a date earlier than this floor, which is moved forward with
+# releases (it only ever needs to be earlier than the real present, so a stale value weakens nothing it protects).
+CLOCK_FLOOR = "2026-10-01T00:00:00Z"
+
+
+def parse_timestamp(text: str) -> datetime.datetime:
+    if not isinstance(text, str) or _TIMESTAMP.match(text) is None:
+        raise FlashError("invalid channel manifest: bad timestamp %r (expected YYYY-MM-DDTHH:MM:SSZ)" % (text,), code="manifest")
+    try:
+        return datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    except ValueError as exc:
+        raise FlashError("invalid channel manifest: bad timestamp %r (%s)" % (text, exc), code="manifest") from exc
 
 
 def version_key(version: str) -> Tuple[int, ...]:
@@ -68,7 +82,7 @@ class Manifest:
     channel: str
     sequence: int
     generated: str
-    expires: Optional[str]
+    expires: str
     releases: List[Release]
     addons: Dict[str, Addon]
     upstream: Dict[str, Dict[str, str]]
@@ -84,10 +98,13 @@ class Manifest:
         raise FlashError("release %s is not in this channel" % version, code="no_release")
 
     def expired(self, now: Optional[datetime.datetime] = None) -> bool:
-        if not self.expires:
-            return False
+        """Judged against the later of the clock, the manifest's own signed `generated` time and CLOCK_FLOOR, so a
+        printer whose clock has not been set yet still rejects a long-expired (replayed) manifest."""
         now = now or datetime.datetime.now(datetime.timezone.utc)
-        return now > datetime.datetime.strptime(self.expires, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+        now = max(now, parse_timestamp(CLOCK_FLOOR))
+        if self.generated:
+            now = max(now, parse_timestamp(self.generated))
+        return now > parse_timestamp(self.expires)
 
 
 def _need(cond: bool, msg: str) -> None:
@@ -103,6 +120,10 @@ def parse_manifest(data: bytes) -> Manifest:
     _need(isinstance(raw, dict) and raw.get("schema") == SCHEMA, "unsupported schema %r" % (raw.get("schema") if isinstance(raw, dict) else None))
     _need(isinstance(raw.get("sequence"), int) and raw["sequence"] >= 0, "sequence missing")
     _need(isinstance(raw.get("releases"), list) and raw["releases"], "no releases")
+    _need(isinstance(raw.get("expires"), str), "expires missing (every signed manifest must carry an expiry)")
+    parse_timestamp(raw["expires"])
+    if raw.get("generated"):
+        parse_timestamp(raw["generated"])
     releases: List[Release] = []
     for r in raw["releases"]:
         _need(_VERSION.match(str(r.get("version", ""))) is not None, "bad version %r" % r.get("version"))

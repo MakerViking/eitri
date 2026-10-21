@@ -6,5 +6,8 @@
 # /etc is an overlay mounted by eitri-etc.service. /var is a tmpfs populated by
 # systemd-tmpfiles from the factory copy in /usr/share/factory/var.
 #
-# Only the root entry that Buildroot's init system expects is kept.
-/dev/root	/	auto	ro,noatime	0	1
+# Only the root entry that Buildroot's init system expects is kept. Its fsck
+# pass is 0: the kernel has already mounted the file system read-only, so
+# systemd-fsck-root could only fail against it. Offline checks of a root slot
+# belong to the update path, not to every boot.
+/dev/root	/	auto	ro,noatime	0	0

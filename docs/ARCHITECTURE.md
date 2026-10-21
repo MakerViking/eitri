@@ -106,10 +106,10 @@ systemd is the init system. Moonraker's `machine` component integrates with syst
 | Unit | Role | Port |
 |---|---|---|
 | `klipper.service` | Klipper host process | — |
-| `moonraker.service` | API server | 7125 |
+| `moonraker.service` | API server (127.0.0.1 only; reach it through nginx on 80) | 7125 |
 | `klarity.service` | Screen daemon (L1) | — (serial) |
 | `eitri-camera.service` | ustreamer (L3) | 8080 |
-| `go2rtc.service` | Optional RTSP/WebRTC gateway | 1984, 8554 |
+| `go2rtc.service` | Optional RTSP gateway (password protected, WebRTC off) | 1984, 8554 |
 | `eitri-configurator.service` | First-run and maintenance web configurator | 8099 |
 | `nginx.service` | Fluidd or Mainsail, configurator reverse proxy | 80 |
 

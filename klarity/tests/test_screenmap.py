@@ -41,7 +41,16 @@ MAP = {
                     ],
                     "on_press": [{"beep": 20}],
                 },
-                "pending": {"id": 99, "todo": True, "on_release": [{"print": "cancel"}]},
+                "pending": {
+                    "id": 99,
+                    "todo": True,
+                    "on_release": [
+                        {
+                            "print": "cancel",
+                            "guard": {"source": "derived.state", "in": ["printing", "paused"]},
+                        }
+                    ],
+                },
             },
         },
         "other": {
@@ -242,3 +251,94 @@ def test_load_reports_unreadable_and_invalid_yaml(tmp_path):
     bad.write_text("version: [")
     with pytest.raises(MapError, match="cannot read"):
         ScreenMap.load(bad)
+
+
+# ------------------------------------------------------------------ print-verb guard rules
+
+
+@pytest.mark.parametrize("verb", ["cancel", "pause", "resume", "restart", "firmware_restart"])
+def test_destructive_print_verbs_require_a_guard(verb):
+    raw = copy.deepcopy(MAP)
+    raw["pages"]["home"]["widgets"]["pending"]["on_release"] = [{"print": verb}]
+    with pytest.raises(MapError, match="needs a 'guard'"):
+        ScreenMap.from_dict(raw)
+
+
+def test_print_start_requires_a_guard():
+    raw = copy.deepcopy(MAP)
+    raw["pages"]["home"]["widgets"]["pending"]["on_release"] = [
+        {"print": "start", "file": "a.gcode"}
+    ]
+    with pytest.raises(MapError, match="needs a 'guard'"):
+        ScreenMap.from_dict(raw)
+
+
+def test_emergency_stop_needs_guard_or_explicit_unguarded():
+    raw = copy.deepcopy(MAP)
+    raw["pages"]["home"]["widgets"]["pending"]["on_release"] = [{"print": "emergency_stop"}]
+    with pytest.raises(MapError, match="unguarded: true"):
+        ScreenMap.from_dict(raw)
+    raw["pages"]["home"]["widgets"]["pending"]["on_release"] = [
+        {"print": "emergency_stop", "unguarded": "yes"}
+    ]
+    with pytest.raises(MapError, match="unguarded"):
+        ScreenMap.from_dict(raw)
+    raw["pages"]["home"]["widgets"]["pending"]["on_release"] = [
+        {"print": "emergency_stop", "unguarded": True}
+    ]
+    ScreenMap.from_dict(raw)  # explicit acknowledgement is accepted
+
+
+def test_todo_estop_widget_stays_inert_even_with_allow_todo():
+    raw = copy.deepcopy(MAP)
+    raw["pages"]["home"]["widgets"]["estop"] = {
+        "id": 77,
+        "todo": True,
+        "on_release": [{"print": "emergency_stop", "unguarded": True}],
+    }
+    assert ScreenMap.from_dict(raw, allow_todo=True).actions_for_touch(1, 77, 0) is None
+    raw["pages"]["home"]["widgets"]["estop"]["todo"] = False  # confirmed: armed
+    assert ScreenMap.from_dict(raw).actions_for_touch(1, 77, 0) is not None
+
+
+def test_todo_estop_marker_stays_inert_even_with_allow_todo():
+    raw = copy.deepcopy(MAP)
+    raw["markers"][0xFA] = {
+        "todo": True,
+        "do": [{"print": "emergency_stop", "unguarded": True}],
+    }
+    assert ScreenMap.from_dict(raw, allow_todo=True).marker(0xFA) is None
+
+
+# --------------------------------------------------------------------- format validation
+
+
+@pytest.mark.parametrize(
+    "fmt, nsources",
+    [
+        ("{0.foo}", 1),
+        ("{0[1]}", 1),
+        ("{name}", 1),
+        ("{1}", 1),
+        ("{} {}", 1),
+        ("{", 1),
+        ("{0!x}", 1),
+    ],
+)
+def test_bad_binding_formats_rejected_at_load(fmt, nsources):
+    raw = copy.deepcopy(MAP)
+    src = ["extruder.temperature", "extruder.target"][:nsources]
+    raw["pages"]["home"]["widgets"]["temp"]["bind"] = {"source": src, "format": fmt}
+    with pytest.raises(MapError, match="format"):
+        ScreenMap.from_dict(raw)
+
+
+def test_binding_render_never_raises_on_odd_state_values():
+    m = load()
+    st = make_state()
+    item = m.push_items(1)[0]
+    # An unhashable state value through a value map and a type-mismatched format spec.
+    b = item.binding
+    object.__setattr__(b, "format", "{0:.0f} / {1:d}")
+    st.data["extruder"]["temperature"] = "hot"
+    assert b.render(st) is None

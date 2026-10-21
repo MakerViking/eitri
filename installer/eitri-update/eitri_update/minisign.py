@@ -105,13 +105,35 @@ def verify_bytes(data: bytes, sig: Signature, keys: Iterable[PublicKey]) -> Publ
     raise SignatureError("signature does not match the file")
 
 
+REVOKED_FILE = "revoked-keys.txt"
+
+
+def load_revoked(paths: Iterable[str]) -> List[str]:
+    """Key ids (16 hex digits, as minisign prints them) listed in a `revoked-keys.txt` next to the keys.  The list
+    ships inside the signed OS image, so retiring a compromised key does not depend on the key being retired."""
+    out: List[str] = []
+    for path in paths:
+        f = os.path.join(path if os.path.isdir(path) else os.path.dirname(path), REVOKED_FILE)
+        if not os.path.isfile(f):
+            continue
+        with open(f, "r", encoding="utf-8") as fh:
+            for line in fh:
+                token = line.split("#", 1)[0].strip().upper()
+                if token:
+                    out.append(token)
+    return out
+
+
 def load_keys(paths: Iterable[str]) -> List[PublicKey]:
+    paths = list(paths)
     keys: List[PublicKey] = []
     for path in paths:
         files = sorted(glob.glob(os.path.join(path, "*.pub"))) if os.path.isdir(path) else [path]
         for f in files:
             with open(f, "r", encoding="utf-8") as fh:
                 keys.append(parse_public_key(fh.read()))
+    revoked = set(load_revoked(paths))
+    keys = [k for k in keys if k.key_id_hex not in revoked]
     if not keys:
         raise SignatureError("no trusted public keys found")
     return keys

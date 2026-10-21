@@ -41,8 +41,8 @@ FLAVORS = {
     },
 }
 
-_HOST_RE = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
-_PORT_RE = re.compile(r"^(|/dev/tty[A-Za-z0-9_.-]{1,24})$")
+_HOST_RE = re.compile(r"(?!-)[a-z0-9-]{1,63}(?<!-)")
+_PORT_RE = re.compile(r"|/dev/tty[A-Za-z0-9_.-]{1,24}")     # matched with fullmatch: `$` admits a trailing newline
 
 
 def _choice(value, label, help_=""):
@@ -123,6 +123,20 @@ SCHEMA: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "access", "title": "Access", "blurb": "Who may control the printer from the network.",
+        "fields": [
+            {
+                "id": "api_access", "type": "choice", "default": "lan",
+                "label": "Network access to the printer",
+                "help": "Anyone Moonraker trusts can start prints, edit the configuration and, through Klipper's shell commands, run programs on the printer. Moonraker itself only listens on the printer; the web interface on port 80 is the way in.",
+                "choices": [
+                    _choice("lan", "Trust my home network", "Devices on private addresses need no sign-in"),
+                    _choice("signin", "Require sign-in", "Only the printer itself is trusted; create a user over SSH first"),
+                ],
+            },
+        ],
+    },
+    {
         "id": "updates", "title": "Updates", "blurb": "How Eitri keeps itself current.",
         "fields": [
             {
@@ -175,7 +189,7 @@ def validate(raw: dict[str, Any] | None) -> dict[str, Any]:
                 errors[key] = "not an available choice"
                 continue
         elif f["type"] == "text":
-            if not isinstance(val, str) or not _PORT_RE.match(val):
+            if not isinstance(val, str) or not _PORT_RE.fullmatch(val):
                 errors[key] = "must be empty or a /dev/tty* path"
                 continue
         out[key] = val
@@ -192,6 +206,6 @@ def validate(raw: dict[str, Any] | None) -> dict[str, Any]:
 
 def validate_hostname(name: str) -> str:
     name = (name or "").strip().lower()
-    if not _HOST_RE.match(name):
+    if not _HOST_RE.fullmatch(name):
         raise ValidationError({"hostname": "use 1-63 letters, digits or hyphens (no leading/trailing hyphen)"})
     return name

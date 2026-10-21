@@ -1,0 +1,196 @@
+#!/bin/sh
+# eitri-go2rtc-auth: keep go2rtc from serving the camera to the LAN without a password.
+#
+# Subcommands:
+#   ensure  Create the RTSP credentials file if it is missing: user "eitri" and a
+#           random password, mode 0600. An existing valid file is never rewritten.
+#   check   Refuse to start go2rtc (exit 1) when its config would expose the
+#           camera without authentication:
+#             * api must listen on loopback (the API has no authentication);
+#             * rtsp on a non-loopback address needs a non-empty username and
+#               password after ${VAR} substitution;
+#             * webrtc must be disabled (listen: "") or loopback (go2rtc's WebRTC
+#               has no authentication, and cannot carry the MJPEG stream anyway).
+#           An omitted section or key counts as go2rtc's default, which listens on
+#           every interface, so omission fails too.
+#
+# Used from go2rtc.service as ExecStartPre; credentials reach go2rtc through
+# EnvironmentFile, and the shipped config references them as ${EITRI_RTSP_USER}
+# and ${EITRI_RTSP_PASS}. go2rtc leaves an unset ${VAR} in place as literal text,
+# so "check" also rejects an unresolved reference rather than accept it as a password.
+#
+# Environment (all optional):
+#   EITRI_GO2RTC_AUTH_FILE     credentials file (default /data/printer_data/config/go2rtc-auth.env)
+#   EITRI_GO2RTC_CONFIG        config to check  (default /data/printer_data/config/go2rtc.yaml)
+#   EITRI_GO2RTC_ALLOW_UNSAFE  set to 1 to downgrade "check" failures to warnings
+#                              (an explicit decision to serve the camera unauthenticated)
+
+set -u
+
+AUTH_FILE="${EITRI_GO2RTC_AUTH_FILE:-/data/printer_data/config/go2rtc-auth.env}"
+CONFIG="${EITRI_GO2RTC_CONFIG:-/data/printer_data/config/go2rtc.yaml}"
+ALLOW_UNSAFE="${EITRI_GO2RTC_ALLOW_UNSAFE:-0}"
+
+log() {
+    echo "eitri-go2rtc-auth: $*" >&2
+}
+
+# env_value FILE NAME: last NAME=value in FILE.
+env_value() {
+    sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n 1
+}
+
+cmd_ensure() {
+    if [ -r "$AUTH_FILE" ] && [ -n "$(env_value "$AUTH_FILE" EITRI_RTSP_USER)" ] &&
+        [ -n "$(env_value "$AUTH_FILE" EITRI_RTSP_PASS)" ]; then
+        return 0
+    fi
+    dir=$(dirname "$AUTH_FILE")
+    if [ ! -d "$dir" ]; then
+        log "cannot create credentials: $dir does not exist"
+        return 1
+    fi
+    pass=$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    if [ "${#pass}" -ne 36 ]; then
+        log "could not read random bytes"
+        return 1
+    fi
+    tmp=$(umask 077 && mktemp "$dir/.go2rtc-auth.XXXXXX") || {
+        log "cannot write in $dir"
+        return 1
+    }
+    if ! printf 'EITRI_RTSP_USER=eitri\nEITRI_RTSP_PASS=%s\n' "$pass" >"$tmp" ||
+        ! chmod 0600 "$tmp" || ! mv -f "$tmp" "$AUTH_FILE"; then
+        rm -f "$tmp"
+        log "could not write $AUTH_FILE"
+        return 1
+    fi
+    log "generated RTSP credentials in $AUTH_FILE (user eitri)"
+}
+
+# yaml_get CONFIG SECTION KEY: scalar under a top-level SECTION with quotes and
+# trailing comments removed. Exit 0 if the key exists (value may be empty), 3 if
+# not. Enough for the flat go2rtc sections.
+yaml_get() {
+    awk -v sec="$2" -v key="$3" '
+        /^[^[:space:]#]/ {
+            name = $0; sub(/:.*/, "", name)
+            insec = (name == sec)
+            next
+        }
+        insec && /^[[:space:]]+[A-Za-z_]+:/ {
+            line = $0; sub(/^[[:space:]]+/, "", line)
+            k = line; sub(/:.*/, "", k)
+            if (k != key) next
+            v = line; sub(/^[^:]*:[[:space:]]*/, "", v)
+            if (v ~ /^"/) { sub(/^"/, "", v); sub(/".*$/, "", v) }
+            else if (v ~ /^\047/) { sub(/^\047/, "", v); sub(/\047.*$/, "", v) }
+            else { sub(/[[:space:]]+#.*$/, "", v); sub(/[[:space:]]+$/, "", v) }
+            print v
+            found = 1
+            exit
+        }
+        END { exit(found ? 0 : 3) }
+    ' "$1"
+}
+
+# expand VALUE: resolve a single ${NAME} or ${NAME:default} the way go2rtc does.
+# An unset variable without a default stays as the literal text.
+expand() {
+    case "$1" in
+        '${'*'}')
+            inner=${1#'${'}
+            inner=${inner%'}'}
+            name=${inner%%:*}
+            case "$name" in
+                '' | *[!A-Za-z0-9_]*)
+                    printf '%s' "$1"
+                    return
+                    ;;
+            esac
+            if [ "$name" != "$inner" ]; then
+                default=${inner#*:}
+            else
+                default=""
+            fi
+            eval "val=\${$name:-}"
+            if [ -n "$val" ]; then
+                printf '%s' "$val"
+            elif [ "$name" != "$inner" ]; then
+                printf '%s' "$default"
+            else
+                printf '%s' "$1"
+            fi
+            ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+is_loopback() {
+    case "$1" in
+        127.*:* | localhost:* | '[::1]:'*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+PROBLEMS=0
+problem() {
+    PROBLEMS=$((PROBLEMS + 1))
+    if [ "$ALLOW_UNSAFE" = 1 ]; then
+        log "warning (EITRI_GO2RTC_ALLOW_UNSAFE=1): $*"
+    else
+        log "$*"
+    fi
+}
+
+cmd_check() {
+    if [ ! -r "$CONFIG" ]; then
+        log "cannot read config $CONFIG"
+        return 1
+    fi
+
+    # api: the default (":1984") is public and has no authentication.
+    api=$(yaml_get "$CONFIG" api listen) || api=""
+    if ! is_loopback "$api"; then
+        problem "api.listen is '${api:-<default, all interfaces>}': the API has no authentication, so it must be 127.0.0.1:<port>"
+    fi
+
+    # webrtc: the default (":8555") is public and unauthenticated. An empty listen turns it off.
+    if wl=$(yaml_get "$CONFIG" webrtc listen); then
+        if [ -n "$wl" ] && ! is_loopback "$wl"; then
+            problem "webrtc.listen is '$wl': WebRTC has no authentication; use listen: \"\" to disable it"
+        fi
+    else
+        problem "webrtc.listen is not set, so go2rtc listens on :8555 on every interface; set it to \"\""
+    fi
+
+    # rtsp: loopback needs nothing; anything else needs credentials.
+    rl=$(yaml_get "$CONFIG" rtsp listen) || rl=""
+    [ -n "$rl" ] || rl=":8554"
+    if ! is_loopback "$rl"; then
+        user=$(expand "$(yaml_get "$CONFIG" rtsp username)")
+        pass=$(expand "$(yaml_get "$CONFIG" rtsp password)")
+        case "$user$pass" in
+            *'${'*) problem "rtsp credentials reference a variable that is not set; load $AUTH_FILE (run 'eitri-go2rtc-auth ensure')" ;;
+            *)
+                if [ -z "$user" ] || [ -z "$pass" ]; then
+                    problem "rtsp.listen is '$rl' but rtsp.username and rtsp.password are not both set: the camera would be open to the LAN"
+                fi
+                ;;
+        esac
+    fi
+
+    if [ "$PROBLEMS" -gt 0 ] && [ "$ALLOW_UNSAFE" != 1 ]; then
+        return 1
+    fi
+    return 0
+}
+
+case "${1:-}" in
+    ensure) cmd_ensure ;;
+    check) cmd_check ;;
+    *)
+        echo "usage: eitri-go2rtc-auth ensure|check" >&2
+        exit 2
+        ;;
+esac
