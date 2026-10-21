@@ -8,10 +8,12 @@ import subprocess
 import sys
 
 import pytest
-from conftest import BOARD, OS_DIR, OVERLAY, need, run
+from conftest import BOARD, OS_DIR, OVERLAY, REPO_ROOT, need, run
 
 UNIT_DIR = OVERLAY / "usr/lib/systemd/system"
-UNITS = sorted(UNIT_DIR.glob("*.service"))
+# klarity.service and eitri-configurator.service belong to their components; post-build.sh installs them.
+COMPONENT_UNITS = [REPO_ROOT / "klarity/systemd/klarity.service", REPO_ROOT / "configurator/systemd/eitri-configurator.service"]
+UNITS = sorted(UNIT_DIR.glob("*.service")) + COMPONENT_UNITS
 
 
 def parse(path):
@@ -71,8 +73,8 @@ def test_services_use_the_contract_paths():
     for path in ("/data/firmware/moonraker/moonraker/moonraker.py", "/data/venv/moonraker/bin/python",
                  "-d /data/printer_data"):
         assert path in moonraker
-    assert "/data/eitri/klarity" in (UNIT_DIR / "klarity.service").read_text()
-    assert "--port 8099" in (UNIT_DIR / "eitri-configurator.service").read_text()
+    assert "/data/eitri/klarity" in COMPONENT_UNITS[0].read_text()
+    assert "--port 8099" in COMPONENT_UNITS[1].read_text()
 
 
 def test_no_unit_weakens_heater_safety():

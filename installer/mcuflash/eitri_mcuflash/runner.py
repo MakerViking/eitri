@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import firmware as fw
 from .backup import BackupEntry, BackupStore
 from .errors import FlashError
+from .fsutil import atomic_write
 from .guidance import recovery_steps
 from .katapult_proto import KatapultClient
 from .methods import (
@@ -170,16 +171,10 @@ class Flasher:
             return {}
 
     def save_state(self, results: Dict[str, Dict[str, Any]]) -> None:
-        os.makedirs(self.opt.state_dir, exist_ok=True)
         known = self.load_known_map()
         for name, r in results.items():
             known[name] = {"port": r["port"], "mcu": r["mcu"], "version": r["version"], "flavor": r["flavor"]}
-        tmp = self._state_path("mcu-map.json.tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"schema": 1, "boards": known}, fh, indent=2, sort_keys=True)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, self._state_path("mcu-map.json"))
+        atomic_write(self._state_path("mcu-map.json"), json.dumps({"schema": 1, "boards": known}, indent=2, sort_keys=True), mode=0o644)
 
     # ---- probing -----------------------------------------------------------------
     def candidate_ports(self) -> List[str]:
@@ -686,7 +681,3 @@ class Flasher:
             recovery=" | ".join(recovery_steps(bp.board, bp.method or "", False)),
         )
 
-
-def run_plan_only(flasher: Flasher) -> Plan:
-    probes = flasher.probe_all()
-    return flasher.make_plan(probes)

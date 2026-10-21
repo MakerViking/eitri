@@ -43,8 +43,6 @@ export const fmt = {
 
 export function statusDot(kind) { return h('span', { class: `dot ${kind || ''}` }); }
 
-export function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
-
 // Console helper: append timestamped lines, keep the view pinned to the newest unless the user scrolled up.
 export function makeConsole(title = 'Console') {
   const body = h('div', { class: 'console-body', role: 'log', 'aria-live': 'off' });

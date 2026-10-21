@@ -99,11 +99,9 @@ def test_development_password_is_refused_in_a_release(tree, tmp_path):
     assert result.returncode != 0 and "must not be set for a release" in result.stderr
 
 
-def test_component_units_replace_the_defaults(tree):
+def test_component_units_are_installed(tree):
     target, base = tree
     post_build(target, base)
     for component, unit in (("klarity", "klarity.service"), ("configurator", "eitri-configurator.service")):
         source = REPO_ROOT / component / "systemd" / unit
-        if source.is_file():
-            installed = target / "usr/lib/systemd/system" / unit
-            assert installed.read_bytes() == source.read_bytes()
+        assert (target / "usr/lib/systemd/system" / unit).read_bytes() == source.read_bytes()

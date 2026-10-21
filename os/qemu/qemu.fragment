@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: Apache-2.0
+# Eitri OS on QEMU: the changes applied to configs/eitri_plus4_defconfig to get a
+# defconfig for qemu-system-aarch64 ("virt" machine). mkdefconfig.py applies this file:
+#
+#   "#DROP <regex>"   remove every line of the base defconfig that matches
+#   any other line    appended to the result (a later value overrides an earlier one)
+#
+# Everything else - the rootfs overlay, the post-build script, every package, systemd and its
+# units - is the same as for the printer, so the userspace that boots is the userspace that
+# ships. What differs is only what cannot exist on a virtual machine: the Rockchip boot chain
+# (TF-A, U-Boot, genimage) and the kernel configuration, which gets the QEMU additions from
+# linux-qemu.fragment on top of the printer's linux.fragment.
+
+# No boot chain: QEMU loads the kernel itself.
+#DROP ^BR2_TARGET_ARM_TRUSTED_FIRMWARE
+#DROP ^BR2_TARGET_UBOOT
+# No disk image or update bundle (genimage, mkfs.vfat, mtools, U-Boot tools, RAUC bundler).
+#DROP ^BR2_ROOTFS_POST_IMAGE_SCRIPT=
+#DROP ^BR2_ROOTFS_POST_SCRIPT_ARGS=
+#DROP ^BR2_PACKAGE_HOST_(GENIMAGE|DOSFSTOOLS|MTOOLS|UBOOT_TOOLS|RAUC)=
+#DROP ^BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES=
+
+# The printer's kernel fragment, then the QEMU additions (virtio, PL011, PL031, GICv3).
+# The device tree of the printer is still built and installed, because post-build.sh
+# insists on finding it in /boot; QEMU does not use it.
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_EITRI_PATH)/board/eitri-plus4/linux.fragment $(BR2_EXTERNAL_EITRI_PATH)/qemu/linux-qemu.fragment"
+
+# The bench user's password (users are created after post-build.sh runs, so it is set here).
+BR2_ROOTFS_POST_FAKEROOT_SCRIPT="$(BR2_EXTERNAL_EITRI_PATH)/qemu/post-fakeroot.sh"

@@ -36,7 +36,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends nodejs
-          python -m pip install --quiet pytest ruff aiohttp jinja2 pyyaml websockets pyserial-asyncio-fast pillow
+          python -m pip install --quiet pytest ruff aiohttp pyyaml websockets pyserial-asyncio-fast pillow
           python -m pip install --quiet -e klarity
 
       - name: Syntax gate and repository checks

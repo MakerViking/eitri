@@ -5,8 +5,9 @@ from __future__ import annotations
 import datetime
 import json
 import os
-import tempfile
 from typing import Any, Dict, List, Optional
+
+from eitri_mcuflash.fsutil import atomic_write
 
 DEFAULT_ROOT = "/data/eitri"
 
@@ -39,8 +40,7 @@ class State:
         return value if value in ("eitri", "upstream") else "eitri"
 
     def set_text(self, name: str, value: str) -> None:
-        os.makedirs(self.root, exist_ok=True)
-        self._atomic(os.path.join(self.root, name), value + "\n")
+        atomic_write(os.path.join(self.root, name), value + "\n")
 
     # -- update.json -------------------------------------------------------------
     def load(self) -> Dict[str, Any]:
@@ -52,8 +52,7 @@ class State:
             return {}
 
     def save(self, doc: Dict[str, Any]) -> None:
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        self._atomic(self.path, json.dumps(doc, indent=2, sort_keys=True) + "\n")
+        atomic_write(self.path, json.dumps(doc, indent=2, sort_keys=True) + "\n")
 
     def update(self, **changes: Any) -> Dict[str, Any]:
         doc = self.load()
@@ -71,18 +70,3 @@ class State:
     @property
     def installed_version(self) -> Optional[str]:
         return self.load().get("installed_version") or self._text("release", "") or None
-
-    @staticmethod
-    def _atomic(path: str, text: str) -> None:
-        d = os.path.dirname(path) or "."
-        fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=d)
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write(text)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp, path)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise

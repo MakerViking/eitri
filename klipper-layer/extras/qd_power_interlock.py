@@ -54,9 +54,6 @@ class _GatedPwm:
             value = 0.
         self._pwm.set_pwm(print_time, value)
 
-    def unwrap(self):
-        return self._pwm
-
     def __getattr__(self, name):
         return getattr(self._pwm, name)
 

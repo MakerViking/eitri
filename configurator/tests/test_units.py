@@ -2,7 +2,7 @@ import pytest
 
 from eitri_configurator import calibrate, mcuflash, options as opts, render
 from eitri_configurator.layer import LayerError
-from eitri_configurator.releaselock import FALLBACK, flavor_card, load
+from eitri_configurator.releaselock import flavor_card, load, version
 from eitri_configurator.settings import Settings
 from eitri_configurator.workflows import analyze_boards
 
@@ -48,26 +48,16 @@ def test_release_lock_real_file_and_fallback(tmp_path):
     p = tmp_path / "release.lock"
     p.write_text('[firmware.kalico]\nversion="v9"\ncommit="abcdef0123456789abcdef"\n')
     lock = load(p)
-    assert lock["source"] == "release.lock"
     assert flavor_card(lock, "kalico") == {"version": "v9", "commit": "abcdef0123"}
-    assert flavor_card(lock, "klipper")["version"] == FALLBACK["firmware"]["klipper"]["version"]
-    assert load(tmp_path / "missing")["source"] == "fallback"
+    assert flavor_card(lock, "klipper") == {"version": "-", "commit": ""}
+    assert version(lock, "os", "linux") == "-"
+    assert load(tmp_path / "missing") == {}
 
 
 # --- render ----------------------------------------------------------------------
 def make_ctx(**kw):
     lock = load(Settings().release_lock)
-    return render.build_context(flavor="klipper", options=opts.validate(kw), detect=None, lock=lock, hostname=None)
-
-
-def test_klipper_jinja_in_macros_is_untouched(tmp_path):
-    d = tmp_path / "t"
-    d.mkdir()
-    (d / "m.cfg.tpl").write_text("[gcode_macro X]\ngcode:\n  {% if printer.toolhead.homed_axes == 'xyz' %}\n  G1 Z[[ o.ui ]]\n  {% endif %}\n")
-    s = Settings(data_dir=tmp_path, template_dir=d)
-    out = render.render_all(s, make_ctx())
-    assert "{% if printer.toolhead.homed_axes == 'xyz' %}" in out["m.cfg"]
-    assert "G1 Zfluidd" in out["m.cfg"]
+    return render.build_context(flavor="klipper", options=opts.validate(kw), detect=None, lock=lock)
 
 
 def test_printer_cfg_comes_from_the_klipper_layer_and_follows_options(tmp_path):
@@ -76,7 +66,7 @@ def test_printer_cfg_comes_from_the_klipper_layer_and_follows_options(tmp_path):
     lock = load(s.release_lock)
 
     def render_with(**kw):
-        ctx = render.build_context(flavor="klipper", options=opts.validate(kw), detect=detect, lock=lock, hostname=None)
+        ctx = render.build_context(flavor="klipper", options=opts.validate(kw), detect=detect, lock=lock)
         return render.render_all(s, ctx)["printer.cfg"]
 
     base = render_with()
@@ -97,7 +87,7 @@ def test_user_vars_override_layer_defaults(tmp_path):
     s = Settings(data_dir=tmp_path)
     s.config_dir.mkdir(parents=True)
     (s.config_dir / "eitri-vars.toml").write_text("[vars]\nmax_accel = 7000\n")
-    ctx = render.build_context(flavor="klipper", options=opts.validate({}), detect=None, lock=load(s.release_lock), hostname=None)
+    ctx = render.build_context(flavor="klipper", options=opts.validate({}), detect=None, lock=load(s.release_lock))
     assert "max_accel: 7000" in render.render_all(s, ctx)["printer.cfg"]
 
 
@@ -126,7 +116,7 @@ def test_layer_lookup_order(tmp_path):
 
 def test_missing_layer_is_a_clear_error(tmp_path):
     s = Settings(data_dir=tmp_path, repo_root=tmp_path / "nowhere")
-    ctx = render.build_context(flavor="klipper", options=opts.validate({}), detect=None, lock=load(Settings().release_lock), hostname=None)
+    ctx = render.build_context(flavor="klipper", options=opts.validate({}), detect=None, lock=load(Settings().release_lock))
     with pytest.raises(LayerError, match="klipper-layer"):
         render.render_all(s, ctx)
 

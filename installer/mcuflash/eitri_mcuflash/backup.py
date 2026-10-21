@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .errors import FlashError
+from .fsutil import sha256_file
 
 MIN_FREE_BYTES = 8 * 1024 * 1024
 
@@ -91,9 +92,8 @@ class BackupStore:
             meta["app_sha256"] = hashlib.sha256(app).hexdigest()
             meta["app_size"] = len(app)
             # Read it back: a backup that cannot be re-read is not a backup.
-            with open(path, "rb") as fh:
-                if hashlib.sha256(fh.read()).hexdigest() != meta["app_sha256"]:
-                    raise FlashError("backup file failed read-back verification", code="backup_unwritable", step="backup", board=board)
+            if sha256_file(path) != meta["app_sha256"]:
+                raise FlashError("backup file failed read-back verification", code="backup_unwritable", step="backup", board=board)
         if dictionary is not None:
             with open(os.path.join(directory, "dictionary.json"), "w", encoding="utf-8") as fh:
                 json.dump(dictionary, fh, separators=(",", ":"))
@@ -142,7 +142,7 @@ class BackupStore:
         os.makedirs(dest_dir, exist_ok=True)
         dest = os.path.join(dest_dir, "%s.bin" % board)
         shutil.copyfile(source, dest)
-        h = hashlib.sha256(open(dest, "rb").read()).hexdigest()
+        h = sha256_file(dest)
         with open(dest + ".sha256", "w") as fh:
             fh.write("%s  %s.bin\n" % (h, board))
         return dest

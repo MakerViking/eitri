@@ -23,7 +23,6 @@ from __future__ import annotations
 import datetime
 import json
 import os
-import sys
 import threading
 import uuid
 from typing import Any, Dict, IO, List, Optional
@@ -128,6 +127,3 @@ class EventSink:
     def result(self, ok: bool, *, data: Any = None, msg: Optional[str] = None):
         return self.emit("result", ok=ok, data=data, msg=msg)
 
-
-def stderr_sink(component: str = "mcuflash") -> EventSink:
-    return EventSink(component=component, human_out=sys.stderr)

@@ -42,8 +42,6 @@ class Settings:
     moonraker_url: str = "http://127.0.0.1:7125"
     # argv prefix for the installer's MCU flasher (installer/mcuflash); sub-commands are appended.
     mcuflash_cmd: list[str] = field(default_factory=lambda: ["eitri-mcuflash"])
-    # Optional override for the config template directory (*.tpl files); replaces the klipper-layer.
-    template_dir: Path | None = None
     # Optional override for the klipper-layer directory (default: <repo_root>/klipper-layer, then /data/eitri/klipper-layer).
     layer_dir: Path | None = None
 

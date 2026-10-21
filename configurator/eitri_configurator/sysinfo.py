@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from . import __version__
+from . import __version__, releaselock
 from .settings import Settings
 
 
@@ -50,9 +50,9 @@ def collect(settings: Settings, lock: dict[str, Any]) -> dict[str, Any]:
         return {
             "mock": True,
             "version": __version__,
-            "release": lock["release_status"],
+            "release": lock.get("release_status", "pre-alpha"),
             "board": {"model": "Firefly ROC-RK3328-CC", "soc": "Rockchip RK3328", "cores": 4, "arch": "aarch64"},
-            "os": {"name": "Eitri OS", "kernel": lock["os"]["linux"]["version"], "buildroot": lock["os"]["buildroot"]["version"]},
+            "os": {"name": "Eitri OS", "kernel": releaselock.version(lock, "os", "linux"), "buildroot": releaselock.version(lock, "os", "buildroot")},
             "memory": {"total_mb": 976, "available_mb": 702},
             "storage": {"total_gb": 28.9, "free_gb": 26.4},
             "uptime_s": 94,
@@ -72,7 +72,7 @@ def collect(settings: Settings, lock: dict[str, Any]) -> dict[str, Any]:
     return {
         "mock": False,
         "version": __version__,
-        "release": lock["release_status"],
+        "release": lock.get("release_status", "pre-alpha"),
         "board": {
             "model": _read("/proc/device-tree/model") or platform.node(),
             "soc": _read("/proc/device-tree/compatible").split("\x00")[-1] or platform.machine(),

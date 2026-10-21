@@ -20,7 +20,6 @@ def build_settings(argv: list[str] | None = None) -> Settings:
     ap.add_argument("--port", type=int, default=8099)
     ap.add_argument("--data-dir", type=Path, help="app data root (default /data; mock: a temp dir)")
     ap.add_argument("--repo-root", type=Path, default=DEFAULT_REPO_ROOT)
-    ap.add_argument("--template-dir", type=Path, help="render *.tpl files from here instead of the klipper-layer (development)")
     ap.add_argument("--layer-dir", type=Path, help="klipper-layer directory (default: <repo>/klipper-layer, then /data/eitri/klipper-layer)")
     ap.add_argument("--web-dir", type=Path, help="frontend directory (default: auto-detect; env EITRI_CONFIGURATOR_WEB)")
     ap.add_argument("--moonraker-url", default="http://127.0.0.1:7125")
@@ -44,7 +43,6 @@ def build_settings(argv: list[str] | None = None) -> Settings:
     s.host = a.host or ("127.0.0.1" if a.mock else "0.0.0.0")
     s.port = a.port
     s.repo_root = a.repo_root
-    s.template_dir = a.template_dir
     s.layer_dir = a.layer_dir
     if a.web_dir:
         s.web_dir = a.web_dir

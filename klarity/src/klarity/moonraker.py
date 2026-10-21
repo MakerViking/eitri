@@ -255,8 +255,3 @@ class MoonrakerClient:
     async def restart(self) -> None:
         await self.call("printer.restart")
 
-    async def list_files(self, root: str = "gcodes") -> list[dict[str, Any]]:
-        return await self.call("server.files.list", {"root": root})
-
-    async def file_metadata(self, filename: str) -> dict[str, Any]:
-        return await self.call("server.files.metadata", {"filename": filename})

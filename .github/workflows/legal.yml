@@ -1,0 +1,102 @@
+name: legal
+
+# Licence compliance for Eitri OS releases: runs Buildroot's legal-info, builds the
+# SBOM (CycloneDX + SPDX), packages the corresponding source and licence texts, and
+# attaches them to the release. See os/legal/README.md.
+#
+# legal-info downloads and patches every package but compiles nothing, so this runs
+# alongside os-image.yml rather than after it. Pull requests that touch the OS tree
+# or this directory get a dry run (nothing published).
+
+on:
+  pull_request:
+    paths:
+      - "os/**"
+      - "release.lock"
+      - ".github/workflows/legal.yml"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: legal-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  BUILD_ROOT: ${{ github.workspace }}/../build
+
+jobs:
+  legal-info:
+    name: legal-info and SBOM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install Buildroot prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libncurses-dev libssl-dev unzip rsync bc cpio file wget git \
+            flex bison libelf-dev openssl zstd xz-utils
+
+      - name: Restore download cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BUILD_ROOT }}/br-dl
+          key: os-br-${{ hashFiles('release.lock', 'os/configs/**', 'os/package/**', 'os/board/**/patches/**') }}
+          restore-keys: |
+            os-br-
+
+      - name: Fetch Buildroot at the pinned commit and configure
+        run: |
+          make -C os buildroot
+          make -C os defconfig
+
+      - name: Self-test the SBOM generator
+        run: python -I os/legal/make-sbom.py --help >/dev/null
+
+      - name: Run legal-info, build the SBOM and package
+        id: pkg
+        run: |
+          version=$(os/scripts/version.sh)
+          out="$RUNNER_TEMP/legal"
+          os/legal/package-legal.sh "$version" "$out"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "dir=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Validate the SBOM files parse
+        run: |
+          for f in "${{ steps.pkg.outputs.dir }}"/*.json; do python -I -m json.tool "$f" >/dev/null; done
+          (cd "${{ steps.pkg.outputs.dir }}" && sha256sum --check --strict SHA256SUMS-legal)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eitri-legal-${{ steps.pkg.outputs.version }}
+          path: ${{ steps.pkg.outputs.dir }}
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/') && 90 || 14 }}
+          if-no-files-found: error
+
+      # os-image.yml creates the draft release when its image build finishes (hours later).
+      # Create it here if it does not exist yet, and upload with --clobber so both orders work.
+      # os-image.yml's "gh release create" must tolerate an existing draft (see os/legal/README.md).
+      - name: Attach to the draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
+              --title "Eitri OS ${GITHUB_REF_NAME#v}" \
+              --notes "Release candidate. Nothing in this release has been tested on a printer unless release.lock says so."
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
+            "${{ steps.pkg.outputs.dir }}"/*

@@ -142,9 +142,9 @@ with its home in `/data/eitri/home`; it has no password, so login is by key.
 | Unit | Source | Port |
 |---|---|---|
 | `klipper.service`, `moonraker.service` | this tree; start only when `/data` holds a Klipper clone, venv and config | 7125 |
-| `klarity.service` | this tree, replaced by `klarity/systemd/klarity.service` when that exists | - |
+| `klarity.service` | `klarity/systemd`, installed by `post-build.sh` | - |
 | `eitri-camera.service`, `go2rtc.service` | `camera/systemd` through the `eitri-camera` package; go2rtc is disabled by default | 8080 (loopback), 1984, 8554 |
-| `eitri-configurator.service` | this tree, replaced by `configurator/systemd/` when that exists | 8099 |
+| `eitri-configurator.service` | `configurator/systemd`, installed by `post-build.sh` | 8099 |
 | `nginx.service` | Buildroot; `/etc/nginx/nginx.conf` here | 80: UI, `/configure/`, `/webcam/`, Moonraker proxy |
 | `NetworkManager`, `sshd`, `avahi-daemon`, `chrony`, `rauc`, `polkit` | Buildroot packages | 22 for ssh |
 | `eitri-zram`, `eitri-mark-good`, `eitri-grow-data`, `eitri-data-init`, `eitri-etc` | this tree | - |

@@ -6,7 +6,6 @@ requires-python = ">=3.13"
 license = "Apache-2.0"
 dependencies = [
   "aiohttp>=3.13,<3.14",
-  "jinja2>=3.1,<4",
 ]
 
 [project.optional-dependencies]

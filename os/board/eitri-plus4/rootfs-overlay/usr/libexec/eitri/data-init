@@ -83,7 +83,7 @@ seed "$FACTORY/camera/camera.env.example" "$DATA/printer_data/config/camera.env.
 # The configurator runs from a virtual environment on /data, like the other
 # application-layer programs, so that the app layer can update it. A first
 # environment is created here from the copy that ships in the image: it sees
-# the image's Python packages (aiohttp, jinja2) and puts the image's
+# the image's Python packages (aiohttp) and puts the image's
 # eitri_configurator on its path last, so a newer package installed into the
 # environment takes precedence. Created once, never replaced.
 venv="$DATA/eitri/configurator/venv"

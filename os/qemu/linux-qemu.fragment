@@ -1,0 +1,24 @@
+# Eitri OS on QEMU: kernel options added on top of board/eitri-plus4/linux.fragment.
+# QEMU's "virt" machine has no PCI in this configuration (the printer's fragment
+# turns PCI off), so every device is a virtio-mmio device. Everything needed to reach
+# the root filesystem is built in: there is no initramfs.
+
+# Interrupt controller and timer of the virt machine (GICv3 is requested with gic-version=3).
+CONFIG_ARM_GIC_V3=y
+CONFIG_ARM_ARCH_TIMER=y
+
+# Serial console and clock.
+CONFIG_SERIAL_AMBA_PL011=y
+CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_DRV_PL031=y
+
+# virtio-mmio: block (rootfs, /data), net, entropy.
+CONFIG_VIRTIO_MENU=y
+CONFIG_VIRTIO_MMIO=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_HW_RANDOM_VIRTIO=y
+
+# The virt machine has a PL061 GPIO that arm64's defconfig builds for the power button; not needed.
+# QEMU exits on guest poweroff through PSCI (default on arm64).

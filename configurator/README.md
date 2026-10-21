@@ -9,7 +9,7 @@ internet: fonts, icons and scripts are all bundled.
 Welcome > Network > Detect > Firmware flavor > Options > Review > Flash > Calibrate > Done
 ```
 
-* `eitri_configurator/` - Python backend (aiohttp, Jinja2). Python 3.13+.
+* `eitri_configurator/` - Python backend (aiohttp). Python 3.13+.
 * `web/` - frontend, plain ES modules and CSS, no build step, no CDN.
 * `tests/` - pytest, runs the whole backend in mock mode over real HTTP.
 * `tools/screenshots.py` - drives headless Chromium through the entire wizard.
@@ -92,8 +92,7 @@ serial ports from detection (`[mcu]` is the toolhead, `[mcu U_1]` the mainboard)
 (needs the acknowledgement), `plr_enabled` and `adxl_enabled`; everything else is the layer's default,
 overridable per printer in `printer_data/config/eitri-vars.toml` (a `[vars]` table). After writing,
 `overlay-install.sh` links the extras and macros into the Klipper/Kalico clone (skipped, with a
-warning, while `/data/firmware/klipper` does not exist). `--template-dir` renders `*.tpl` files from a
-directory instead (development); delimiters are `[[ var ]]`, `[% block %]`, `[# comment #]`.
+warning, while `/data/firmware/klipper` does not exist).
 
 **Files written outside the config dir** - `/data/eitri/flavor` (contract),
 `/data/eitri/channel`, `/data/eitri/ui`, `/data/eitri/hostname`. Optional helpers

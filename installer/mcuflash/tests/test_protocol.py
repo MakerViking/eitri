@@ -81,7 +81,7 @@ def test_read_dictionary_with_nak_resync_and_sequence_wrap():
     assert d.mcu == "stm32f401xc"
     assert d.version == "v0.13.0-5-gdeadbee"
     assert d.config["FILLER"] == filler
-    assert d.has_command("config_spi")
+    assert "config_spi" in d.command_ids()
     assert len(zlib.compress(json.dumps(d.raw).encode())) > 16 * 40  # exercised > 16 chunks
 
 

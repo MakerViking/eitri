@@ -44,7 +44,6 @@ ID_PAGE = 0x66
 ID_TOUCH_XY = 0x67
 ID_TOUCH_XY_SLEEP = 0x68
 ID_STRING = 0x70
-ID_NUMBER = 0x71
 
 # One-byte events.  The first group are standard Nextion return codes / system events,
 # the second the app-specific markers the stock project emits with ``printh`` (see spec).
@@ -81,10 +80,6 @@ class TouchEvent(Event):
     widget: int
     type: int  # 1 = press, 0 = release
 
-    @property
-    def pressed(self) -> bool:
-        return self.type == TOUCH_PRESS
-
 
 @dataclass(frozen=True, slots=True)
 class PageEvent(Event):
@@ -107,10 +102,6 @@ class StringEvent(Event):
 @dataclass(frozen=True, slots=True)
 class NumberEvent(Event):
     value: int  # signed 32-bit, as Nextion transmits negative numbers in two's complement
-
-    @property
-    def unsigned(self) -> int:
-        return self.value & 0xFFFFFFFF
 
     @property
     def stock(self) -> tuple[int, int, int]:
@@ -171,9 +162,6 @@ class FrameParser:
     @property
     def single_byte_ids(self) -> frozenset[int]:
         return self._single
-
-    def add_single_byte_ids(self, ids: Iterable[int]) -> None:
-        self._single = self._single | frozenset(ids)
 
     def flush(self) -> list[Event]:
         """Drop a stale partial frame (call after a quiet period on the line)."""
@@ -332,18 +320,6 @@ class Cmd:
         return f"page {_int(target, 'page id')}"
 
     @classmethod
-    def set_text(cls, obj: str, text: str) -> str:
-        return f"{_ident(obj)}.txt={quote(text, cls.quote_style)}"
-
-    @classmethod
-    def add_text(cls, obj: str, text: str) -> str:
-        return f"{_ident(obj)}.txt+={quote(text, cls.quote_style)}"
-
-    @classmethod
-    def set_val(cls, obj: str, value: int) -> str:
-        return f"{_ident(obj)}.val={_int(value, 'val')}"
-
-    @classmethod
     def set_attr(cls, obj: str, attr: str, value: object) -> str:
         """``obj.attr=value`` with string/number chosen from the Python type."""
         if not _ATTR_RE.match(attr):
@@ -359,23 +335,6 @@ class Cmd:
         return f"vis {_ident(obj)},{int(bool(show))}"
 
     @classmethod
-    def bco(cls, obj: str, color565: int) -> str:
-        return f"{_ident(obj)}.bco={_color(color565)}"
-
-    @classmethod
-    def pco(cls, obj: str, color565: int) -> str:
-        return f"{_ident(obj)}.pco={_color(color565)}"
-
-    @classmethod
-    def pic(cls, obj: str, picture_id: int) -> str:
-        return f"{_ident(obj)}.pic={_int(picture_id, 'picture id')}"
-
-    @classmethod
-    def picc(cls, obj: str, picture_id: int) -> str:
-        """Crop-picture variant (``picc``), used for components with a cropped background."""
-        return f"{_ident(obj)}.picc={_int(picture_id, 'picture id')}"
-
-    @classmethod
     def get(cls, expr: str) -> str:
         """Request an attribute; the reply arrives as a string (0x70) or number (0x71) frame."""
         if not _GET_RE.match(expr):
@@ -383,28 +342,8 @@ class Cmd:
         return f"get {expr}"
 
     @classmethod
-    def tsw(cls, obj: str | int, enable: bool) -> str:
-        """Touch-sensing enable.  ``255`` addresses every component on the page."""
-        target = _int(obj, "tsw target") if isinstance(obj, int) else _ident(obj)
-        return f"tsw {target},{int(bool(enable))}"
-
-    @classmethod
     def beep(cls, ms: int) -> str:
         return f"beep {_int(ms, 'beep duration')}"
-
-    @classmethod
-    def add(cls, component_id: int, channel: int, value: int) -> str:
-        """Append a waveform point."""
-        ident = _int(component_id, "component id")
-        return f"add {ident},{_int(channel, 'channel')},{_int(value, 'value')}"
-
-    @classmethod
-    def ref(cls, obj: str) -> str:
-        return f"ref {_ident(obj)}"
-
-    @classmethod
-    def click(cls, obj: str, press: bool) -> str:
-        return f"click {_ident(obj)},{int(bool(press))}"
 
     @classmethod
     def sendme(cls) -> str:
@@ -415,12 +354,6 @@ class Cmd:
         if level not in (0, 1, 2, 3):
             raise ProtocolError("bkcmd level must be 0..3")
         return f"bkcmd={level}"
-
-    @classmethod
-    def dim(cls, percent: int) -> str:
-        if not 0 <= percent <= 100:
-            raise ProtocolError("dim must be 0..100")
-        return f"dim={percent}"
 
     @classmethod
     def twfile(cls, path: str, size: int) -> str:

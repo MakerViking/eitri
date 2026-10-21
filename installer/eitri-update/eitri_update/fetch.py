@@ -2,7 +2,6 @@
 """Downloads with hash verification, resume and size limits (stdlib only)."""
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
 import time
@@ -11,6 +10,7 @@ import urllib.request
 from typing import Callable, Optional
 
 from eitri_mcuflash.errors import FlashError
+from eitri_mcuflash.fsutil import sha256_file
 
 CHUNK = 1 << 20
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
@@ -61,7 +61,7 @@ def download(
     _check_scheme(url, allow_insecure)
     part = dest + ".part"
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
-    if os.path.exists(dest) and _hash_file(dest) == sha256 and os.path.getsize(dest) == size:
+    if os.path.exists(dest) and sha256_file(dest) == sha256 and os.path.getsize(dest) == size:
         return dest
     last = "unknown error"
     for attempt in range(retries):
@@ -104,21 +104,13 @@ def download(
             last = "connection ended after %d of %d bytes" % (os.path.getsize(part), size)
             sleep(1)
             continue
-        if _hash_file(part) != sha256:
+        if sha256_file(part) != sha256:
             os.unlink(part)
             raise FlashError("downloaded file does not match the signed checksum (%s)" % url, code="checksum",
                              recovery="Try again; if it keeps failing the mirror is serving a corrupt or tampered file.")
         os.replace(part, dest)
         return dest
     raise FlashError("download of %s failed: %s" % (url, last), code="network")
-
-
-def _hash_file(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(CHUNK), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def free_bytes(path: str) -> int:

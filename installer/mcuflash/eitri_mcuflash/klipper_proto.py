@@ -166,23 +166,12 @@ class McuDictionary:
         v = self.config.get("SERIAL_BAUD")
         return int(v) if v is not None else None
 
-    @property
-    def kconfig(self) -> Dict[str, Any]:
-        return self.raw.get("kconfig", {}) or {}
-
     def command_ids(self) -> Dict[str, int]:
         """command name -> numeric message id."""
         out: Dict[str, int] = {}
         for fmt, mid in (self.raw.get("commands") or {}).items():
             out[fmt.split()[0]] = int(mid)
         return out
-
-    def has_command(self, name: str) -> bool:
-        return name in self.command_ids()
-
-    def pins(self) -> List[str]:
-        pin_enum = (self.raw.get("enumerations") or {}).get("pin") or {}
-        return sorted(pin_enum.keys())
 
     def summary(self) -> Dict[str, Any]:
         return {
@@ -280,20 +269,3 @@ def read_dictionary(
     return parse_dictionary(bytes(data))
 
 
-def encode_command(dictionary: McuDictionary, name: str) -> bytes:
-    """Encode a parameterless command (e.g. `reset`) using the dictionary's ids."""
-    ids = dictionary.command_ids()
-    if name not in ids:
-        raise ProtocolError("firmware has no '%s' command" % name)
-    for fmt in dictionary.raw.get("commands", {}):
-        if fmt.split()[0] == name and len(fmt.split()) > 1:
-            raise ProtocolError("command '%s' takes arguments; refusing to guess them" % name)
-    return vlq_encode(ids[name])
-
-
-def send_command(transport: Transport, dictionary: McuDictionary, name: str) -> None:
-    """Fire-and-forget a parameterless command at a firmware we just identified."""
-    link = KlipperLink(transport)
-    # Bring the sequence in sync first; a cheap identify chunk does that.
-    link.request(vlq_encode(MSGID_IDENTIFY) + vlq_encode(0) + vlq_encode(1), MSGID_IDENTIFY_RESPONSE)
-    transport.write(build_block(link._seq, encode_command(dictionary, name)))

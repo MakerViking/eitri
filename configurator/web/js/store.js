@@ -26,4 +26,3 @@ export async function refreshKlarity() {
   try { store.klarity = await get('klarity'); emit(); } catch { /* keep last */ }
 }
 
-export const flavorInfo = (id) => store.boot.flavors.find((f) => f.id === id);

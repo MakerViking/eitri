@@ -14,22 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from .options import validate_hostname
+from .proc import run
 from .settings import Settings
 from .state import atomic_write
 
 SYS_NET = Path("/sys/class/net")
-
-
-async def _run(*argv: str, timeout: float = 30) -> tuple[int, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-    )
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        raise
-    return proc.returncode or 0, out.decode(errors="replace")
 
 
 def _read(p: Path) -> str:
@@ -80,7 +69,7 @@ class Network:
         addrs: dict[str, list[str]] = {}
         if shutil.which("ip"):
             try:
-                _, text = await _run("ip", "-4", "-o", "addr", "show")
+                _, text = await run("ip", "-4", "-o", "addr", "show")
                 addrs = _parse_ip_addr(text)
             except (asyncio.TimeoutError, OSError):
                 pass
@@ -112,7 +101,7 @@ class Network:
             return {"supported": True, "networks": nets}
         if not shutil.which("nmcli"):
             return {"supported": False, "networks": [], "reason": "This image has no Wi-Fi manager; use the Ethernet port."}
-        rc, text = await _run("nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list", "--rescan", "yes", timeout=45)
+        rc, text = await run("nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list", "--rescan", "yes", timeout=45)
         if rc != 0:
             return {"supported": False, "networks": [], "reason": text.strip()[:200]}
         seen: dict[str, dict] = {}
@@ -138,7 +127,7 @@ class Network:
         argv = ["nmcli", "dev", "wifi", "connect", ssid]
         if password:
             argv += ["password", password]
-        rc, out = await _run(*argv, timeout=60)
+        rc, out = await run(*argv, timeout=60)
         return {"ok": rc == 0, "ssid": ssid, **({} if rc == 0 else {"error": out.strip().splitlines()[-1][:200] if out.strip() else "connection failed"})}
 
     async def set_hostname(self, name: str) -> dict[str, Any]:
@@ -150,6 +139,6 @@ class Network:
             return {"ok": True, "hostname": name, "applied": "mock"}
         applied = "on-next-boot"
         if shutil.which("hostnamectl"):
-            rc, _ = await _run("hostnamectl", "set-hostname", name)
+            rc, _ = await run("hostnamectl", "set-hostname", name)
             applied = "now" if rc == 0 else applied
         return {"ok": True, "hostname": name, "applied": applied}

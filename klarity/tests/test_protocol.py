@@ -33,13 +33,13 @@ def parse(*chunks: bytes):
 def test_touch_event():
     (ev,), p = parse(b"\x65\x02\x0b\x01" + FF3)
     assert isinstance(ev, TouchEvent)
-    assert (ev.page, ev.widget, ev.type, ev.pressed) == (2, 11, 1, True)
+    assert (ev.page, ev.widget, ev.type) == (2, 11, 1)
     assert not p.pending
 
 
 def test_release_event():
     (ev,), _ = parse(b"\x65\x00\x01\x00" + FF3)
-    assert isinstance(ev, TouchEvent) and not ev.pressed
+    assert isinstance(ev, TouchEvent) and ev.type == 0
 
 
 def test_string_event_utf8_and_gbk():
@@ -53,7 +53,7 @@ def test_number_event_little_endian_and_signed():
     (ev,), _ = parse(b"\x71\x10\x27\x00\x00" + FF3)
     assert isinstance(ev, NumberEvent) and ev.value == 10000
     (ev,), _ = parse(b"\x71\xfe\xff\xff\xff" + FF3)
-    assert ev.value == -2 and ev.unsigned == 0xFFFFFFFE
+    assert ev.value == -2
 
 
 def test_number_containing_terminator_bytes_is_not_truncated():
@@ -187,22 +187,12 @@ def test_quote_rejects_unknown_style():
 def test_command_builders():
     assert Cmd.page(3) == "page 3"
     assert Cmd.page("main") == "page main"
-    assert Cmd.set_text("t0", "205 / 210") == 't0.txt="205 / 210"'
-    assert Cmd.add_text("t0", "x") == 't0.txt+="x"'
-    assert Cmd.set_val("n0", 42) == "n0.val=42"
     assert Cmd.vis("b0", True) == "vis b0,1"
     assert Cmd.vis("b0", False) == "vis b0,0"
-    assert Cmd.bco("t0", 63488) == "t0.bco=63488"
-    assert Cmd.pco("t0", 0) == "t0.pco=0"
-    assert Cmd.pic("p0", 7) == "p0.pic=7"
-    assert Cmd.picc("p0", 7) == "p0.picc=7"
     assert Cmd.get("t0.txt") == "get t0.txt"
     assert Cmd.get("page0.t0.txt") == "get page0.t0.txt"
-    assert Cmd.tsw("b0", False) == "tsw b0,0"
-    assert Cmd.tsw(255, True) == "tsw 255,1"
     assert Cmd.beep(100) == "beep 100"
-    assert Cmd.add(1, 0, 120) == "add 1,0,120"
-    assert Cmd.set_attr("t0", "txt", "a") == 't0.txt="a"'
+    assert Cmd.set_attr("t0", "txt", "205 / 210") == 't0.txt="205 / 210"'
     assert Cmd.set_attr("n0", "val", 5) == "n0.val=5"
     assert Cmd.bkcmd(0) == "bkcmd=0"
     assert Cmd.twfile("ram/0.jpg", 10) == 'twfile "ram/0.jpg",10'
@@ -211,15 +201,13 @@ def test_command_builders():
 @pytest.mark.parametrize(
     "call",
     [
-        lambda: Cmd.set_text("t0; reset", "x"),
-        lambda: Cmd.set_text('t0"', "x"),
-        lambda: Cmd.set_text("", "x"),
-        lambda: Cmd.set_val("n0", 2**31),
-        lambda: Cmd.set_val("n0", "5"),
+        lambda: Cmd.set_attr("t0; reset", "txt", "x"),
+        lambda: Cmd.set_attr('t0"', "txt", "x"),
+        lambda: Cmd.set_attr("", "txt", "x"),
+        lambda: Cmd.set_attr("n0", "val", 2**31),
         lambda: Cmd.set_attr("t0", "txt=1;x", "a"),
         lambda: Cmd.set_attr("n0", "val", "text"),
         lambda: Cmd.get("t0.txt; reset"),
-        lambda: Cmd.bco("t0", 70000),
         lambda: Cmd.bkcmd(9),
         lambda: Cmd.page("a b"),
         lambda: Cmd.twfile("x", 0),

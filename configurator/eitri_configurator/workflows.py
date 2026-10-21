@@ -142,7 +142,7 @@ def current_context(ctx: Context) -> dict[str, Any]:
     st = ctx.state.data
     return render.build_context(
         flavor=st["flavor"], options=opts.validate(st["options"]), detect=st["detect"],
-        lock=ctx.lock, hostname=st["hostname"],
+        lock=ctx.lock,
     )
 
 
@@ -151,7 +151,6 @@ def preview(ctx: Context) -> dict[str, Any]:
     prev_flavor = ctx.settings.flavor_file.read_text().strip() if ctx.settings.flavor_file.is_file() else None
     flavor = ctx.state.data["flavor"]
     options = opts.validate(ctx.state.data["options"])
-    _, source = render.template_root(ctx.settings)
     actions = []
     if prev_flavor and prev_flavor != flavor:
         actions.append({"kind": "flavor-switch", "text": f"Switch the host firmware from {opts.FLAVORS.get(prev_flavor, {}).get('name', prev_flavor)} to {opts.FLAVORS[flavor]['name']}; both MCUs must be reflashed."})
@@ -160,7 +159,7 @@ def preview(ctx: Context) -> dict[str, Any]:
         actions.append({"kind": "toolchain", "text": "Install the compiler add-on (about 300 MB) for upstream mode."})
     if ctx.state.data["hostname"]:
         actions.append({"kind": "hostname", "text": f"Set the hostname to {ctx.state.data['hostname']}."})
-    return {"files": render.public(files), "actions": actions, "template_source": source,
+    return {"files": render.public(files), "actions": actions,
             "stale_detect": ctx.state.data["detect"] is None, "_plan": files}
 
 

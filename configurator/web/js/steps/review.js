@@ -1,4 +1,4 @@
-import { followJob, latestJob, post } from '../api.js';
+import { followJob, post } from '../api.js';
 import { h, icon, mount } from '../dom.js';
 import { refreshKlarity, store } from '../store.js';
 import { alertBox, makeConsole, toast } from '../ui.js';
@@ -82,7 +82,6 @@ export async function enter(ctx) {
   return {
     nodes: [
       h('div', null, h('div', { class: 'section-label', style: { marginTop: 0 } }, 'Actions'), actions),
-      pv.template_source === 'override' && alertBox('info', h('p', null, h('strong', null, 'Development templates.'), ' A template directory was given on the command line, so the Eitri klipper-layer is not used.')),
       h('div', null, h('div', { class: 'section-label', style: { marginTop: 0 } }, 'Files'), h('div', { class: 'stack files' }, pv.files.map((f) => fileCard(f, f.path === firstOpen)))),
       opts.chamber_heater && alertBox('warn', h('p', null, h('strong', null, 'Chamber heater enabled.'), ' It is gated by the bed/chamber interlock, and heater runaway protection stays active.')),
       progress,

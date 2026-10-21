@@ -1,4 +1,3 @@
-import { put } from '../api.js';
 import { h, icon } from '../dom.js';
 import { store, patchState } from '../store.js';
 import { alertBox, segmented, switchControl, toast } from '../ui.js';

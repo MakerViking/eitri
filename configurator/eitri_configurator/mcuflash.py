@@ -36,7 +36,6 @@ from .settings import Settings
 
 PORT_RE = re.compile(r"^/dev/ttyS[0-9]{1,2}$")       # the board UARTs; nothing else is ever passed on
 ROLES = ("mainboard", "toolhead")
-BOOTLOADERS = ("katapult", "sdcard-serial", "stm32-rom", "klipper", "unknown")
 # The phases the UI draws, in order.  CLI step names map onto them; steps that are
 # not a phase (roundtrip, rollback, services) are surfaced as log lines instead.
 PHASES = ("identify", "build", "backup", "flash", "verify")

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from .errors import FlashError
+from .fsutil import sha256_file
 from .proc import Runner, run
 
 FLAVORS = ("klipper", "kalico")
@@ -59,14 +60,6 @@ class FirmwareArtifact:
             "source_commit": self.source_commit,
             "origin": self.origin,
         }
-
-
-def sha256_file(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def extract_embedded_dictionary(blob: bytes) -> Optional[Dict[str, Any]]:

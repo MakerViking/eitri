@@ -123,7 +123,6 @@ async def bootstrap(request: web.Request) -> web.Response:
         "services": services,
         "flavors": flavors,
         "options_schema": opts.SCHEMA,
-        "lock": {k: v for k, v in ctx.lock.items() if k != "firmware"} | {"source": ctx.lock["source"]},
         "active_job": job_json(active) if active else None,
     })
 
@@ -176,15 +175,6 @@ async def complete(request: web.Request) -> web.Response:
     return web.json_response(public_state(ctx))
 
 
-async def system(request: web.Request) -> web.Response:
-    ctx = ctx_of(request)
-    services = await ctx.services.status()
-    return web.json_response({
-        "system": sysinfo.collect(ctx.settings, ctx.lock), "services": services,
-        "klarity": sysinfo.klarity_status(ctx.settings, services.get("klarity", "unknown")),
-    })
-
-
 async def klarity(request: web.Request) -> web.Response:
     ctx = ctx_of(request)
     services = await ctx.services.status()
@@ -211,10 +201,6 @@ async def set_hostname(request: web.Request) -> web.Response:
     res = await ctx.network.set_hostname(str(data.get("hostname", "")))
     ctx.state.update(hostname=res["hostname"])
     return web.json_response(res)
-
-
-async def options_get(request: web.Request) -> web.Response:
-    return web.json_response({"schema": opts.SCHEMA, "values": opts.validate(ctx_of(request).state.data["options"])})
 
 
 async def options_put(request: web.Request) -> web.Response:
@@ -405,13 +391,11 @@ def create_app(settings: Settings) -> web.Application:
     r.add_put("/api/state", put_state)
     r.add_post("/api/reset", reset)
     r.add_post("/api/complete", complete)
-    r.add_get("/api/system", system)
     r.add_get("/api/klarity", klarity)
     r.add_get("/api/network", network)
     r.add_get("/api/network/wifi", wifi_scan)
     r.add_post("/api/network/wifi", wifi_connect)
     r.add_post("/api/network/hostname", set_hostname)
-    r.add_get("/api/options", options_get)
     r.add_put("/api/options", options_put)
     r.add_post("/api/detect", detect_start)
     r.add_post("/api/preview", preview)

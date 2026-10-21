@@ -14,6 +14,7 @@ import tempfile
 from typing import Dict, Iterator, Optional
 
 from eitri_mcuflash.errors import FlashError
+from eitri_mcuflash.fsutil import atomic_write
 from eitri_mcuflash.proc import Runner, run
 
 STATE_KEYS = ("eitri_mode", "eitri_slot", "eitri_tries", "eitri_state_A", "eitri_state_B")
@@ -126,19 +127,7 @@ class BootControl:
                 raise FlashError("invalid tries %r" % value, code="bootenv")
             if key.startswith("eitri_state_") and value not in ("good", "bad", "unknown"):
                 raise FlashError("invalid state %r" % value, code="bootenv")
-        data = serialize(values)
-        directory = os.path.dirname(self.path)
-        fd, tmp = tempfile.mkstemp(prefix="boot.env.", dir=directory)
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write(data)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp, self.path)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
+        atomic_write(self.path, serialize(values), prefix="boot.env.")
 
     def update(self, **changes: str) -> Dict[str, str]:
         with self.writable():

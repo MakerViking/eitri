@@ -1,0 +1,87 @@
+name: qemu-smoke
+
+# Boots the Eitri OS userspace on qemu-system-aarch64 (virt machine, software emulation) and
+# collects boot time, memory and per-service numbers: os/qemu/README.md.
+#
+# It builds the same Buildroot userspace as os-image (same rootfs overlay, packages and systemd
+# units; only the boot chain and the kernel's platform options differ), so the compiler and
+# download caches of that workflow are reused. Pull requests that touch the OS or the unit files
+# run it; so does a weekly schedule. The numbers are CI-runner and emulation numbers, not the
+# printer's: compare runs with each other.
+
+on:
+  pull_request:
+    paths:
+      - "os/**"
+      - "release.lock"
+      - "configurator/**"
+      - "klarity/systemd/**"
+      - "installer/**"
+      - "klipper-layer/**"
+      - ".github/workflows/qemu-smoke.yml"
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qemu-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_ROOT: ${{ github.workspace }}/../build
+
+jobs:
+  smoke:
+    name: Build for QEMU, boot, measure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libncurses-dev libssl-dev unzip rsync bc cpio file wget git \
+            flex bison libelf-dev openssl zstd e2fsprogs qemu-system-arm
+
+      - name: Restore download and compiler caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.BUILD_ROOT }}/br-dl
+            ${{ env.BUILD_ROOT }}/br-ccache
+          key: os-br-qemu-${{ hashFiles('release.lock', 'os/configs/**', 'os/package/**', 'os/qemu/**') }}
+          restore-keys: |
+            os-br-qemu-
+            os-br-
+
+      - name: Fetch Buildroot at the pinned commit
+        run: make -C os buildroot
+
+      - name: Build
+        run: os/qemu/build.sh
+
+      - name: Boot and measure
+        run: os/qemu/smoke-test.sh --out "$RUNNER_TEMP/smoke" --boot-timeout 1800 --collect-timeout 1800
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-smoke
+          path: ${{ runner.temp }}/smoke
+          if-no-files-found: warn
+          retention-days: 30

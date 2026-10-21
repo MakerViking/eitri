@@ -195,7 +195,7 @@ async function boot() {
   }
   buildShell();
   subscribe(paintKlarity);
-  setInterval(refreshKlarity, 8000);
+  setInterval(() => { if (!document.hidden) refreshKlarity(); }, 8000);   // no polling from a background tab
   window.addEventListener('hashchange', () => {
     const id = location.hash.replace(/^#\//, '');
     if (id !== current?.id) navigate(id);

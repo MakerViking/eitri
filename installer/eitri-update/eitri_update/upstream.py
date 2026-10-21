@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 
 from eitri_mcuflash.errors import FlashError
 from eitri_mcuflash.events import EventSink
+from eitri_mcuflash.fsutil import atomic_write
 from eitri_mcuflash.proc import Runner, run
 
 from . import fetch
@@ -103,16 +104,6 @@ def _atomic_symlink(target: str, link: str) -> None:
     os.replace(tmp, link)
 
 
-def _write(path: str, text: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".new"
-    with open(tmp, "w") as fh:
-        fh.write(text)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
-
-
 class UpstreamMode:
     def __init__(self, state: State, events: EventSink, paths: UpstreamPaths, runner: Runner = run, opener=fetch._open) -> None:
         self.state, self.events, self.paths, self.runner, self.opener = state, events, paths, runner, opener
@@ -155,9 +146,9 @@ class UpstreamMode:
             return
         if not have:
             self._install_toolchain(addon, progress)  # type: ignore[arg-type]
-        _write(os.path.join(self.paths.templates, "update_manager.upstream.conf"),
-               render_upstream_update_manager(flavor, self.paths, manifest.upstream))
-        _write(os.path.join(self.paths.templates, "update_manager.eitri.conf"), render_eitri_update_manager())
+        atomic_write(os.path.join(self.paths.templates, "update_manager.upstream.conf"),
+                     render_upstream_update_manager(flavor, self.paths, manifest.upstream), mode=0o644)
+        atomic_write(os.path.join(self.paths.templates, "update_manager.eitri.conf"), render_eitri_update_manager(), mode=0o644)
         _atomic_symlink(os.path.join(self.paths.templates, "update_manager.upstream.conf"), self.paths.link)
         self.state.set_text("channel", "upstream")
         self.state.add_history("upstream-enabled", flavor=flavor)
@@ -204,7 +195,7 @@ class UpstreamMode:
         if not os.path.isfile(os.path.join(staging, "bin", "arm-none-eabi-gcc")):
             shutil.rmtree(staging, ignore_errors=True)
             raise FlashError("the toolchain archive does not contain bin/arm-none-eabi-gcc", code="bad_archive")
-        _write(os.path.join(staging, "VERSION"), addon.version + "\n")
+        atomic_write(os.path.join(staging, "VERSION"), addon.version + "\n", mode=0o644)
         old = self.paths.toolchain + ".old"
         shutil.rmtree(old, ignore_errors=True)
         if os.path.isdir(self.paths.toolchain):
@@ -221,7 +212,7 @@ class UpstreamMode:
             self.events.info("[dry-run] would switch update_manager back%s" % (" and remove the toolchain" if remove_toolchain else ""))
             self.events.step("upstream", "skipped", msg="dry run")
             return
-        _write(os.path.join(self.paths.templates, "update_manager.eitri.conf"), render_eitri_update_manager())
+        atomic_write(os.path.join(self.paths.templates, "update_manager.eitri.conf"), render_eitri_update_manager(), mode=0o644)
         _atomic_symlink(os.path.join(self.paths.templates, "update_manager.eitri.conf"), self.paths.link)
         self.state.set_text("channel", "eitri")
         # The tree may now sit on any upstream commit; the next Eitri release resets it to its pinned one.

@@ -47,19 +47,6 @@ class Transport(abc.ABC):
     @abc.abstractmethod
     def close(self) -> None: ...
 
-    def read_until_idle(self, timeout: float, quiet: float = 0.05) -> bytes:
-        """Collect everything that arrives until the line goes quiet."""
-        out = b""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            chunk = self.read(4096, min(quiet, max(0.0, deadline - time.monotonic())))
-            if not chunk:
-                if out:
-                    break
-                continue
-            out += chunk
-        return out
-
     def __enter__(self) -> "Transport":
         return self
 
@@ -219,12 +206,3 @@ def _cmdline(proc_root: str, pid: str) -> str:
 def open_transport(path: str, baud: int) -> Transport:
     return PosixSerial(path, baud)
 
-
-class TransportFactory:
-    """Indirection so tests can inject fake buses: factory(path, baud) -> Transport."""
-
-    def __init__(self, opener=open_transport) -> None:
-        self._opener = opener
-
-    def __call__(self, path: str, baud: int) -> Transport:
-        return self._opener(path, baud)

@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 from .protocol import (
     FILE_TRANSFER_DONE,
@@ -64,8 +63,6 @@ class Screen:
         self._waiters: list[tuple[Callable[[Event], bool], asyncio.Future[Event]]] = []
         self._get_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
-        self.bytes_sent = 0
-        self.commands_sent = 0
 
     # ------------------------------------------------------------------ lifecycle
     async def run(self) -> None:
@@ -192,7 +189,6 @@ class Screen:
             log.error("refusing to send unsafe command %r", command)
             raise
         await self.send_raw(data)
-        self.commands_sent += 1
         log.debug("-> %s", command)
 
     async def send_raw(self, data: bytes) -> None:
@@ -206,7 +202,6 @@ class Screen:
             await self.transport.write(data)
         except TransportError as exc:
             raise ScreenError(str(exc)) from exc
-        self.bytes_sent += len(data)
 
     async def goto(self, page: int | str) -> None:
         await self.send(Cmd.page(page))
@@ -255,6 +250,3 @@ class Screen:
             finally:
                 self.release(ready)
                 self.release(done)
-
-    def stats(self) -> dict[str, Any]:
-        return {"commands_sent": self.commands_sent, "bytes_sent": self.bytes_sent}

@@ -81,10 +81,3 @@ class ProtocolError(FlashError):
         kw.setdefault("code", "protocol")
         super().__init__(message, **kw)
 
-
-class PreflightBlocked(FlashError):
-    """Recovery is not proven; refusing to touch the board."""
-
-    def __init__(self, message: str, **kw: Any) -> None:
-        kw.setdefault("code", "preflight_blocked")
-        super().__init__(message, **kw)

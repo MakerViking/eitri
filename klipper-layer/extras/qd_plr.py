@@ -46,7 +46,6 @@ import threading
 import time
 
 STATE_VERSION = 1
-SCAN_YIELD_LINES = 20000
 COPY_CHUNK = 1 << 20
 FREE_SPACE_MARGIN = 8 << 20
 RESUME_FILES = ("resume-a.gcode", "resume-b.gcode")

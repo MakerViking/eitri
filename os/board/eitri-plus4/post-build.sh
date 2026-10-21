@@ -75,8 +75,7 @@ ln -sfn ../run/NetworkManager/resolv.conf "$TARGET_DIR/etc/resolv.conf"
 # --- Application layer entry points ---------------------------------------
 install -D -m 0644 "$REPO_ROOT/release.lock" "$TARGET_DIR/usr/lib/eitri/release.lock"
 
-# Component-owned units win over the defaults in the rootfs overlay, so a
-# component can change its own unit without touching the OS.
+# Units owned by their components (the overlay carries none for these two).
 for component in klarity configurator; do
 	for unit in "$REPO_ROOT/$component/systemd/"*.service; do
 		[ -f "$unit" ] || continue

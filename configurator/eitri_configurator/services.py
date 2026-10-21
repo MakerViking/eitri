@@ -6,6 +6,7 @@ import asyncio
 import shutil
 from typing import Any
 
+from .proc import run
 from .settings import Settings
 
 # Services the wizard is allowed to touch; anything else is rejected before it
@@ -25,11 +26,8 @@ class Services:
     async def _systemctl(self, *args: str) -> tuple[int, str]:
         if not shutil.which("systemctl"):
             return 127, "systemctl not found"
-        proc = await asyncio.create_subprocess_exec(
-            "systemctl", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        )
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
-        return proc.returncode or 0, out.decode(errors="replace").strip()
+        rc, out = await run("systemctl", *args, timeout=60)
+        return rc, out.strip()
 
     async def status(self) -> dict[str, str]:
         if self.s.mock:

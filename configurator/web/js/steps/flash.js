@@ -1,6 +1,6 @@
 import { followJob, latestJob, post } from '../api.js';
 import { h, icon, mount } from '../dom.js';
-import { patchState, store } from '../store.js';
+import { store } from '../store.js';
 import { alertBox, makeConsole, toast } from '../ui.js';
 import { BOOTLOADER, ROLE_LABEL } from './detect.js';
 
