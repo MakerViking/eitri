@@ -42,6 +42,11 @@ and enter it in the browser (`tools/screenshots.py` does exactly that).
 
 Knobs: `--mock-speed N` (0 = instant), `--mock-fail toolhead:flash` (make a
 phase fail), `--mock-freeze flash:62` (stall at 62 %), `--mock-unassigned` (probing cannot tell which UART is which).
+The mock mirrors the live printer's `klippy.log`: `/dev/ttyS0` is the mainboard (`[mcu U_1]`, STM32F401, 84 MHz) and
+`/dev/ttyS2` the toolhead (`[mcu]`, STM32F103, 72 MHz); the real tool identifies a board by the chip name in its data
+dictionary, never by port. The real tool also refuses the toolhead today (its bootloader and application offset are an open
+question, `installer/mcuflash/README.md`); the mock plays the world after that is answered unless
+`EITRI_MOCK_TOOLHEAD_UNRESOLVED=1` is set, which reproduces the refusal (`parameters` blocker).
 
 ## What each step does
 

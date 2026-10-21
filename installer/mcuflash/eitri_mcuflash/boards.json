@@ -1,15 +1,36 @@
 {
   "schema": 1,
-  "_comment": "Board registry. serial_hint is only a prior: ports are bound to boards by probing (see probe.assign_roles). Evidence for the hints: the stock printer.cfg puts steppers, bed and chamber on [mcu U_1] (/dev/ttyS0) and the extruder on [mcu] (/dev/ttyS2); FreeDi flashes the mainboard on ttyS0 and the toolhead on ttyS2. Both boards are STM32F401-class (mainline board_defs 'qidi-plus4' = stm32f401xc).",
+  "_comment": "Board registry. Boards are identified by the MCU NAME in the data dictionary (mcu_candidates), never by port: the mainboard is the board that answers as stm32f401xc, the toolhead the one that answers as stm32f103xe. serial_hint is only a prior (stock printer.cfg: [mcu U_1] = /dev/ttyS0 = mainboard, [mcu] = /dev/ttyS2 = toolhead). expect_config holds the constants the live printer's klippy.log reports for each board; a firmware image whose data dictionary disagrees is refused. 'parameters' records what is settled about the flash layout; a board whose parameters.status is 'unresolved' is NEVER written (see runner._check_parameters). Derivation of every value: mcu/params.json and mcu/README.md.",
   "boards": {
     "toolhead": {
       "label": "Toolhead board (extruder, hotend, probe)",
       "serial_hint": "/dev/ttyS2",
       "app_baud": 500000,
-      "mcu_candidates": ["stm32f4*"],
+      "mcu_candidates": ["stm32f103*"],
       "stock_cfg_owns": ["extruder"],
       "methods": ["katapult"],
-      "katapult_baud": 250000,
+      "katapult_bauds": [250000, 500000],
+      "allow_katapult": true,
+      "expect_config": {
+        "MCU": "stm32f103xe",
+        "CLOCK_FREQ": 72000000,
+        "SERIAL_BAUD": 500000,
+        "RESERVE_PINS_serial": "PB7,PB6"
+      },
+      "parameters": {
+        "status": "unresolved",
+        "confidence": "unsure",
+        "resolved_by": "katapult",
+        "app_offset": null,
+        "app_offset_if_katapult": "0x08002000",
+        "clock_ref": "8 MHz external crystal (STM32_CLOCK_REF_8M); HSE is certain, 8 MHz is likely",
+        "serial": "USART1 remapped PB7/PB6",
+        "open_questions": [
+          "Does this printer's toolhead run Katapult or the stock factory bootloader? A firmware built for the wrong application offset does not boot, and only an ST-Link can recover a board whose bootloader is missing or unknown.",
+          "If it runs Katapult: its application offset (0x08002000 for the community 8 KiB build) must be read from the live bootloader, and its baud rate (250000 or 500000) is compile-time.",
+          "If it runs the stock bootloader: nothing documents a serial flash protocol for it, and the stock application offset is unknown (0x08008000 is only inferred from the Q2 toolhead)."
+        ]
+      },
       "order": 1,
       "recovery": "Re-flash the saved application image through Katapult (eitri-mcuflash rollback toolhead). If Katapult itself is gone the board is only recoverable with a soldered SWD header and an ST-Link V2."
     },
@@ -17,19 +38,46 @@
       "label": "Mainboard (X/Y/Z steppers, bed, chamber)",
       "serial_hint": "/dev/ttyS0",
       "app_baud": 500000,
-      "mcu_candidates": ["stm32f4*"],
+      "mcu_candidates": ["stm32f401*"],
       "stock_cfg_owns": ["stepper_x", "stepper_y", "stepper_z", "heater_bed"],
       "methods": ["sdcard-serial", "sdcard-file"],
-      "katapult_baud": 250000,
+      "katapult_bauds": [],
+      "allow_katapult": false,
+      "expect_config": {
+        "MCU": "stm32f401xc",
+        "CLOCK_FREQ": 84000000,
+        "SERIAL_BAUD": 500000,
+        "RESERVE_PINS_serial": "PA10,PA9",
+        "RESERVE_PINS_crystal": "PH0,PH1"
+      },
       "sdcard": {
         "board_type": "qidi-plus4",
         "firmware_name": "qd_mcu.bin"
       },
+      "parameters": {
+        "status": "resolved",
+        "confidence": "likely",
+        "resolved_by": null,
+        "app_offset": "0x08008000",
+        "app_offset_if_katapult": null,
+        "clock_ref": "8 MHz external crystal (STM32_CLOCK_REF_8M)",
+        "serial": "USART1 PA10/PA9",
+        "open_questions": [
+          "A direct read of the stock board's SCB->VTOR is still missing; 0x08008000 is derived from community images that boot on this board (mcu/README.md).",
+          "The HSE crystal frequency (8 MHz) is inferred; a mismatch would bring the board up at the wrong baud rate and it would not connect (recoverable through the SD bootloader)."
+        ]
+      },
       "order": 2,
-      "recovery": "Copy the stock qd_mcu.bin to the root of a FAT32 microSD card, insert it in the mainboard slot (case must be opened) and press the mainboard RESET button; the board's SD bootloader flashes it on its own."
+      "recovery": "Copy the stock qd_mcu.bin to the root of a FAT32 microSD card, insert it in the mainboard slot (case must be opened) and press the mainboard RESET button; the board's stock SD bootloader (at 0x08000000, which Eitri never writes) flashes it on its own."
     }
   },
   "chips": {
+    "stm32f103x8": { "flash_kib": 64, "flash_base": "0x08000000" },
+    "stm32f103xb": { "flash_kib": 128, "flash_base": "0x08000000" },
+    "stm32f103xc": { "flash_kib": 256, "flash_base": "0x08000000" },
+    "stm32f103xd": { "flash_kib": 384, "flash_base": "0x08000000" },
+    "stm32f103xe": { "flash_kib": 512, "flash_base": "0x08000000" },
+    "stm32f103xg": { "flash_kib": 1024, "flash_base": "0x08000000" },
     "stm32f401xb": { "flash_kib": 128, "flash_base": "0x08000000" },
     "stm32f401xc": { "flash_kib": 256, "flash_base": "0x08000000" },
     "stm32f401xd": { "flash_kib": 384, "flash_base": "0x08000000" },

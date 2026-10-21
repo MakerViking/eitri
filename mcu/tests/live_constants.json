@@ -1,0 +1,16 @@
+{
+  "_source": "Printer's klippy.log, 'MCU ... config:' lines (read via Moonraker). Only these constants are kept; nothing else of the log is copied.",
+  "stock_firmware": "Klipper v0.12.0-65-g96ab9069-dirty, built 2024-03-01, gcc-arm 7.3.1",
+  "boards": {
+    "mainboard": {
+      "klipper_name": "U_1", "port": "/dev/ttyS0",
+      "MCU": "stm32f401xc", "CLOCK_FREQ": 84000000, "SERIAL_BAUD": 500000,
+      "RESERVE_PINS_serial": "PA10,PA9", "RESERVE_PINS_crystal": "PH0,PH1"
+    },
+    "toolhead": {
+      "klipper_name": "mcu", "port": "/dev/ttyS2",
+      "MCU": "stm32f103xe", "CLOCK_FREQ": 72000000, "SERIAL_BAUD": 500000,
+      "RESERVE_PINS_serial": "PB7,PB6"
+    }
+  }
+}

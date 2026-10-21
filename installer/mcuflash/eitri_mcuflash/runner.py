@@ -139,6 +139,9 @@ class Plan:
             "boards": {
                 b.board.name: {
                     "port": b.role.port,
+                    "mcu": b.probe.mcu,
+                    "parameters": {"status": b.board.params_status, "confidence": b.board.params_confidence,
+                                   "open_questions": list(b.board.open_questions) if not b.board.resolved else []},
                     "method": b.method,
                     "steps": b.steps(),
                     "firmware": b.artifact.to_dict() if b.artifact else None,
@@ -186,11 +189,16 @@ class Flasher:
                 ports.append(b.serial_hint)
         return ports
 
+    def katapult_bauds(self) -> Tuple[int, ...]:
+        return tuple(sorted({b for d in self.ctx.registry.boards.values() for b in d.katapult_bauds}))
+
     def probe_all(self) -> List[PortProbe]:
         self.events.step("probe", "start", msg="identifying the MCUs on %s" % ", ".join(self.candidate_ports()))
         probes: List[PortProbe] = []
         app_baud = max((b.app_baud for b in self.ctx.registry.boards.values()), default=500000)
-        kbauds = tuple(sorted({b.katapult_baud for b in self.ctx.registry.boards.values()}))
+        # Which board sits on which port is not known yet, so every port is probed for Katapult at every baud rate
+        # any board's Katapult could use.  The handshake is read-only.
+        kbauds = self.katapult_bauds()
         for port in self.candidate_ports():
             p = probe_port(
                 port, self.ctx.opener, app_baud=app_baud, katapult_bauds=kbauds, users_fn=self.ctx.users_fn,
@@ -298,6 +306,143 @@ class Flasher:
             add(Check("commit", BLOCK, "firmware is built from %s but %s is pinned" % (have[:12], want[:12]), name,
                       "Use the firmware that belongs to the pinned release, or update the pin deliberately."))
 
+    def _check_parameters(self, bp: BoardPlan) -> None:
+        """Refuse any board whose flash layout is not settled.
+
+        A firmware linked for the wrong application offset, or for the wrong crystal, does not boot, and a board
+        whose bootloader is unknown cannot be brought back without an ST-Link.  So an unresolved board is written
+        only when the one observation that settles it is in hand right now (the toolhead: Katapult answered, and
+        the offset it reports is the one the image must be linked for)."""
+        board, probe, add = bp.board, bp.probe, bp.checks.append
+        name = board.name
+        if not board.allow_katapult and probe.state == KATAPULT:
+            add(Check("parameters", BLOCK,
+                      "the %s board answers as Katapult, but its stock bootloader is not Katapult: it has been modified "
+                      "and the registry's flash layout no longer applies" % name, name,
+                      "Do not flash. Restore the stock bootloader/firmware first (docs/RECOVERY.md)."))
+            return
+        if board.resolved:
+            where = ("application at 0x%08x" % board.app_offset) if board.app_offset is not None else "application offset read from the bootloader"
+            add(Check("parameters", OK, "flash layout settled (%s confidence): %s" % (board.params_confidence or "unrated", where), name))
+            return
+        question = board.open_questions[0] if board.open_questions else "the flash layout of this board is not settled"
+        if board.resolved_by and probe.state == board.resolved_by:
+            add(Check("parameters", WARN,
+                      "the %s board's flash layout is unresolved in the registry; accepted only because %s answered right now "
+                      "(the image must be linked for the application start it reports)" % (name, probe.state), name))
+            if bp.artifact is not None and bp.artifact.app_address is None:
+                add(Check("offset", BLOCK, "cannot tell which application offset the image is linked for", name,
+                          "Use an image whose data dictionary or manifest records its application address."))
+            return
+        add(Check("parameters", BLOCK,
+                  "refusing to write the %s board: its flash layout is unresolved. Open question: %s" % (name, question), name,
+                  "Nothing is written until %s. Answer the question read-only (see docs/RECOVERY.md and mcu/README.md), then update the "
+                  "registry; do not guess an offset." % (
+                      ("the board is seen answering as %s" % board.resolved_by) if board.resolved_by else "the registry marks the board resolved")))
+
+    def _check_firmware_identity(self, bp: BoardPlan, art: "fw.FirmwareArtifact") -> None:
+        """The image must be for this board: chip, clock, serial pins and crystal as the live printer reports them,
+        and linked for the application address the registry settled on."""
+        board, add = bp.board, bp.checks.append
+        name = board.name
+        wrong = []
+        for key, want in board.expect_config.items():
+            have = art.mcu if key == "MCU" else art.config.get(key)
+            if have is None:
+                wrong.append("%s absent (board: %s)" % (key, want))
+            elif str(have).lower() != str(want).lower():
+                wrong.append("%s=%s (board: %s)" % (key, have, want))
+        if wrong:
+            add(Check("firmware_identity", BLOCK, "image does not match the %s board: %s" % (name, "; ".join(wrong)), name,
+                      "Use the image built for this board (mcu/configs); a wrong clock or serial pin does not boot."))
+        elif board.expect_config:
+            add(Check("firmware_identity", OK, "image constants match the board (%s)" % ", ".join(sorted(board.expect_config)), name))
+        if board.resolved and board.app_offset is not None:
+            if art.app_address is None:
+                add(Check("offset", BLOCK, "cannot tell which application offset the image is linked for; the %s board needs 0x%08x"
+                          % (name, board.app_offset), name, "Use an image whose manifest records its application address."))
+            elif art.app_address != board.app_offset:
+                add(Check("offset", BLOCK, "image is linked for 0x%08x but the %s board's application starts at 0x%08x"
+                          % (art.app_address, name, board.app_offset), name,
+                          "Rebuild for the board's bootloader offset; the bootloader region is never written."))
+            else:
+                add(Check("offset", OK, "image is linked for the board's application offset 0x%08x" % art.app_address, name))
+
+    def _check_artifact(self, bp: BoardPlan, art: "fw.FirmwareArtifact") -> None:
+        """Everything that can be decided from the image itself: identity, linked offset, vector table, fit, version lock.
+
+        Runs at plan time for a prebuilt image and AGAIN after an on-device build (bp.artifact only exists then):
+        an image built from the wrong config must be stopped before it is staged."""
+        board, add = bp.board, bp.checks.append
+        name = board.name
+        self._check_firmware_identity(bp, art)
+        self._check_vector_table(bp, art)
+        total = self.ctx.registry.flash_size(art.mcu)
+        if bp.probe.state == KATAPULT and bp.probe.katapult and art.app_address is not None and art.app_address != bp.probe.katapult.app_start:
+            add(Check("offset", BLOCK,
+                      "firmware is linked for 0x%08x but Katapult expects the application at 0x%08x" % (art.app_address, bp.probe.katapult.app_start),
+                      name, "Rebuild with the matching bootloader offset."))
+        elif bp.method == KATAPULT_METHOD:
+            add(Check("offset", WARN, "application offset is checked once the bootloader answers", name))
+        if total is not None:
+            base = self.ctx.registry.flash_base(art.mcu)
+            room = total - ((art.app_address - base) if art.app_address is not None else 0)
+            if room <= 0 or art.size > room:
+                add(Check("fit", BLOCK, "image (%d B) does not fit in the %d B of flash above the bootloader" % (art.size, max(room, 0)), name))
+        elif total is None:
+            add(Check("fit", WARN, "unknown chip %s: flash size not checked" % art.mcu, name))
+
+        # version lock: the point of all this.
+        if self.opt.check_version_lock:
+            if os.path.isdir(os.path.join(self.ctx.klipper_dir, ".git")):
+                try:
+                    hv = fw.host_version(self.ctx.klipper_dir, self.ctx.runner)
+                    if fw.versions_match(hv, art.version):
+                        add(Check("version_lock", OK, "MCU image and host are both %s" % hv, name))
+                    else:
+                        add(Check("version_lock", BLOCK, "MCU image is %s but the host Klipper is %s" % (art.version, hv), name,
+                                  "Use firmware built from the host's commit (or update the host)."))
+                except FlashError as exc:
+                    add(Check("version_lock", WARN, exc.message, name))
+            else:
+                add(Check("version_lock", WARN, "no Klipper clone at %s yet; host/MCU version lock not checked" % self.ctx.klipper_dir, name))
+
+
+    def _check_vector_table(self, bp: BoardPlan, art: "fw.FirmwareArtifact") -> None:
+        """The image's own vector table must agree with the offset the board starts applications at.
+
+        Manifest and checksum say who built the file; the vector table says what it is linked for.  A bundle that
+        passes its checksum but carries an image linked elsewhere does not boot behind the bootloader."""
+        board, probe = bp.board, bp.probe
+        if board.resolved and board.app_offset is not None:
+            offset = board.app_offset
+        elif probe.state == KATAPULT and probe.katapult is not None:
+            offset = probe.katapult.app_start
+        else:
+            offset = art.app_address
+        if offset is None:
+            return
+        try:
+            problem = fw.vector_table_problem(art.read(), offset, flash_base=self.ctx.registry.flash_base(art.mcu))
+        except OSError as exc:
+            problem = "cannot read the image: %s" % exc.strerror
+        if problem:
+            bp.checks.append(Check("vector_table", BLOCK, "%s: %s" % (art.path, problem), board.name,
+                                   "Do not flash this file; it is not linked for 0x%08x." % offset))
+        else:
+            bp.checks.append(Check("vector_table", OK, "reset vector and stack pointer fit an image linked for 0x%08x" % offset, board.name))
+
+    def _build_config(self, name: str) -> str:
+        """The Kconfig file for an on-device build of *name*: <board>.config, or the one <board>-*.config the repository ships."""
+        d = self.opt.build_config_dir or os.path.join(self.opt.firmware_root, "configs", self.opt.flavor)
+        exact = os.path.join(d, name + ".config")
+        if os.path.isfile(exact):
+            return exact
+        import glob
+
+        found = sorted(glob.glob(os.path.join(glob.escape(d), glob.escape(name) + "-*.config")))
+        return found[0] if len(found) == 1 else exact
+
     def _stock_image_problem(self, board, path: str) -> Tuple[str, str]:
         """(blocking problem, warning) for an operator-supplied stock image."""
         try:
@@ -313,19 +458,24 @@ class Flasher:
         mcu = str((doc.get("config") or {}).get("MCU", ""))
         if mcu and not board.mcu_matches(mcu):
             return "the stock image %s is built for %s, not for the %s board" % (path, mcu, board.name), ""
+        if board.resolved and board.app_offset is not None:
+            # the recovery image is what the bootloader copies to the application offset; one linked elsewhere is a brick
+            vt = fw.vector_table_problem(blob, board.app_offset)
+            if vt:
+                return "the stock image %s is not linked for 0x%08x (%s)" % (path, board.app_offset, vt), ""
         return "", ""
 
     def _check_board(self, bp: BoardPlan) -> None:
         board, probe, add = bp.board, bp.probe, bp.checks.append
         name = board.name
         add(Check("port", OK, "%s answers as %s%s" % (probe.path, probe.state, (", MCU " + probe.mcu) if probe.mcu else ""), name))
-        if probe.dictionary is not None and probe.dictionary.app and probe.dictionary.app != "Klipper":
-            add(Check("firmware_app", WARN, "board reports app %r, not Klipper" % probe.dictionary.app, name))
+        if probe.dictionary is not None and probe.dictionary.app and probe.dictionary.app not in fw.HOST_APPS:
+            add(Check("firmware_app", WARN, "board reports app %r, not Klipper or Kalico" % probe.dictionary.app, name))
 
         # firmware
         try:
             if self.opt.build:
-                cfg = os.path.join(self.opt.build_config_dir or os.path.join(self.opt.firmware_root, "configs", self.opt.flavor), name + ".config")
+                cfg = self._build_config(name)
                 out = os.path.join(self.opt.state_dir, "build", name)
                 bp.artifact = None
                 add(Check("firmware", OK, "will build %s from %s with %s" % (name, self.ctx.klipper_dir, cfg), name))
@@ -337,6 +487,7 @@ class Flasher:
             add(Check("firmware", BLOCK, exc.message, name, exc.recovery))
 
         self._check_commit(bp)
+        self._check_parameters(bp)
 
         # method
         bp.method = choose_method(self.ctx, board, probe)
@@ -357,35 +508,9 @@ class Flasher:
                 for p in problems:
                     add(Check("method", BLOCK, p, name))
 
-        # geometry
         art = bp.artifact
         if art is not None:
-            total = self.ctx.registry.flash_size(art.mcu)
-            if probe.state == KATAPULT and probe.katapult and art.app_address is not None and art.app_address != probe.katapult.app_start:
-                add(Check("offset", BLOCK,
-                          "firmware is linked for 0x%08x but Katapult expects the application at 0x%08x" % (art.app_address, probe.katapult.app_start),
-                          name, "Rebuild with the matching bootloader offset."))
-            elif bp.method == KATAPULT_METHOD:
-                add(Check("offset", WARN, "application offset is checked once the bootloader answers", name))
-            if total is not None and art.size > total:
-                add(Check("fit", BLOCK, "image (%d B) is larger than the chip's flash (%d B)" % (art.size, total), name))
-            elif total is None:
-                add(Check("fit", WARN, "unknown chip %s: flash size not checked" % art.mcu, name))
-
-            # version lock: the point of all this.
-            if self.opt.check_version_lock:
-                if os.path.isdir(os.path.join(self.ctx.klipper_dir, ".git")):
-                    try:
-                        hv = fw.host_version(self.ctx.klipper_dir, self.ctx.runner)
-                        if fw.versions_match(hv, art.version):
-                            add(Check("version_lock", OK, "MCU image and host are both %s" % hv, name))
-                        else:
-                            add(Check("version_lock", BLOCK, "MCU image is %s but the host Klipper is %s" % (art.version, hv), name,
-                                      "Use firmware built from the host's commit (or update the host)."))
-                    except FlashError as exc:
-                        add(Check("version_lock", WARN, exc.message, name))
-                else:
-                    add(Check("version_lock", WARN, "no Klipper clone at %s yet; host/MCU version lock not checked" % self.ctx.klipper_dir, name))
+            self._check_artifact(bp, art)
 
         # recovery
         if bp.method == KATAPULT_METHOD:
@@ -499,6 +624,15 @@ class Flasher:
             runner=self.ctx.runner, on_line=lambda l: self.events.log("debug", l, board=bp.board.name, step="build"),
             check_toolchain=self.ctx.runner is run,
         )
+        mark = len(bp.checks)
+        self._check_artifact(bp, bp.artifact)
+        blocks = [c for c in bp.checks[mark:] if c.status == BLOCK]
+        if blocks:
+            raise FlashError(
+                "the image just built for the %s board is not fit to flash: %s" % (bp.board.name, "; ".join(c.detail for c in blocks)),
+                code="build_mismatch", step="build", board=bp.board.name,
+                recovery="Nothing was written. Fix the build configuration (it must match the board: chip, clock, serial pins, "
+                         "bootloader offset) and build again.")
         self.events.step("build", "ok", board=bp.board.name, data=bp.artifact.to_dict())
 
     # -- phase A ---------------------------------------------------------------------
@@ -633,7 +767,7 @@ class Flasher:
         while self.ctx.clock() < deadline:
             self.ctx.sleep(1.0)
             p = probe_port(bp.role.port, self.ctx.opener, app_baud=bp.board.app_baud,
-                           katapult_bauds=(bp.board.katapult_baud,), users_fn=lambda _p: [],
+                           katapult_bauds=tuple(bp.board.katapult_bauds), users_fn=lambda _p: [],
                            exists_fn=self.ctx.exists_fn, identify_timeout=self.ctx.identify_timeout,
                            clock=self.ctx.clock, sleep=self.ctx.sleep)
             if p.state == KLIPPER and p.dictionary is not None:

@@ -25,15 +25,20 @@ The U-Boot sandbox is not in the repo. Build it once (`make sandbox_defconfig`, 
    expected), the first slow `git status` of the stat-free clone, the klippy + MCU handshake with the shipped `c_helper.so`,
    and a real `eitri-update switch-flavor` (stop services, swap trees, flash both MCUs, restart) on the machine.
 
-1. **Which UART is which board.** The stock `printer.cfg` puts steppers/bed/chamber on `[mcu U_1]` = `/dev/ttyS0`
-   and the extruder on `[mcu]` = `/dev/ttyS2`; the code binds boards from that evidence (and from an explicit
-   `--assign`), and refuses to flash on the default-wiring hint alone. Confirm on the printer with
+1. **Which UART is which board.** The live printer's `klippy.log` and stock `printer.cfg` put steppers/bed/chamber on
+   `[mcu U_1]` = `/dev/ttyS0` (answers as `stm32f401xc`, 84 MHz) and the extruder on `[mcu]` = `/dev/ttyS2` (answers as
+   `stm32f103xe`, 72 MHz). The code binds a board by the chip name in its dictionary (then printer.cfg, then an explicit
+   `--assign`), never by port alone, and refuses a port whose chip does not fit the board. Confirm on the printer with
    `eitri-mcuflash plan`.
 1b. **`scripts/spi_flash/fatfs.so` on Eitri.** The mainboard method needs it prebuilt or a host compiler; the base image has neither
    (nothing in `os/` or `klipper-layer/` builds it yet). Without it the mainboard can only be flashed with `sdcard-file`.
-2. **The bootloader on each board.** Expected: Katapult (250000 baud) on the toolhead; the QIDI SD-card bootloader
-   on the mainboard (`spi_flash.py … qidi-plus4`, board definition exists in mainline Klipper). If the toolhead
-   shows no Katapult, flashing is refused and the answer is an ST-Link, not a workaround.
+2. **The bootloader on each board.** Mainboard: the stock QIDI SD-card bootloader at `0x08000000`, application at
+   `0x08008000` (`spi_flash.py … qidi-plus4`, board definition exists in mainline Klipper, not in Kalico). **Toolhead:
+   unresolved.** The registry (`boards.json`, `parameters.status = unresolved`) makes `eitri-mcuflash` refuse to write
+   it unless Katapult (250000 or 500000 baud) is seen answering at that moment. Settle it read-only first (a Katapult
+   handshake, and `SCB->VTOR` through klippy's `debug_read` with klippy stopped), then change the registry. If the
+   toolhead shows no Katapult, the answer is an ST-Link, not a workaround. For the mainboard also read `SCB->VTOR`
+   once and confirm `0x08008000`.
 3. Katapult `REQUEST_BLOCK` reading the *whole* application region (the backup) and the app offset (`app_start`)
    the real bootloader reports. Also that `Request Serial Bootloader!!` at 500000 baud enters it on the stock
    firmware.

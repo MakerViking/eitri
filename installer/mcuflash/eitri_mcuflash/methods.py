@@ -21,7 +21,7 @@ from typing import Any, Callable, Iterator, List, Optional
 
 from .errors import FlashError, ProtocolError
 from .events import EventSink
-from .firmware import DEFAULT_KLIPPER_DIR, FirmwareArtifact, extract_embedded_dictionary
+from .firmware import DEFAULT_KLIPPER_DIR, FirmwareArtifact, extract_embedded_dictionary_raw
 from .katapult_proto import KatapultClient
 from .klipper_proto import SERIAL_BOOTLOADER_REQUEST
 from .probe import KATAPULT, PortProbe
@@ -66,7 +66,7 @@ def sdcard_capable(probe: PortProbe) -> bool:
 
 def choose_method(ctx: FlashContext, board: BoardDef, probe: PortProbe) -> Optional[str]:
     """Pick the flash method for a board from what it exposes right now."""
-    if probe.state == KATAPULT:
+    if probe.state == KATAPULT and board.allow_katapult:
         return KATAPULT_METHOD
     for method in board.methods:
         if method == KATAPULT_METHOD:
@@ -99,21 +99,21 @@ class KatapultMethod:
         self.ctx = ctx
         self.board = board
         self.port = port
+        self.baud = board.katapult_baud   # the rate Katapult actually answered at (it is a compile-time choice)
 
     # -- entering the bootloader ------------------------------------------------
-    def _connect(self, baud: int, attempts: int) -> Optional[tuple]:
+    def _connect(self, bauds, attempts: int) -> Optional[tuple]:
         for _attempt in range(attempts):
-            try:
+            for baud in bauds:
                 tp = self.ctx.opener(self.port, baud)
-            except FlashError:
-                raise
-            client = KatapultClient(tp, clock=self.ctx.clock, sleep=self.ctx.sleep)
-            try:
-                client.connect(tries=1, timeout=0.8)
-                return tp, client
-            except ProtocolError:
-                tp.close()
-                self.ctx.sleep(0.5)
+                client = KatapultClient(tp, clock=self.ctx.clock, sleep=self.ctx.sleep)
+                try:
+                    client.connect(tries=1, timeout=0.8)
+                    self.baud = baud
+                    return tp, client
+                except ProtocolError:
+                    tp.close()
+            self.ctx.sleep(0.5)
         return None
 
     def _request_from_app(self) -> None:
@@ -128,14 +128,15 @@ class KatapultMethod:
         Leaving the context does NOT start the application - callers decide
         whether to flash first (flash_image() / client.complete()).
         """
-        conn = self._connect(self.board.katapult_baud, 2 if already_in_bootloader else 1)
+        conn = self._connect(self.board.katapult_bauds, 2 if already_in_bootloader else 1)
         if conn is None:
             self.ctx.events.info("requesting bootloader entry from the running firmware", board=self.board.name, step="bootloader")
             self._request_from_app()
-            conn = self._connect(self.board.katapult_baud, 8)
+            conn = self._connect(self.board.katapult_bauds, 8)
         if conn is None:
             raise FlashError(
-                "no Katapult bootloader answered on %s at %d baud after a reset request" % (self.port, self.board.katapult_baud),
+                "no Katapult bootloader answered on %s at %s baud after a reset request"
+                % (self.port, "/".join(str(b) for b in self.board.katapult_bauds)),
                 code="no_bootloader",
                 step="bootloader",
                 board=self.board.name,
@@ -201,7 +202,7 @@ class KatapultMethod:
         """Write + verify *image* and start the application.  Returns a digest string."""
         if self._use_flashtool():
             client.transport.close()
-            argv = [sys.executable, self.ctx.katapult_tool or "", "-d", self.port, "-b", str(self.board.katapult_baud), "-f", path_for_tool]
+            argv = [sys.executable, self.ctx.katapult_tool or "", "-d", self.port, "-b", str(self.baud), "-f", path_for_tool]
             lines: List[str] = []
 
             def on_line(line: str) -> None:
@@ -248,6 +249,15 @@ class SdcardSerialMethod:
             problems.append("klippy python %s does not exist" % py)
         # spi_flash.py compiles its FatFS helper with the host C compiler on first use.  The Eitri base
         # image has no compiler, so a prebuilt fatfs.so (or the upstream toolchain add-on's host gcc) is needed.
+        board_type = self.board.sdcard.get("board_type", "")
+        defs = os.path.join(os.path.dirname(self.script_path()), "board_defs.py")
+        if os.path.isfile(defs) and board_type:
+            with open(defs, "r", encoding="utf-8", errors="replace") as fh:
+                known = ("'%s'" % board_type) in fh.read() or ('"%s"' % board_type) in fh.read()
+            if not known:
+                problems.append(
+                    "this firmware tree's spi_flash board_defs.py has no %r definition (Kalico ships none); "
+                    "use the microSD file method (--sd-mount) or a Klipper script tree" % board_type)
         lib = os.path.join(os.path.dirname(self.script_path()), "fatfs.so")
         if not os.path.isfile(lib) and shutil.which("gcc") is None:
             problems.append(
@@ -261,13 +271,14 @@ class SdcardSerialMethod:
         tmp: Optional[str] = None
         try:
             if artifact is not None:
-                doc = extract_embedded_dictionary(artifact.read())
-                if doc is not None:
-                    import json
-
+                raw = extract_embedded_dictionary_raw(artifact.read())
+                if raw is not None:
+                    # the exact bytes the build embedded: spi_flash.py compares the dictionary it reads back from
+                    # the board byte for byte, so a re-serialised copy (other separators or key order) would report
+                    # "Version Mismatch" after a good flash
                     fd, tmp = tempfile.mkstemp(prefix="klipper-", suffix=".dict", dir=self.ctx.work_dir)
-                    with os.fdopen(fd, "w") as fh:
-                        json.dump(doc, fh)
+                    with os.fdopen(fd, "wb") as fh:
+                        fh.write(raw)
                     argv += ["-d", tmp]
             argv += [self.port, board_type, image_path]
             tail: List[str] = []
@@ -310,10 +321,38 @@ class SdcardFileMethod:
             raise FlashError("--sd-mount is not a mounted directory", code="no_sdcard", step="flash", board=self.board.name)
         dest = os.path.join(mount, self.board.sdcard.get("firmware_name", "qd_mcu.bin"))
         shutil.copyfile(image_path, dest)
-        with open(dest, "rb") as a, open(image_path, "rb") as b:
-            if a.read() != b.read():
-                raise FlashError("SD card copy does not match the source image", code="flash_failed", step="flash", board=self.board.name)
+        # The stock bootloader flashes whatever file it finds, so a half-written file on the card would become a
+        # corrupt application.  Force the data and the directory entry to the card before anything is read back or
+        # the operator is told to pull it.
+        self._sync_file(dest)
+        with open(image_path, "rb") as b:
+            want = b.read()
+        with open(dest, "rb") as a:
+            got = a.read()
+        if got != want:
+            raise FlashError("SD card copy does not match the source image", code="flash_failed", step="flash", board=self.board.name)
         return dest
+
+    @staticmethod
+    def _sync_file(path: str) -> None:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            dfd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+        except OSError:
+            dfd = None
+        if dfd is not None:
+            try:
+                os.fsync(dfd)
+            except OSError:
+                pass
+            finally:
+                os.close(dfd)
+        if hasattr(os, "sync"):
+            os.sync()
 
 
 def make_method(name: str, ctx: FlashContext, board: BoardDef, port: str):

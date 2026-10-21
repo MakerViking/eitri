@@ -62,7 +62,7 @@ def make_ctx(**kw):
 
 def test_printer_cfg_comes_from_the_klipper_layer_and_follows_options(tmp_path):
     s = Settings(data_dir=tmp_path)
-    detect = {"boards": [{"role": "mainboard", "port": "/dev/ttyS2"}, {"role": "toolhead", "port": "/dev/ttyS0"}]}
+    detect = {"boards": [{"role": "mainboard", "port": "/dev/ttyS0"}, {"role": "toolhead", "port": "/dev/ttyS2"}]}
     lock = load(s.release_lock)
 
     def render_with(**kw):
@@ -73,7 +73,7 @@ def test_printer_cfg_comes_from_the_klipper_layer_and_follows_options(tmp_path):
     assert "[heater_generic chamber]" not in base and "[qd_power_interlock]" not in base
     assert "[qd_plr]" in base and "[adxl345]" in base
     # Layer naming: [mcu] is the toolhead, [mcu U_1] the mainboard, ports come from detection.
-    assert "[mcu]\n" in base and base.index("serial: /dev/ttyS0") < base.index("[mcu U_1]") < base.index("serial: /dev/ttyS2")
+    assert "[mcu]\n" in base and base.index("serial: /dev/ttyS2") < base.index("[mcu U_1]") < base.index("serial: /dev/ttyS0")
     on = render_with(chamber_heater=True, chamber_ack=True, power_loss_recovery=False, accelerometer="none")
     assert "[heater_generic chamber]" in on and "[verify_heater chamber]" in on
     assert "[qd_plr]" not in on and "[adxl345]" not in on
@@ -181,7 +181,7 @@ def test_non_phase_steps_become_log_lines():
 PLAN = {
     "blocked": False,
     "ports": [{"port": "/dev/ttyS0", "state": "klipper", "baud": 500000, "mcu": "stm32f401xc", "klipper": {"version": "v0.12.0"}},
-              {"port": "/dev/ttyS2", "state": "katapult", "baud": 250000, "mcu": "stm32f401xc"},
+              {"port": "/dev/ttyS2", "state": "katapult", "baud": 250000, "mcu": "stm32f103xe"},
               {"port": "/dev/ttyS1", "state": "silent"}],
     "roles": {"mainboard": {"port": "/dev/ttyS0", "confidence": "mapped", "evidence": ["printer.cfg"]},
               "toolhead": {"port": "/dev/ttyS2", "confidence": "verified", "evidence": []}},
@@ -194,7 +194,7 @@ def test_plan_to_detect_derives_bootloader_from_method():
     d = mcuflash.plan_to_detect(PLAN)
     by = {b["role"]: b for b in d["boards"]}
     assert by["mainboard"]["bootloader"] == "sdcard-serial" and by["mainboard"]["version"] == "v0.12.0"
-    assert by["toolhead"]["bootloader"] == "katapult" and by["toolhead"]["chip"] == "stm32f401xc"
+    assert by["toolhead"]["bootloader"] == "katapult" and by["toolhead"]["chip"] == "stm32f103xe" and by["mainboard"]["chip"] == "stm32f401xc"
     assert d["blockers"] == [] and d["warnings"][0]["code"] == "recovery" and not d["needs_assignment"]
 
 
@@ -220,14 +220,14 @@ def board(role, port, boot="katapult"):
 
 
 def test_analyze_boards_ok_and_blockers():
-    assert analyze_boards([board("mainboard", "/dev/ttyS2"), board("toolhead", "/dev/ttyS0")])["flash_ready"]
+    assert analyze_boards([board("mainboard", "/dev/ttyS0"), board("toolhead", "/dev/ttyS2")])["flash_ready"]
     codes = lambda bs: {b["code"] for b in analyze_boards(bs)["blockers"]}   # noqa: E731
-    assert "missing-toolhead" in codes([board("mainboard", "/dev/ttyS2")])
-    assert "rom-only" in codes([board("mainboard", "/dev/ttyS2", "stm32-rom"), board("toolhead", "/dev/ttyS0")])
-    assert "no-recovery" in codes([board("mainboard", "/dev/ttyS2", "unknown"), board("toolhead", "/dev/ttyS0")])
+    assert "missing-toolhead" in codes([board("mainboard", "/dev/ttyS0")])
+    assert "rom-only" in codes([board("mainboard", "/dev/ttyS0", "stm32-rom"), board("toolhead", "/dev/ttyS2")])
+    assert "no-recovery" in codes([board("mainboard", "/dev/ttyS0", "unknown"), board("toolhead", "/dev/ttyS2")])
     assert "dup-port" in codes([board("mainboard", "/dev/ttyS2"), board("toolhead", "/dev/ttyS2")])
-    assert "bad-port" in codes([board("mainboard", "/dev/sda"), board("toolhead", "/dev/ttyS0")])
-    assert "unknown-role" in codes([board("unknown", "/dev/ttyS1"), board("mainboard", "/dev/ttyS2"), board("toolhead", "/dev/ttyS0")])
+    assert "bad-port" in codes([board("mainboard", "/dev/sda"), board("toolhead", "/dev/ttyS2")])
+    assert "unknown-role" in codes([board("unknown", "/dev/ttyS1"), board("mainboard", "/dev/ttyS0"), board("toolhead", "/dev/ttyS2")])
 
 
 # --- calibration parsing -----------------------------------------------------------------

@@ -91,12 +91,19 @@ def test_probe_states():
 def _two_boards():
     bus = FakeBus()
     bus.add("/dev/ttyS0", FakeBoard("m"))
-    bus.add("/dev/ttyS2", FakeBoard("t"))
+    bus.add("/dev/ttyS2", FakeBoard("t", mcu="stm32f103xe", flash_kib=512))
     return bus, _probes(bus, ["/dev/ttyS0", "/dev/ttyS2"])
 
 
+def _blind(reg):
+    """A registry whose chip names tell the two boards apart no better than the hints do."""
+    for b in reg.boards.values():
+        b.mcu_candidates = ["stm32*"]
+    return reg
+
+
 def test_hint_alone_is_not_identification():
-    reg = load_registry()
+    reg = _blind(load_registry())
     _bus, probes = _two_boards()
     roles, problems, _ = assign_roles(probes, reg)
     assert roles["mainboard"].port == "/dev/ttyS0" and roles["mainboard"].confidence == "hint"
@@ -106,7 +113,7 @@ def test_hint_alone_is_not_identification():
 def test_stock_evidence_beats_the_hint_when_wiring_is_swapped(tmp_path):
     reg = load_registry()
     bus = FakeBus()
-    bus.add("/dev/ttyS0", FakeBoard("x"))
+    bus.add("/dev/ttyS0", FakeBoard("x", mcu="stm32f103xe", flash_kib=512))
     bus.add("/dev/ttyS2", FakeBoard("y"))
     probes = _probes(bus, ["/dev/ttyS0", "/dev/ttyS2"])
     swapped = STOCK_CFG.replace("/dev/ttyS2", "/dev/TMP").replace("/dev/ttyS0", "/dev/ttyS2").replace("/dev/TMP", "/dev/ttyS0")
@@ -119,7 +126,7 @@ def test_stock_evidence_beats_the_hint_when_wiring_is_swapped(tmp_path):
 
 
 def test_override_and_ambiguity():
-    reg = load_registry()
+    reg = _blind(load_registry())
     bus, probes = _two_boards()
     roles, problems, _ = assign_roles(probes, reg, overrides={"mainboard": "/dev/ttyS2", "toolhead": "/dev/ttyS0"})
     assert roles["mainboard"].port == "/dev/ttyS2" and roles["mainboard"].confidence == "override"
@@ -134,7 +141,7 @@ def test_override_and_ambiguity():
 def test_known_map_counts_as_verified():
     reg = load_registry()
     _bus, probes = _two_boards()
-    known = {"mainboard": {"port": "/dev/ttyS0", "mcu": "stm32f401xc"}, "toolhead": {"port": "/dev/ttyS2", "mcu": "stm32f401xc"}}
+    known = {"mainboard": {"port": "/dev/ttyS0", "mcu": "stm32f401xc"}, "toolhead": {"port": "/dev/ttyS2", "mcu": "stm32f103xe"}}
     roles, problems, _ = assign_roles(probes, reg, known_map=known)
     assert roles["mainboard"].confidence == "mapped" and not require_verified(roles)
 
@@ -150,3 +157,29 @@ def test_chip_discrimination_is_used_only_when_it_discriminates():
     roles, problems, notes = assign_roles(probes, reg)
     assert roles["toolhead"].port == "/dev/ttyS0" and roles["toolhead"].confidence == "verified"
     assert roles["mainboard"].port == "/dev/ttyS2"
+
+
+def test_the_chip_that_answers_names_the_board_whatever_the_port():
+    reg = load_registry()
+    bus = FakeBus()
+    bus.add("/dev/ttyS0", FakeBoard("x", mcu="stm32f103xe", flash_kib=512))      # wired the other way round
+    bus.add("/dev/ttyS2", FakeBoard("y"))
+    roles, problems, notes = assign_roles(_probes(bus, ["/dev/ttyS0", "/dev/ttyS2"]), reg)
+    assert (roles["mainboard"].port, roles["toolhead"].port) == ("/dev/ttyS2", "/dev/ttyS0") and not problems
+    assert roles["mainboard"].confidence == "verified" and "only fits" in roles["mainboard"].evidence[0]
+    assert not require_verified(roles) and len(notes) == 2
+
+
+def test_a_port_is_never_bound_to_a_board_of_another_chip():
+    reg = load_registry()
+    bus, probes = _two_boards()
+    # printer.cfg claiming the opposite and an operator override both lose against what the boards say they are
+    roles, problems, _ = assign_roles(probes, reg, overrides={"mainboard": "/dev/ttyS2"})
+    assert "mainboard" not in roles and any("answers as stm32f103xe" in p for p in problems)
+
+
+def test_registry_identifies_boards_by_chip_name_only():
+    reg = load_registry()
+    assert reg.boards["mainboard"].mcu_matches("stm32f401xc") and not reg.boards["mainboard"].mcu_matches("stm32f103xe")
+    assert reg.boards["toolhead"].mcu_matches("STM32F103xe") and not reg.boards["toolhead"].mcu_matches("stm32f401xc")
+    assert reg.flash_size("stm32f103xe") == 512 * 1024 and reg.flash_size("stm32f401xc") == 256 * 1024

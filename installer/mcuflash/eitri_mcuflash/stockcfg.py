@@ -4,7 +4,7 @@
 A Klipper config that drives the printer today is physical ground truth for the
 board wiring: if `[stepper_x]` uses `U_1:PB4` pins, the MCU declared by
 `[mcu U_1]` is the one with the X driver on it.  That makes it the strongest
-available discriminator between two otherwise identical STM32F401 boards.
+available discriminator between two boards (the chip name in the data dictionary comes first; this settles a tie).
 """
 from __future__ import annotations
 

@@ -7,7 +7,10 @@ tool, with believable timing and log lines, so the real subprocess + parser path
 is exercised on a developer PC.  Env knobs: EITRI_MOCK_SPEED, EITRI_MOCK_FAIL
 ("<role>:<phase>"), EITRI_MOCK_FREEZE ("flash:<percent>" - stall there),
 EITRI_MOCK_UNASSIGNED ("1": probing cannot tell which UART is which until
---assign is given).  Stdlib only: it is launched with `python -I`.
+--assign is given), EITRI_MOCK_TOOLHEAD_UNRESOLVED ("1": behave like the real
+tool today, which refuses the toolhead because its bootloader and application
+offset are an open question; by default the mock plays the world after that
+question is answered).  Stdlib only: it is launched with `python -I`.
 """
 import argparse
 import datetime
@@ -20,6 +23,7 @@ SPEED = float(os.environ.get("EITRI_MOCK_SPEED") or 1)
 FAIL = os.environ.get("EITRI_MOCK_FAIL") or ""
 FREEZE = os.environ.get("EITRI_MOCK_FREEZE") or ""
 UNASSIGNED = os.environ.get("EITRI_MOCK_UNASSIGNED") == "1"
+TOOLHEAD_UNRESOLVED = os.environ.get("EITRI_MOCK_TOOLHEAD_UNRESOLVED") == "1"
 RUN = "mock%06x" % (int(time.time()) & 0xFFFFFF)
 
 
@@ -35,12 +39,15 @@ def nap(seconds):
         time.sleep(seconds / SPEED)
 
 
-# Mock topology.  Which UART is the mainboard is a documented unknown on real
-# hardware; the mock simply picks one.
+# Mock topology = the live printer's klippy.log: [mcu U_1] on /dev/ttyS0 is the mainboard (STM32F401, 84 MHz),
+# [mcu] on /dev/ttyS2 is the toolhead (STM32F103, 72 MHz).  The real tool identifies a board by the chip name in its
+# data dictionary, never by port.
 TRUTH = {
-    "mainboard": dict(port="/dev/ttyS2", mcu="stm32f401xc", method="sdcard-serial"),
-    "toolhead": dict(port="/dev/ttyS0", mcu="stm32f401xc", method="katapult"),
+    "mainboard": dict(port="/dev/ttyS0", mcu="stm32f401xc", clock=84000000, method="sdcard-serial"),
+    "toolhead": dict(port="/dev/ttyS2", mcu="stm32f103xe", clock=72000000, method="katapult"),
 }
+OPEN_QUESTION = ("Does this printer's toolhead run Katapult or the stock factory bootloader? A firmware built for the wrong "
+                 "application offset does not boot, and only an ST-Link can recover a board whose bootloader is missing or unknown.")
 VERSION = "v0.12.0-2-g4b7d5c1"
 ORDER = ("toolhead", "mainboard")          # registry order: toolhead first
 
@@ -48,7 +55,7 @@ ORDER = ("toolhead", "mainboard")          # registry order: toolhead first
 def port_record(port):
     t = next(v for v in TRUTH.values() if v["port"] == port)
     return {"port": port, "state": "klipper", "baud": 500000, "mcu": t["mcu"], "detail": "",
-            "klipper": {"app": "Klipper", "version": VERSION, "mcu": t["mcu"], "clock_freq": 84000000, "serial_baud": 500000}}
+            "klipper": {"app": "Klipper", "version": VERSION, "mcu": t["mcu"], "clock_freq": t["clock"], "serial_baud": 500000}}
 
 
 def probe_all():
@@ -68,6 +75,11 @@ def make_plan(args, recs):
     assign = dict(a.split("=", 1) for a in args.assign)
     emit("step", step="preflight", status="start")
     roles, boards, checks, blocked = {}, {}, [], False
+    if TOOLHEAD_UNRESOLVED and (not args.only or "toolhead" in args.only):
+        checks.append({"id": "parameters", "status": "block", "board": "toolhead",
+                       "detail": "refusing to write the toolhead board: its flash layout is unresolved. Open question: " + OPEN_QUESTION,
+                       "remedy": "Nothing is written until the board is seen answering as katapult. Answer the question read-only, then update the registry; do not guess an offset."})
+        blocked = True
     if UNASSIGNED and not assign:
         checks.append({"id": "roles", "status": "block", "board": None,
                        "detail": "cannot tell which UART is the mainboard and which the toolhead: only the registry hint points that way",
@@ -76,8 +88,8 @@ def make_plan(args, recs):
     else:
         for name, t in TRUTH.items():
             port = assign.get(name, t["port"])
-            roles[name] = {"board": name, "port": port, "confidence": "override" if name in assign else "mapped",
-                           "evidence": [f"stock printer.cfg: {name} MCU on {port}"]}
+            roles[name] = {"board": name, "port": port, "confidence": "override" if name in assign else "verified",
+                           "evidence": [f"MCU {t['mcu']} only fits the {name} board", f"stock printer.cfg: {name} MCU on {port}"]}
             boards[name] = {"port": port, "method": t["method"], "steps": ["back up", "flash", "verify"],
                             "firmware": {"board": name, "flavor": args.flavor, "version": VERSION if False else "v0.13.0-813-ga08fc79", "mcu": t["mcu"]}}
             checks.append({"id": "port", "status": "ok", "board": name, "detail": f"{port} answers as klipper, MCU {t['mcu']}", "remedy": None})

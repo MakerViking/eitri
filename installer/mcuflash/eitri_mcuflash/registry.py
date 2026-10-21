@@ -24,8 +24,26 @@ class BoardDef:
     methods: List[str]
     order: int
     recovery: str
-    katapult_baud: int = 250000
+    katapult_bauds: List[int] = field(default_factory=lambda: [250000])
+    allow_katapult: bool = True
     sdcard: Dict[str, str] = field(default_factory=dict)
+    # Constants the live printer reports for this board (klippy.log); a firmware image must carry the same ones.
+    expect_config: Dict[str, Any] = field(default_factory=dict)
+    # What is settled about the flash layout.  status "unresolved" means the board is never written.
+    params_status: str = "unresolved"
+    params_confidence: str = ""
+    resolved_by: Optional[str] = None            # the observation that settles an unresolved board ("katapult")
+    app_offset: Optional[int] = None             # absolute application address when resolved and fixed
+    open_questions: List[str] = field(default_factory=list)
+
+    @property
+    def katapult_baud(self) -> int:
+        """The first Katapult baud rate to try (kept for callers that need exactly one)."""
+        return self.katapult_bauds[0] if self.katapult_bauds else 250000
+
+    @property
+    def resolved(self) -> bool:
+        return self.params_status == "resolved"
 
     def mcu_matches(self, mcu: str) -> bool:
         return any(fnmatch.fnmatch(mcu.lower(), pat) for pat in self.mcu_candidates)
@@ -59,6 +77,7 @@ def load_registry(path: Optional[str] = None) -> Registry:
         raise FlashError("unsupported board registry schema %r" % doc.get("schema"), code="registry")
     boards = {}
     for name, raw in doc["boards"].items():
+        params = raw.get("parameters") or {}
         boards[name] = BoardDef(
             name=name,
             label=raw["label"],
@@ -69,7 +88,16 @@ def load_registry(path: Optional[str] = None) -> Registry:
             methods=list(raw["methods"]),
             order=int(raw["order"]),
             recovery=raw["recovery"],
-            katapult_baud=int(raw.get("katapult_baud", 250000)),
+            katapult_bauds=[int(b) for b in raw.get("katapult_bauds", [250000])],
+            allow_katapult=bool(raw.get("allow_katapult", True)),
             sdcard=dict(raw.get("sdcard", {})),
+            expect_config=dict(raw.get("expect_config", {})),
+            params_status=str(params.get("status", "unresolved")),   # a registry that says nothing is not resolved
+            params_confidence=str(params.get("confidence", "")),
+            resolved_by=params.get("resolved_by"),
+            app_offset=int(params["app_offset"], 0) if params.get("app_offset") else None,
+            open_questions=[str(q) for q in params.get("open_questions", [])],
         )
+        if boards[name].params_status not in ("resolved", "unresolved"):
+            raise FlashError("board %s: parameters.status must be resolved or unresolved" % name, code="registry")
     return Registry(boards=boards, chips=doc.get("chips", {}))

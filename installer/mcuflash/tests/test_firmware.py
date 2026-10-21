@@ -20,9 +20,12 @@ def test_extract_embedded_dictionary_finds_real_stream_not_noise():
 
 def test_load_artifact_ok(tmp_path):
     write_release(tmp_path)
-    a = fw.load_artifact(str(tmp_path), "klipper", "toolhead", expect_mcu="stm32f401xc")
-    assert a.version == "v0.13.0-813-ga08fc79fc" and a.mcu == "stm32f401xc" and a.app_address == 0x08008000
+    a = fw.load_artifact(str(tmp_path), "klipper", "toolhead", expect_mcu="stm32f103xe")
+    assert a.version == "v0.13.0-813-ga08fc79fc" and a.mcu == "stm32f103xe" and a.app_address == 0x08002000
     assert a.size == 3000 and a.origin == "bundle"
+    assert a.config["CLOCK_FREQ"] == 72000000 and a.config["RESERVE_PINS_serial"] == "PB7,PB6"
+    m = fw.load_artifact(str(tmp_path), "klipper", "mainboard", expect_mcu="stm32f401xc")
+    assert m.app_address == 0x08008000 and m.config["RESERVE_PINS_crystal"] == "PH0,PH1"
 
 
 def test_load_artifact_rejects_bad_inputs(tmp_path):
@@ -97,3 +100,37 @@ def test_build_failure_reports_tail(tmp_path):
     with pytest.raises(FlashError, match="boom"):
         fw.build_artifact("toolhead", "klipper", klipper_dir=str(tmp_path), config_file=str(cfg),
                           out_dir=str(tmp_path / "o"), runner=runner, check_toolchain=False)
+
+
+def test_application_address_comes_from_the_embedded_defconfig():
+    assert fw.dictionary_app_address({"kconfig": "CONFIG_MACH_STM32=y\nCONFIG_STM32_FLASH_START_8000=y\n"}) == 0x08008000
+    assert fw.dictionary_app_address({"kconfig": "CONFIG_STM32_FLASH_START_2000=y\n"}) == 0x08002000
+    assert fw.dictionary_app_address({"kconfig": "CONFIG_STM32_FLASH_START_0000=y\n"}) == 0x08000000
+    assert fw.dictionary_app_address({"kconfig": "CONFIG_FLASH_APPLICATION_ADDRESS=0x8010000\n"}) == 0x08010000
+    assert fw.dictionary_app_address({"kconfig": "CONFIG_MACH_STM32=y\n"}) is None
+    assert fw.dictionary_app_address({}) is None and fw.dictionary_app_address(None) is None
+
+
+def test_manifest_offset_must_agree_with_the_image_itself(tmp_path):
+    write_release(tmp_path)
+    mp = tmp_path / "klipper" / "manifest.json"
+    doc = json.loads(mp.read_text())
+    img = make_image("v0.13.0-813-ga08fc79fc", "stm32f401xc", spi=True, size=3000, kconfig="CONFIG_STM32_FLASH_START_C000=y\n")
+    path = tmp_path / "klipper" / "mainboard" / "klipper.bin"
+    path.write_bytes(img)
+    import hashlib
+    doc["boards"]["mainboard"]["sha256"] = hashlib.sha256(img).hexdigest()
+    mp.write_text(json.dumps(doc))                     # manifest still says 0x08008000, the image says 0x0800c000
+    with pytest.raises(FlashError, match="linked for"):
+        fw.load_artifact(str(tmp_path), "klipper", "mainboard")
+
+
+def test_kalico_firmware_names_itself_kalico_and_is_still_found():
+    import json as _json, zlib
+    from fakes import make_dictionary
+    doc = make_dictionary("v2026.10.00-0-g3526de3b0")
+    doc["app"] = "Kalico"
+    blob = bytes(range(1, 250)) * 3 + zlib.compress(_json.dumps(doc).encode(), 9) + b"\xa5" * 100
+    assert fw.extract_embedded_dictionary(blob)["version"] == "v2026.10.00-0-g3526de3b0"
+    doc["app"] = "Marlin"
+    assert fw.extract_embedded_dictionary(zlib.compress(_json.dumps(doc).encode(), 9)) is None

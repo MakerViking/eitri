@@ -107,7 +107,13 @@ Unpacks to `<flavor>/manifest.json` and `<flavor>/<board>/klipper.bin`, extracte
 ```
 `version` must equal the version embedded in the image's data dictionary, and equal the host Klipper's
 `git describe` (checked before every flash: that is the host/MCU version lock). `app_address` must equal the
-application start the board's Katapult reports; a mismatch aborts before erasing.
+application start the board's Katapult reports; a mismatch aborts before erasing. It must also equal the address the image's
+own build configuration names, and, for a board whose layout the registry has settled (the mainboard: `0x08008000`), the
+registry's offset. `mcu-firmware` bundles built by `mcu/build-mcu.sh` add the fields `flash_offset`, `clock_ref`, `serial`,
+`baud`, `bootloader`, `method` and `toolchain` per board, which the flasher ignores and humans read. A board whose
+`mcu`, `CLOCK_FREQ`, `SERIAL_BAUD` or `RESERVE_PINS_*` in the image's data dictionary differ from what that board reports
+(`boards.json` `expect_config`) is refused. Mainboard = `stm32f401xc`, toolhead = `stm32f103xe`; the manifest is
+per-board, so the two entries have different `mcu` and `app_address`.
 
 ## 2. Channel manifest (updates): `manifest.json` + `manifest.json.minisig`
 

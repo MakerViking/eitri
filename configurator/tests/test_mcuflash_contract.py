@@ -65,3 +65,44 @@ def test_manual_assignment_flags_are_accepted(tmp_path):
     proc, events = run_cli(argv, tmp_path)
     assert proc.returncode == 3, proc.stderr          # parsed (2 would be a usage error), then blocked
     assert events[-1]["type"] == "result" and events[-1]["data"]["blocked"]
+
+
+# --- the mock mirrors the live printer ---------------------------------------------------------
+MOCK = Path(__file__).resolve().parents[1] / "eitri_configurator" / "mock" / "mcuflash.py"
+
+
+def run_mock(args, **env):
+    import os
+    proc = subprocess.run([sys.executable, "-I", str(MOCK), *args], capture_output=True, text=True, timeout=60,
+                          env={**os.environ, "EITRI_MOCK_SPEED": "0", **env})
+    return proc, [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+
+
+def test_mock_demo_shows_the_live_topology(tmp_path):
+    """[mcu U_1] on ttyS0 is the STM32F401 mainboard, [mcu] on ttyS2 the STM32F103 toolhead (klippy.log)."""
+    proc, events = run_mock(["plan", "--json"])
+    assert proc.returncode == 0, proc.stderr
+    data = events[-1]["data"]
+    detect = mcuflash.plan_to_detect(data)
+    by = {b["role"]: b for b in detect["boards"]}
+    assert (by["mainboard"]["port"], by["mainboard"]["chip"]) == ("/dev/ttyS0", "stm32f401xc")
+    assert (by["toolhead"]["port"], by["toolhead"]["chip"]) == ("/dev/ttyS2", "stm32f103xe")
+    ports = {p["port"]: p for p in data["ports"]}
+    assert ports["/dev/ttyS0"]["klipper"]["clock_freq"] == 84000000 and ports["/dev/ttyS2"]["klipper"]["clock_freq"] == 72000000
+
+
+def test_mock_can_play_the_refusal_the_real_tool_gives_today(tmp_path):
+    proc, events = run_mock(["flash", "--json", "--apply", "--yes"], EITRI_MOCK_TOOLHEAD_UNRESOLVED="1")
+    assert proc.returncode == 3 and events[-1]["ok"] is False
+    detect = mcuflash.plan_to_detect(events[-1]["data"])
+    assert detect["cli_blocked"]
+    assert [b["code"] for b in detect["blockers"]] == ["parameters"] and "Open question" in detect["blockers"][0]["message"]
+
+
+def test_real_cli_refuses_the_unresolved_toolhead_with_the_open_question(tmp_path):
+    """A tree-wide guarantee: with the shipped registry nothing can name the toolhead as flashable."""
+    import json as _json
+    reg = _json.loads((INSTALLER / "eitri_mcuflash" / "boards.json").read_text())
+    tool = reg["boards"]["toolhead"]
+    assert tool["parameters"]["status"] == "unresolved" and tool["parameters"]["open_questions"]
+    assert reg["boards"]["mainboard"]["mcu_candidates"] == ["stm32f401*"] and tool["mcu_candidates"] == ["stm32f103*"]

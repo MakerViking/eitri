@@ -17,8 +17,10 @@ def recovery_steps(board: BoardDef, method: str, has_backup: bool) -> List[str]:
             "A board stuck in Katapult is still recoverable the same way."
         )
         steps.append(
-            "Only if Katapult itself was overwritten: connect an ST-Link V2 to the board's SWD header "
-            "(soldered 6-pin header on the toolhead board) and write a Katapult image at 0x08000000."
+            "Only if Katapult itself was overwritten, and only if this board ran Katapult before Eitri touched it "
+            "(the check at plan time and the saved backup record that): connect an ST-Link V2 to the board's SWD header "
+            "(soldered 6-pin header on the toolhead board) and write a Katapult image at 0x08000000. If the board ran "
+            "the factory bootloader instead, that is not the way back: stop and ask before writing anything."
         )
     elif method in ("sdcard-serial", "sdcard-file"):
         steps.append(board.recovery)

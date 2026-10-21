@@ -5,6 +5,7 @@ import os
 
 import pytest
 
+from helpers import settle
 from test_runner import NEW, STOCK_VERSION, Rig
 from eitri_mcuflash import cli
 from eitri_mcuflash.events import EventSink
@@ -13,8 +14,10 @@ from eitri_mcuflash.errors import FlashError
 from eitri_mcuflash.proc import RunResult
 
 
-def run_cli(rig, args, capsys, stdin_tty=False):
+def run_cli(rig, args, capsys, stdin_tty=False, settled=True):
     def hook(ctx):
+        if settled:
+            settle(ctx.registry)      # the shipped registry keeps the toolhead unresolved; see test_params.py
         ctx.sleep, ctx.clock = rig.clock.sleep, rig.clock
         ctx.identify_timeout = 0.1
         ctx.exists_fn, ctx.users_fn = rig.bus.exists, rig.bus.users
@@ -134,7 +137,7 @@ def test_flashtool_backend_runs_script_and_checks_output(tmp_path):
     with m.bootloader(already_in_bootloader=True) as client:
         m.flash_image(client, b"x" * 64, "/tmp/klipper.bin")
     argv = [a for a in seen if "flashtool.py" in " ".join(a)][0]
-    assert argv[argv.index("-d") + 1] == "/dev/ttyS2" and argv[argv.index("-b") + 1] == "250000" and argv[-1] == "/tmp/klipper.bin"
+    assert argv[argv.index("-d") + 1] == "/dev/ttyS2" and argv[argv.index("-b") + 1] == "500000" and argv[-1] == "/tmp/klipper.bin"
 
     rig.ctx.runner = lambda argv, **kw: RunResult(0, "") if "import serial" in argv else RunResult(1, "Flash Tool Error")
     rig.tool.mode = "katapult"

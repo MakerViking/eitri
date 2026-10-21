@@ -96,8 +96,8 @@ The two MCUs are reached through the SoC's UARTs at 500000 baud. Neither is on C
 
 1. **Identify the boards.** Do not assume `/dev/ttyS0` or `/dev/ttyS2` is a particular board. The configurator probes each port and reads the identity from the bootloader or the application.
 2. **Back up the current firmware** for the board you are about to touch, and read it back. Keep the copy with the release you were running.
-3. **Enter the bootloader.** For a board running Klipper, use the reset command that the firmware provides. For a Katapult bootloader, `flashtool.py` at **250000** baud is the entry point.
-4. **Flash the application** that matches your flavor and `release.lock`. Use `flash-sdcard.sh`-style flashing at 500000 baud for the mainboard, and `flashtool.py` for the toolhead.
+3. **Enter the bootloader.** The mainboard (answers as `stm32f401xc`) has the stock QIDI/Makerbase bootloader: it is entered by the SD-card path, never through Katapult. A toolhead (answers as `stm32f103xe`) is entered through Katapult (`flashtool.py`; the baud rate is compile-time, 250000 or 500000, so try both) **only if Katapult actually answers**. If it does not, stop: the toolhead's stock bootloader and application offset are unresolved (`mcu/README.md`), `eitri-mcuflash` refuses to write it, and first-time Katapult installation needs an ST-Link.
+4. **Flash the application** that matches your flavor and `release.lock`, linked for the board's own bootloader offset (mainboard `0x08008000`; toolhead whatever Katapult reports). Use `flash-sdcard.sh`-style flashing at 500000 baud for the mainboard, and `flashtool.py` for a Katapult toolhead. Never write below the application offset.
 5. **Read back and verify** the digest of what you wrote. A verification failure is an error. Do not ignore it, and do not retry in a loop.
 
 If the bootloader does not answer, stop. Go to [§4](#4-st-link-worst-case-mcu-recovery) only if you have confirmed that the bootloader is actually gone.

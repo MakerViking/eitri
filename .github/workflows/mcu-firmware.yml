@@ -1,0 +1,207 @@
+name: mcu-firmware
+
+# Builds the Eitri MCU firmware bundles: for each firmware flavor (Klipper, Kalico) one mcu-firmware-<version>-<flavor>.tar.zst
+# holding klipper.bin for the mainboard (STM32F401) and the toolhead (STM32F103), built from the exact host commit pinned in
+# release.lock so the MCU reports the host's `git describe`. Layout and consumer: installer/docs/BUNDLE.md. Parameters and
+# how they were derived: mcu/README.md, mcu/params.json.
+#
+#   pull request   tests, and the configs checked against the pinned trees; builds only when every board is resolved
+#   v* tag         the same, plus the build, a reproducibility check and the attachment to the draft release
+#
+# SAFETY GATE: while any board's flash parameters are unresolved (mcu/params.json: today the toolhead's bootloader and
+# application offset), NOTHING is built or published, and a v* tag fails instead of shipping a release without MCU
+# firmware. A firmware linked for the wrong offset or crystal does not boot and only an ST-Link brings the board back.
+# Nothing here signs anything and no secret is available to this workflow; the bundles' SHA-256 digests go into the
+# install.json / channel manifest that the release signing step signs.
+
+on:
+  pull_request:
+    paths:
+      - "mcu/**"
+      - "installer/mcuflash/**"
+      - "release.lock"
+      - ".github/workflows/mcu-firmware.yml"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      flavors:
+        description: "JSON list of the flavors to build"
+        type: string
+        default: '["klipper", "kalico"]'
+      attach:
+        description: "attach the bundles to the draft release (tags only); callers that only need the files pass the string false"
+        type: string
+        default: "true"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcu-firmware-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  test:
+    name: Tests and the parameter gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      go: ${{ steps.gate.outputs.go }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.14"
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zstd git make
+          python -m pip install --quiet pytest
+
+      # The tests that need built bundles skip (nothing is built here); the ones that read the pinned trees clone them.
+      - name: Tests (mcu, mcuflash)
+        run: |
+          python -m pytest mcu/tests -q -p no:cacheprovider
+          python -m pytest installer/mcuflash/tests -q -p no:cacheprovider
+
+      # The configs are expanded by each pinned tree's own Kconfig and compared with mcu/params.json; the tree's
+      # `git describe` is what the MCU will report. No toolchain is needed, so this runs while boards are unresolved.
+      - name: Configs against the pinned trees
+        run: mcu/build-mcu.sh --check-only --flavor both --work "$RUNNER_TEMP/check"
+
+      - name: Parameter gate
+        id: gate
+        run: |
+          set +e
+          python -I mcu/mcutool.py gate
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$rc" -eq 3 ]; then
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::MCU firmware is not built: a board's flash parameters are unresolved (mcu/params.json)"
+          else
+            exit "$rc"
+          fi
+
+      - name: A release must not go out without MCU firmware
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && steps.gate.outputs.go != 'true' && (inputs.attach || 'true') == 'true' }}
+        run: |
+          echo "::error::refusing to cut a release: the MCU flash parameters are unresolved (mcu/README.md, Open questions)"
+          exit 1
+
+  build:
+    name: Build the ${{ matrix.flavor }} MCU firmware
+    needs: test
+    if: ${{ needs.test.outputs.go == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: ${{ fromJSON(inputs.flavors || '["klipper", "kalico"]') }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.14"
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zstd git make xz-utils curl
+          python -m pip install --quiet pytest
+
+      - name: Decide the bundle version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0.dev0+g${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The pinned Arm GNU Toolchain: release.lock [mcu.toolchain] holds its URL and the SHA-256 Arm publishes; the
+      # download is checked before it is unpacked.
+      - name: Toolchain
+        run: mcu/fetch-toolchain.sh "$RUNNER_TEMP/toolchain"
+
+      - name: Build
+        run: |
+          mcu/build-mcu.sh --flavor "${{ matrix.flavor }}" --version "${{ steps.version.outputs.version }}" \
+            --out "$RUNNER_TEMP/out" --work "$RUNNER_TEMP/work" --toolchain "$RUNNER_TEMP/toolchain"
+
+      - name: Tests against the built bundle
+        env:
+          EITRI_MCU_OUT: ${{ runner.temp }}/out
+        run: python -m pytest mcu/tests/test_artifacts.py -q -p no:cacheprovider
+
+      # A release is only trusted if a second build from empty caches gives the same bytes.
+      - name: Reproducibility (tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          mcu/build-mcu.sh --flavor "${{ matrix.flavor }}" --version "${{ steps.version.outputs.version }}" \
+            --out "$RUNNER_TEMP/out2" --work "$RUNNER_TEMP/work" --toolchain "$RUNNER_TEMP/toolchain" > /dev/null
+          a=$(cd "$RUNNER_TEMP/out" && sha256sum ./*.tar.zst | cut -d' ' -f1)
+          b=$(cd "$RUNNER_TEMP/out2" && sha256sum ./*.tar.zst | cut -d' ' -f1)
+          echo "first build:  $a"
+          echo "second build: $b"
+          [ "$a" = "$b" ] || { echo "::error::the MCU firmware is not reproducible"; exit 1; }
+
+      - name: Package
+        run: |
+          cd "$RUNNER_TEMP/out"
+          sha256sum ./*.tar.zst ./*.manifest.json | sed 's#\./##' > "SHA256SUMS-mcu-${{ matrix.flavor }}"
+          cat "SHA256SUMS-mcu-${{ matrix.flavor }}"
+          ls -l
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: eitri-mcu-firmware-${{ matrix.flavor }}
+          path: ${{ runner.temp }}/out
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/') && 90 || 7 }}
+          if-no-files-found: error
+
+  publish:
+    name: Attach the MCU firmware to the release
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && (inputs.attach || 'true') == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: eitri-mcu-firmware-*
+          merge-multiple: true
+          path: dist
+
+      # download-artifact can finish with a partly extracted file and still succeed.
+      - name: Verify the downloaded files
+        run: |
+          cd dist
+          for f in SHA256SUMS-mcu-*; do sha256sum --check --strict "$f"; done
+          ls -l
+
+      - name: Create or update the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+            if [ "$draft" != true ]; then
+              echo "::error::release $GITHUB_REF_NAME is already published; refusing to change its files"
+              exit 1
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
+              --title "Eitri ${GITHUB_REF_NAME#v}" \
+              --notes "Release candidate. Nothing in this release has been tested on a printer unless release.lock says so."
+          fi
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber dist/*

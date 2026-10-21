@@ -6,7 +6,7 @@ import os
 import pytest
 
 from fakes import FakeBoard, FakeBus, FakeClock, make_image
-from helpers import STOCK_CFG, write_release
+from helpers import STOCK_CFG, settle, write_release
 from eitri_mcuflash.events import EventSink
 from eitri_mcuflash.methods import FlashContext
 from eitri_mcuflash.proc import RunResult
@@ -18,12 +18,13 @@ STOCK_VERSION = "stock-1.7.1"
 
 
 class Rig:
-    def __init__(self, tmp_path, *, tool_katapult=True, **opt):
+    def __init__(self, tmp_path, *, tool_katapult=True, settled=True, **opt):
         self.tmp = tmp_path
         self.clock = FakeClock()
         self.bus = FakeBus(self.clock)
         self.main = self.bus.add("/dev/ttyS0", FakeBoard("mainboard", version=STOCK_VERSION, spi=True, has_katapult=False))
-        self.tool = self.bus.add("/dev/ttyS2", FakeBoard("toolhead", version=STOCK_VERSION, has_katapult=tool_katapult))
+        self.tool = self.bus.add("/dev/ttyS2", FakeBoard("toolhead", version=STOCK_VERSION, has_katapult=tool_katapult, mcu="stm32f103xe",
+                                                         flash_kib=512, app_start=0x08002000, katapult_baud=500000))
         self.images = write_release(tmp_path / "fw")
         cfg = tmp_path / "printer.cfg"
         cfg.write_text(STOCK_CFG)
@@ -33,13 +34,13 @@ class Rig:
         (self.klipper / "scripts" / "spi_flash" / "spi_flash.py").write_text("# stub")
         (self.klipper / "scripts" / "spi_flash" / "fatfs.so").write_bytes(b"\x7fELF")
         stock = tmp_path / "qd_mcu_stock.bin"
-        stock.write_bytes(make_image(STOCK_VERSION, spi=True))
+        stock.write_bytes(make_image(STOCK_VERSION, "stm32f401xc", spi=True))
         self.calls = []
         self.host_version = NEW
         self.sd_fail = False
         self.events = EventSink(keep=True, run_id="t")
         self.ctx = FlashContext(
-            registry=load_registry(), opener=self.bus.opener, events=self.events, runner=self.runner,
+            registry=settle(load_registry()) if settled else load_registry(), opener=self.bus.opener, events=self.events, runner=self.runner,
             sleep=self.clock.sleep, clock=self.clock, klipper_dir=str(self.klipper),
             identify_timeout=0.1, exists_fn=self.bus.exists, users_fn=self.bus.users, work_dir=str(tmp_path),
         )
@@ -103,7 +104,7 @@ def test_apply_flashes_backs_up_and_verifies(rig):
     entry = rig.flasher.store.latest_restorable("toolhead")
     saved = open(entry.app_path, "rb").read()
     assert old_app.startswith(saved) and len(saved) % 64 == 0 and saved.rstrip(b"\xff") == old_app.rstrip(b"\xff")
-    assert entry.meta["katapult"]["app_start"] == "0x08008000"
+    assert entry.meta["katapult"]["app_start"] == "0x08002000"
     assert rig.flasher.store.entries("mainboard")  # identity recorded for SD-bootloader board
     # board map persisted for the next run
     mapping = json.load(open(os.path.join(rig.opt.state_dir, "mcu-map.json")))
@@ -121,7 +122,7 @@ def test_apply_flashes_backs_up_and_verifies(rig):
 
 def test_flash_failure_rolls_back_to_saved_image(rig):
     rig.opt.roundtrip = False
-    rig.tool.corrupt_plan = {"addr": 0x08008000 + 64, "skip": 0, "count": 3}  # all three passes get corrupted
+    rig.tool.corrupt_plan = {"addr": 0x08002000 + 64, "skip": 0, "count": 3}  # all three passes get corrupted
     old_version = rig.tool.app_dictionary()["version"]
     code, data = rig.flasher.execute(rig.plan(), apply=True)
     assert code == EX_FAIL
@@ -151,9 +152,28 @@ def test_no_bootloader_means_nothing_is_erased_anywhere(rig):
     assert not [c for c in rig.calls if any(a.endswith("spi_flash.py") for a in c)]
 
 
-def test_offset_mismatch_is_caught_before_erase(tmp_path):
+def test_offset_mismatch_is_caught_in_preflight_when_the_registry_knows_the_offset(tmp_path):
     rig = Rig(tmp_path)
-    write_release(tmp_path / "fw", app_address=0x08004000)
+    write_release(tmp_path / "fw", app_address={"toolhead": 0x08008000})        # right chip, wrong bootloader offset
+    snap = (bytes(rig.tool.flash), bytes(rig.main.flash))
+    plan = rig.plan()
+    assert any(c.id == "offset" and c.status == BLOCK and c.board == "toolhead" for c in plan.all_checks())
+    code, _ = rig.flasher.execute(plan, apply=True)
+    assert code == EX_BLOCKED and (bytes(rig.tool.flash), bytes(rig.main.flash)) == snap
+
+
+def test_mainboard_image_for_another_offset_is_refused(tmp_path):
+    rig = Rig(tmp_path)
+    write_release(tmp_path / "fw", app_address={"mainboard": 0x0800C000})
+    plan = rig.plan()
+    blocked = [c.detail for c in plan.all_checks() if c.id == "offset" and c.status == BLOCK and c.board == "mainboard"]
+    assert blocked and "0x0800c000" in blocked[0] and "0x08008000" in blocked[0] and plan.blocked
+
+
+def test_offset_mismatch_is_caught_before_erase_by_the_bootloader_itself(tmp_path):
+    rig = Rig(tmp_path)
+    rig.ctx.registry.boards["toolhead"].app_offset = None        # registry silent: only Katapult's own answer can tell
+    write_release(tmp_path / "fw", app_address={"toolhead": 0x08004000})
     snap = bytes(rig.tool.flash)
     code, data = rig.flasher.execute(rig.plan(), apply=True)
     assert code == EX_FAIL and data["error"]["code"] == "offset_mismatch"
@@ -184,6 +204,17 @@ def test_sdcard_board_without_stock_image_is_blocked_until_acknowledged(tmp_path
 
 def test_hint_only_identification_is_blocked(tmp_path):
     rig = Rig(tmp_path, printer_cfgs=[])
+    plan = rig.plan()
+    assert not plan.blocked                       # the chip each board answers as is evidence: no printer.cfg needed
+    assert {r.board: r.confidence for r in plan.roles.values()} == {"mainboard": "verified", "toolhead": "verified"}
+    # when the chips do not tell the boards apart, the hint alone is still not enough
+    for b in rig.ctx.registry.boards.values():
+        b.mcu_candidates = ["stm32*"]
+        b.expect_config = {}
+    rig.ctx.registry.boards["mainboard"].app_offset = None
+    rig.main.install(make_image(STOCK_VERSION, "stm32f103xe", spi=True))   # ...and both boards look alike
+    rig.main.mcu = "stm32f103xe"
+    write_release(rig.tmp / "fw", mcu="stm32f103xe", app_address=0x08002000)
     plan = rig.plan()
     assert plan.blocked and any("default wiring hint" in c.detail for c in plan.all_checks())
     # an explicit operator assignment unblocks it
@@ -246,9 +277,12 @@ def test_unknown_chip_refuses_to_size_a_backup(tmp_path):
     rig = Rig(tmp_path)
     for b in (rig.main, rig.tool):
         b.mcu = "stm32zz9999"
+    for b in rig.ctx.registry.boards.values():
+        b.mcu_candidates, b.expect_config, b.app_offset = ["stm32zz*"], {}, None
     write_release(tmp_path / "fw", mcu="stm32zz9999")
     rig.tool.install(make_image(STOCK_VERSION, mcu="stm32zz9999"))
     rig.main.install(make_image(STOCK_VERSION, mcu="stm32zz9999", spi=True))
+    (tmp_path / "qd_mcu_stock.bin").write_bytes(make_image(STOCK_VERSION, mcu="stm32zz9999", spi=True))
     snap = bytes(rig.tool.flash)
     code, data = rig.flasher.execute(rig.plan(), apply=True)
     assert code == EX_FAIL and data["error"]["code"] == "unknown_chip"

@@ -190,6 +190,14 @@ def assign_roles(
             continue
         port = best_ports[0]
         rank, evidence = cand[port]
+        # The chip that answers is the final word: a port can never be bound to a board whose chip it is not.
+        answered = live[port].mcu
+        if answered and not board.mcu_matches(answered):
+            problems.append(
+                "%s board cannot be on %s: the board there answers as %s (expected %s)"
+                % (board.name, port, answered, "/".join(board.mcu_candidates))
+            )
+            continue
         # Strongest evidence for a *different* board on the same port is a conflict.
         conf = [k for k, v in _CONF_RANK.items() if v == rank][0]
         if port in used:

@@ -15,7 +15,7 @@ import os
 import re
 import shutil
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from .errors import FlashError
@@ -23,6 +23,8 @@ from .fsutil import sha256_file
 from .proc import Runner, run
 
 FLAVORS = ("klipper", "kalico")
+# The "app" a firmware's data dictionary names itself: Kalico's scripts/buildcommands.py says "Kalico", not "Klipper".
+HOST_APPS = ("Klipper", "Kalico")
 DEFAULT_FIRMWARE_ROOT = "/data/eitri/mcu/firmware"
 DEFAULT_KLIPPER_DIR = "/data/firmware/klipper"
 DEFAULT_TOOLCHAIN_DIR = "/data/eitri/toolchain"   # the optional "follow upstream" add-on
@@ -42,6 +44,7 @@ class FirmwareArtifact:
     app_address: Optional[int]
     source_commit: str = ""
     origin: str = "bundle"  # "bundle" | "built"
+    config: Dict[str, Any] = field(default_factory=dict)  # the data dictionary's constants (CLOCK_FREQ, RESERVE_PINS_*, ...)
 
     def read(self) -> bytes:
         with open(self.path, "rb") as fh:
@@ -62,8 +65,11 @@ class FirmwareArtifact:
         }
 
 
-def extract_embedded_dictionary(blob: bytes) -> Optional[Dict[str, Any]]:
-    """Find the zlib-compressed data dictionary Klipper embeds in klipper.bin."""
+def extract_embedded_dictionary_raw(blob: bytes) -> Optional[bytes]:
+    """The exact bytes of the data dictionary Klipper embeds in klipper.bin (decompressed, not re-serialised).
+
+    spi_flash.py compares the dictionary it reads back from the board byte for byte with the one it is
+    given, so the original bytes are what must be passed on, not a re-encoded copy."""
     for idx in range(len(blob) - 2):
         b0, b1 = blob[idx], blob[idx + 1]
         if b0 != 0x78 or ((b0 << 8) | b1) % 31:
@@ -73,8 +79,59 @@ def extract_embedded_dictionary(blob: bytes) -> Optional[Dict[str, Any]]:
             doc = json.loads(raw)
         except (zlib.error, ValueError):
             continue
-        if isinstance(doc, dict) and doc.get("app") == "Klipper":
-            return doc
+        if isinstance(doc, dict) and doc.get("app") in HOST_APPS:
+            return raw
+    return None
+
+
+def extract_embedded_dictionary(blob: bytes) -> Optional[Dict[str, Any]]:
+    """Find the zlib-compressed data dictionary Klipper embeds in klipper.bin."""
+    raw = extract_embedded_dictionary_raw(blob)
+    return json.loads(raw) if raw is not None else None
+
+
+def vector_table_problem(blob: bytes, app_offset: int, *, flash_base: int = 0x08000000) -> Optional[str]:
+    """Why *blob*'s Cortex-M vector table is not that of an image linked at *app_offset*, or None if it is plausible.
+
+    The initial stack pointer must point into SRAM and the reset vector must be a Thumb address inside the
+    image's own flash window.  This is the last gate before bytes are written: a manifest and a checksum say
+    who built the file, not what it is linked for."""
+    if len(blob) < 8:
+        return "image is only %d bytes: no vector table" % len(blob)
+    sp = int.from_bytes(blob[0:4], "little")
+    reset = int.from_bytes(blob[4:8], "little")
+    if not 0x20000000 <= sp <= 0x20100000:
+        return "initial stack pointer 0x%08x is not in SRAM" % sp
+    if not reset & 1:
+        return "reset vector 0x%08x is not a Thumb address" % reset
+    lo, hi = app_offset, app_offset + len(blob)
+    if not lo <= (reset & ~1) < hi:
+        return "reset vector 0x%08x is outside 0x%08x-0x%08x: the image is not linked for 0x%08x" % (reset, lo, hi, app_offset)
+    return None
+
+
+_APP_ADDR = re.compile(r"^CONFIG_FLASH_APPLICATION_ADDRESS=(0x[0-9a-fA-F]+)\s*$", re.M)
+_FLASH_START = re.compile(r"^CONFIG_STM32_FLASH_START_([0-9A-Fa-f]+)=y\s*$", re.M)
+STM32_FLASH_BASE = 0x08000000
+
+
+def dictionary_app_address(doc: Optional[Dict[str, Any]]) -> Optional[int]:
+    """The application address an image was linked for, from the defconfig Klipper embeds in its dictionary.
+
+    The embedded ``kconfig`` is the *minimal* defconfig text, which names the bootloader choice
+    (CONFIG_STM32_FLASH_START_8000=y) rather than the derived CONFIG_FLASH_APPLICATION_ADDRESS."""
+    kc = (doc or {}).get("kconfig")
+    if isinstance(kc, dict):                       # tolerate a pre-parsed form
+        v = kc.get("CONFIG_FLASH_APPLICATION_ADDRESS")
+        return int(v, 0) if isinstance(v, str) else v
+    if not isinstance(kc, str):
+        return None
+    m = _APP_ADDR.search(kc)
+    if m:
+        return int(m.group(1), 0)
+    m = _FLASH_START.search(kc)
+    if m:
+        return STM32_FLASH_BASE + int(m.group(1), 16)
     return None
 
 
@@ -155,6 +212,18 @@ def load_artifact(root: str, flavor: str, board: str, *, expect_mcu: Optional[st
             recovery="Rebuild with the board's MCU selected; flashing it would not boot.",
         )
     app = entry.get("app_address")
+    app_address = int(app, 0) if isinstance(app, str) else app
+    linked = dictionary_app_address(embedded)
+    if linked is not None and app_address is not None and linked != app_address:
+        raise FlashError(
+            "manifest says %s is linked for 0x%08x but the image's own build configuration says 0x%08x"
+            % (path, app_address, linked),
+            code="manifest",
+            board=board,
+            recovery="Do not flash this file; re-download the release bundle.",
+        )
+    if app_address is None:
+        app_address = linked
     return FirmwareArtifact(
         board=board,
         flavor=flavor,
@@ -163,8 +232,9 @@ def load_artifact(root: str, flavor: str, board: str, *, expect_mcu: Optional[st
         size=len(blob),
         version=version,
         mcu=mcu,
-        app_address=int(app, 0) if isinstance(app, str) else app,
+        app_address=app_address,
         source_commit=str((manifest.get("source") or {}).get("commit", "")),
+        config=dict(embedded.get("config") or {}),
     )
 
 
@@ -217,8 +287,6 @@ def build_artifact(
     version = str(embedded.get("version", ""))
     if not mcu or not version:
         raise FlashError("built image has no embedded data dictionary", code="build_failed", board=board)
-    kc = embedded.get("kconfig") or {}
-    app = kc.get("CONFIG_FLASH_APPLICATION_ADDRESS")
     return FirmwareArtifact(
         board=board,
         flavor=flavor,
@@ -227,7 +295,8 @@ def build_artifact(
         size=len(blob),
         version=version,
         mcu=mcu,
-        app_address=int(app, 0) if isinstance(app, str) else app,
+        app_address=dictionary_app_address(embedded),
         source_commit=parse_describe(version)["sha"] if parse_describe(version) else "",
         origin="built",
+        config=dict(embedded.get("config") or {}),
     )

@@ -259,9 +259,9 @@ These rules apply to every build and every extra. A change that violates any of 
 
 Both boards are reached over serial. Neither is on CAN or USB.
 
-- **Never hard-code which port is which.** The mapping of `/dev/ttyS0` and `/dev/ttyS2` to mainboard and toolhead is contested in our sources. The installer identifies each board by probing its UART and reading its identity. It does not assume.
-- **Mainboard:** Klipper's `scripts/flash-sdcard.sh`-style flash at 500000 baud, from a `klipper.bin` built for the chosen flavor.
-- **Toolhead:** Katapult `flashtool.py` at **250000** baud to enter the bootloader, then flash the application.
+- **Boards are identified by chip, not by port.** The live printer's `klippy.log` settles the wiring (`[mcu U_1]` on `/dev/ttyS0` is the mainboard, `[mcu]` on `/dev/ttyS2` is the toolhead), but the installer still binds a board by the MCU name in its data dictionary: the mainboard is the one that answers as `stm32f401xc`, the toolhead the one that answers as `stm32f103xe`. Ports are only a prior.
+- **Mainboard (STM32F401, 84 MHz, 8 MHz crystal, USART1 PA10/PA9, 500000 baud):** the stock QIDI/Makerbase bootloader occupies the first 32 KiB, so the firmware is linked for `0x08008000` (`STM32_FLASH_START_8000`). It is flashed application-only through the board's SD-card path (Klipper's `flash-sdcard.sh -b 500000 /dev/ttyS0 qidi-plus4`, or `qd_mcu.bin` on the card). Katapult is never installed on this board; that would overwrite the bootloader.
+- **Toolhead (STM32F103, 72 MHz, USART1 remapped PB7/PB6, 500000 baud): unresolved.** Whether it runs Katapult (application at `0x08002000`, baud 250000 or 500000) or the stock factory bootloader (offset unknown) is an open question, and a wrong offset leaves a board only an ST-Link can recover. The flasher therefore refuses the toolhead unless Katapult is seen answering right now, and then links nothing by guess: the image must be linked for the application start Katapult reports. See `mcu/README.md`.
 - **Every flash:** back up the existing firmware first, flash, read back, and verify the digest. A failed verify is an error, not a warning.
 - **Version lock:** the installer checks MCU firmware against the host version after each Klipper update, and reflashes when they differ.
 - **Recovery:** the bootloader is never erased by a normal flash. The worst case, an erased bootloader on the toolhead, needs a soldered ST-Link V2. [`RECOVERY.md`](RECOVERY.md#4-st-link-worst-case-mcu-recovery) covers it.
@@ -334,7 +334,7 @@ These need live hardware or a decision before they can be closed. None of them i
 | Q3 | Does mainline TPL do DRAM init reliably, or is the vendor `ddrbin` needed? | Bench boot test. Maskrom is the backstop. |
 | Q4 | Does mainline `rtl8xxxu` give usable throughput on this dongle? | Measure on hardware. Wired stays the supported path until then. |
 | Q5 | Does the UVC camera offer MJPEG at 1080p and 720p with a usable frame rate? | Measure. Confirm whether auto-exposure is throttling the rate. |
-| Q6 | Which bootloader is on each UART MCU (Katapult, the vendor serial bootloader, or the STM32 ROM)? | Identify on hardware. This selects the flash tool. |
+| Q6 | Which bootloader is on each UART MCU (Katapult, the vendor serial bootloader, or the STM32 ROM)? | Mainboard: the stock QIDI/Makerbase bootloader with a UART path (115200) and an SD-card path, application at `0x08008000` (likely, not read off the board). **Toolhead: open**, see `mcu/README.md`: a read-only Katapult handshake (250000 and 500000 baud) and an `SCB->VTOR` read with klippy stopped decide it. |
 | Q7 | Is sensorless Z-max viable on mainline for this toolhead? | Test with the actual toolhead MCU and driver. |
-| Q8 | Exact MCU chip IDs | Read from the boards. The mainboard is reported as STM32F402 by an existing public project; this is not yet confirmed here. |
+| Q8 | Exact MCU chip IDs | Answered by the live printer's `klippy.log`: mainboard `stm32f401xc` (84 MHz), toolhead `stm32f103xe` (72 MHz; the chip may be a GD32F103 clone, which Klipper builds as `stm32f103xe`). The earlier "STM32F402" report and the registry's `stm32f4*` toolhead candidates were wrong. |
 | Q9 | Final partition sizes and the exact Rockchip offsets in the built U-Boot | Build the first bench image. |

@@ -7,6 +7,8 @@
 #   make lint            syntax gate over every script, module and data file
 #   make seed            build both data seeds (klipper, kalico) and verify them under qemu-aarch64 (network, uv, zstd)
 #   make test-seed       the data seed's own tests (offline; they skip what needs built seeds)
+#   make mcu             MCU firmware: parameter gate status plus the check-only pass (configs vs params.json vs the pinned trees)
+#   make mcu-build       the real MCU firmware build; refuses (exit 3) while a board's flash parameters are unresolved
 #   make os-defconfig    configure Buildroot for the OS image (does not build it)
 #   make configurator-dev  run the setup wizard against fake MCUs and a fake Moonraker
 #
@@ -33,7 +35,7 @@ OS_HOST_BIN   ?= $(BUILD)/br-out/host/bin
 PORT          ?= 8099
 
 .PHONY: help test test-fast test-repo test-klarity test-configurator test-camera test-installer \
-	test-os test-klipper-layer test-klipper-layer-fast test-seed test-tools seed lint check-repo os-defconfig os-check \
+	test-os test-klipper-layer test-klipper-layer-fast test-seed test-tools test-mcu mcu mcu-build seed lint check-repo os-defconfig os-check \
 	configurator-dev clean
 
 help:
@@ -41,16 +43,18 @@ help:
 	@echo
 	@echo "  per component: test-repo test-klarity test-configurator test-camera test-installer"
 	@echo "                 test-os test-klipper-layer (test-klipper-layer-fast skips klippy)"
-	@echo "                 test-seed (the data seed's tests) test-tools (release tooling)"
+	@echo "                 test-seed (the data seed's tests) test-tools (release tooling) test-mcu (MCU firmware tooling)"
+	@echo "  mcu            parameter gate status and the check-only pass for the MCU firmware (offline apart from git)"
+	@echo "  mcu-build      real MCU firmware build (MCU_VERSION=, MCU_TOOLCHAIN=); refuses while a board is unresolved"
 	@echo "  seed           build and verify the data seeds into $(BUILD)/seed/out (needs network)"
 	@echo "  os-check       pins, defconfig and unit tests of the OS tree (needs the Buildroot checkout)"
 	@echo "  clean          remove byte-code and test caches"
 
 # --- tests ------------------------------------------------------------------------------------------
-test: test-repo test-tools test-klarity test-configurator test-camera test-installer test-seed test-os test-klipper-layer
+test: test-repo test-tools test-mcu test-klarity test-configurator test-camera test-installer test-seed test-os test-klipper-layer
 	@echo; echo "make test: all component suites passed"
 
-test-fast: test-repo test-tools test-klarity test-configurator test-camera test-installer test-seed test-os test-klipper-layer-fast
+test-fast: test-repo test-tools test-mcu test-klarity test-configurator test-camera test-installer test-seed test-os test-klipper-layer-fast
 	@echo; echo "make test-fast: all component suites passed (klippy integration tests skipped)"
 
 test-repo: lint
@@ -58,6 +62,9 @@ test-repo: lint
 
 test-tools:
 	$(PY) -m pytest $(ROOT)/tools/tests -q -p no:cacheprovider
+
+test-mcu:
+	$(PY) -m pytest $(ROOT)/mcu/tests -q -p no:cacheprovider
 
 test-seed:
 	$(MAKE) -C $(ROOT)/seed seed BUILD_ROOT=$(BUILD)
@@ -92,6 +99,15 @@ test-klipper-layer-fast:
 # Builds and verifies both data seeds (build/seed/out); `make test` only runs the seed's offline tests.
 seed:
 	$(MAKE) -C $(ROOT)/seed build verify BUILD_ROOT=$(BUILD)
+
+# MCU firmware. `mcu` is safe anywhere: it prints which boards are still unresolved and runs the check-only pass.
+# `mcu-build` runs the parameter gate first and exits 3 until every board's flash parameters are settled in mcu/params.json.
+mcu:
+	-$(PY) -I $(ROOT)/mcu/mcutool.py gate
+	$(ROOT)/mcu/build-mcu.sh --check-only --flavor both --work $(BUILD)/mcu/work
+
+mcu-build:
+	$(ROOT)/mcu/build-mcu.sh --flavor both --version "$(MCU_VERSION)" --out $(BUILD)/mcu/out --work $(BUILD)/mcu/work --toolchain "$(MCU_TOOLCHAIN)"
 
 # --- static checks ----------------------------------------------------------------------------------
 lint:

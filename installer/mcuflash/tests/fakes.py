@@ -30,7 +30,14 @@ class FakeClock:
         self.t += s
 
 
-def make_dictionary(version: str, mcu: str = "stm32f401xc", spi: bool = False, extra_config=None) -> dict:
+# The constants the live X-Plus 4 reports for each chip (klippy.log), so fake images look like the real ones.
+CHIP_CONFIG = {
+    "stm32f401xc": {"CLOCK_FREQ": 84000000, "RESERVE_PINS_serial": "PA10,PA9", "RESERVE_PINS_crystal": "PH0,PH1"},
+    "stm32f103xe": {"CLOCK_FREQ": 72000000, "RESERVE_PINS_serial": "PB7,PB6"},
+}
+
+
+def make_dictionary(version: str, mcu: str = "stm32f401xc", spi: bool = False, extra_config=None, kconfig: str = "") -> dict:
     commands = {
         "identify offset=%u count=%c": 1,
         "get_uptime": 2,
@@ -41,8 +48,10 @@ def make_dictionary(version: str, mcu: str = "stm32f401xc", spi: bool = False, e
     if not spi:
         del commands["config_spi oid=%c bus=%u"]
     cfg = {"MCU": mcu, "CLOCK_FREQ": 84000000, "SERIAL_BAUD": 500000, "RECEIVE_WINDOW": 192}
+    cfg.update(CHIP_CONFIG.get(mcu, {}))
     cfg.update(extra_config or {})
     return {
+        "kconfig": kconfig,
         "app": "Klipper",
         "version": version,
         "build_versions": "gcc: (fake) 12.2 binutils: 2.40",
@@ -53,11 +62,13 @@ def make_dictionary(version: str, mcu: str = "stm32f401xc", spi: bool = False, e
     }
 
 
-def make_image(version: str, mcu: str = "stm32f401xc", spi: bool = False, size: int = 4096, extra_config=None) -> bytes:
-    """Something shaped like klipper.bin: opaque code + the zlib data dictionary."""
-    doc = make_dictionary(version, mcu, spi, extra_config)
+def make_image(version: str, mcu: str = "stm32f401xc", spi: bool = False, size: int = 4096, extra_config=None, kconfig: str = "",
+               app_address: int = 0x08008000) -> bytes:
+    """Something shaped like klipper.bin: a Cortex-M vector table for *app_address*, opaque code and the zlib data dictionary."""
+    doc = make_dictionary(version, mcu, spi, extra_config, kconfig)
     comp = zlib.compress(json.dumps(doc).encode(), 9)
-    body = bytes(range(1, 250)) * 3 + comp
+    vectors = (0x20010000).to_bytes(4, "little") + ((app_address + 0x41) | 1).to_bytes(4, "little")
+    body = vectors + bytes(range(1, 250)) * 3 + comp
     return body + b"\xA5" * max(0, size - len(body))
 
 

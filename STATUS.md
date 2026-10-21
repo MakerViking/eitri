@@ -24,13 +24,14 @@ deliberately refuses to run.
 
 | Component | State | Tests (last `make test`) | What is missing |
 |---|---|---|---|
-| Repository core (`README`, `docs/`, `release.lock`, licences, CI, `tools/release`) | done | `tools/check-repo.py`: 1235 checks; release tooling 106 passed; `tools/lint.py` clean | Python and nginx source digests are resolved from Buildroot at build time, not pinned in `release.lock`. Every pin is `tested = false`. Klipper is pinned to an untested master commit. No release key is committed (the public halves do not exist yet). CI has never run on GitHub. |
+| Repository core (`README`, `docs/`, `release.lock`, licences, CI, `tools/release`) | done | `tools/check-repo.py`: 1284 checks; release tooling 106 passed; `tools/lint.py` clean | Python and nginx source digests are resolved from Buildroot at build time, not pinned in `release.lock`. Every pin is `tested = false`. Klipper is pinned to an untested master commit. No release key is committed (the public halves do not exist yet). CI has never run on GitHub. |
 | `seed/` (data seed: build, verify, reference installer) | done (never on a printer) | 159 passed (spec, manifest, archive policy, installer on synthetic and real seeds, built-seed checks, workflow shape); `make seed` verifies both seeds under qemu-aarch64 | The CI workflow (`data-seed.yml`, also called by `os-image.yml` and `qemu-smoke.yml`) has not run on GitHub; the Ubuntu gcc and the pinned python-build-standalone headers path was only emulated locally. First-boot timing of an unpack on the A53 and the first slow `git status` are unmeasured. |
 | `os/` (Buildroot image, RAUC bundle, U-Boot, kernel, DTS, QEMU rig) | partial | 234 passed, 4 skipped (U-Boot sandbox); `check-pins` and `check-defconfig` (163 options) pass; QEMU smoke test 75/75 with the Klipper seed and 75/75 with the Kalico seed | Never booted on the board. No release signing CA or key is committed. U-Boot sandbox tests skip (no sandbox build here). |
 | `klarity/` (screen daemon) | partial | 242 passed (warnings are errors), ruff clean | Screen map is 66 pages / 511 widgets, **104 flagged `todo`**, none checked against a live panel. The **Unlock setup** button reuses stock Settings widget 9 (page 0x3e) and the text field `t7`: both are assumptions about the panel. File browser, preview/print start, session state, thumbnails and forced page changes are not expressible. No camera page exists in the stock UI. Home e-stop widget is still `todo` (inert). |
 | `klipper-layer/` (qd_* extras, printer.cfg template, macros) | partial | 259 passed: unit tests, overlay install on throw-away clones of Klipper and Kalico, render tests, licence tags, real klippy batch tests for both flavors | `qd_probe` and `qd_reverse_home` are **stubs** (they refuse to load). Macros, currents, probe, interlock, power-loss recovery and the new 85 °C chamber backstop are untested on a machine. |
-| `installer/` (in-place install, `eitri-mcuflash`, `eitri-update`, boot manager, seed/MCU delivery, flavor switch) | partial | mcuflash 72, eitri-update 223, installer suite 162 passed (includes a real U-Boot 2021.07 sandbox run of `boot.scr`) | Never run against a board. No release signing key, placeholder download URLs, no stage-2 initramfs builder, **no MCU firmware builder** (see "Not built by anyone yet"). |
-| `configurator/` (setup wizard, port 8099) | done | 167 passed, including the real `eitri-mcuflash` CLI against non-existent ports, the real klipper-layer renderer and the real `eitri-access` helper | Pairing, lock/retire, nmcli handling, polkit and the remote-access step are proven in QEMU, not on hardware. |
+| `installer/` (in-place install, `eitri-mcuflash`, `eitri-update`, boot manager, seed/MCU delivery, flavor switch) | partial | mcuflash 102, eitri-update 223, installer suite 162 passed (includes a real U-Boot 2021.07 sandbox run of `boot.scr`) | Never run against a board. No release signing key, placeholder download URLs, no stage-2 initramfs builder. The flasher refuses the toolhead (see "MCU firmware") and has no `hid-flash` path for the mainboard. |
+| `mcu/` (MCU firmware parameters, configs, build and packaging tooling) | partial (**no firmware built**) | 48 passed, 1 skipped (artifact checks skip without a build) | Nothing compiled: the parameter gate stops the build while the toolhead is unresolved, and no toolchain is pinned in `release.lock`. The compile path has never run. See "MCU firmware". |
+| `configurator/` (setup wizard, port 8099) | done | 170 passed, including the real `eitri-mcuflash` CLI against non-existent ports, the real klipper-layer renderer and the real `eitri-access` helper | Pairing, lock/retire, nmcli handling, polkit and the remote-access step are proven in QEMU, not on hardware. |
 | `camera/` (ustreamer, go2rtc, udev) | done | 125 passed, 0 failed, 4 skipped (hardware only), including real go2rtc 1.9.14 auth enforcement | ustreamer v6.67 flags unchecked against the real binary. The 23.7 fps cause is unknown. `/webcam/` has no authentication (RTSP does). |
 
 ## The data seed (decision 3)
@@ -155,6 +156,59 @@ None of these was visible in a unit test; each came from running the real servic
 | 12 | `QIDI_PLUS4` treated as AGPL-3.0 | SPDX `AGPL-3.0-or-later` on `klipper-layer/config/{printer.cfg.tmpl,macros.cfg,eitri-variables.toml}`, `config/LICENSE`, `LICENSE-NOTE.md`, README/NOTICE |
 | 13 | Keep `.py` source in the image | unchanged (the seed's venvs also keep `.py` next to the byte-code) |
 
+## MCU firmware (`mcu/`, `installer/mcuflash`)
+
+**State: tooling and checks are built and green; no firmware was built and no release bundle exists, on purpose.** The parameter
+gate (`mcu/params.json`, `make mcu-build`) stops the build while any board is unresolved, and the toolhead is. No toolchain was
+downloaded, so `release.lock` has no `[mcu.toolchain]` entry (the build report gave no verified value; add one with Arm's published
+SHA-256 when the build goes ahead). Nothing touched the printer or any device. Derived parameters only; no Qidi binary or
+disassembly is in the repository (how each value was derived: `mcu/params.json`, `mcu/README.md`).
+
+Facts, source **the live `klippy.log` of the printer** (stock Klipper v0.12.0-65 on the board):
+
+| | mainboard (`[mcu U_1]`) | toolhead (`[mcu]`) |
+|---|---|---|
+| host port | `/dev/ttyS0` (USART1 PA10/PA9) | `/dev/ttyS2` (USART1 remapped PB7/PB6) |
+| chip, clock | `stm32f401xc`, 84 MHz, crystal reserved (PH0/PH1) | `stm32f103xe` (may be a GD32F103 clone), 72 MHz |
+| baud | 500000 | 500000 |
+| crystal | 8 MHz (inferred from community images that boot, PLL M=4) | HSE certain, 8 MHz likely |
+| bootloader | stock QIDI/Makerbase at `0x08000000`, ~32 KiB; UART path (`hid-flash`, 115200) and SD path (`qd_mcu.bin`); **not Katapult** | **unknown**: Katapult only if someone installed it with an ST-Link, factory layout unknown |
+| application offset | **`0x08008000`** (`STM32_FLASH_START_8000`) | **unsettled**: `0x08002000` if Katapult, factory value unknown (`0x08008000` is only inferred from the Q2 toolhead) |
+| flash method | `flash-sdcard.sh -b 500000 /dev/ttyS0 qidi-plus4` (Klipper script tree) or `qd_mcu.bin` on a FAT32 card; never Katapult | Katapult `flashtool.py`, only if Katapult answers a read-only handshake (250000 and 500000) |
+| confidence | **likely** (no `SCB->VTOR` read yet) | **unsure** |
+| state in `params.json` / `boards.json` | resolved | **unresolved, never written** |
+
+What the flasher now enforces: boards are matched by chip name (never by port alone); an image whose data dictionary disagrees with the
+live constants is blocked; a settled board's image must have a vector table (SP in SRAM, Thumb reset vector) inside the window that
+starts at the application offset, checked at plan time **and again after an on-device build**; the stock recovery image gets the same
+test; a mainboard that answers as Katapult is blocked; the toolhead is blocked unless Katapult answers right now and the image is linked
+for the `app_start` it reports; `sdcard-file` fsyncs the file and directory and calls `sync` before telling the operator to pull the
+card; `sdcard-serial` passes `spi_flash.py` the dictionary byte for byte (a re-serialised copy made every good flash end in "Version
+Mismatch" and a rollback to stock). Kalico has no `qidi-plus4` board definition, so on a Kalico tree only `sdcard-file` (`--sd-mount`) can
+write the mainboard. The mainboard's `hid-flash` path is not implemented (safe: fewer ways in).
+
+Bundle sizes: **none built** (nothing to measure). Verification so far is on synthetic images, including a bundle read back by the
+flasher's own loader, plus Kconfig expansion (`make olddefconfig`, no write to the trees) of both configs under the pinned Klipper
+`a08fc79` and Kalico `v2026.10.00`, and a parse (never execution) of the FreeDi community images: the vector tables, link
+addresses and dictionaries agree with the numbers above. `make mcu` runs the check-only pass (`v0.13.0-813-ga08fc79fc`,
+`v2026.10.00-0-g3526de3bf`).
+
+Independent review (two reviewers, both read the code and re-ran the checks): **safe_to_flash = false for both boards.**
+
+| board | verdict | why |
+|---|---|---|
+| toolhead | **not safe** | bootloader type and offset unknown; a wrong guess needs an ST-Link. Refused by the gate, the registry and the flasher by design. |
+| mainboard | **not safe yet** | parameters rest on community images, not on a read of the board (`SCB->VTOR`, crystal); nothing was built, so the dictionary-versus-live-constants check has not run on a real artifact; recovery needs the case open, a FAT32 card and a stock `qd_mcu.bin`. |
+
+Reviewer findings fixed in this pass (no hardware needed): `--build` skipped every image check (now re-run after the build, a mismatch
+raises `build_mismatch` before anything is staged) and looked for the wrong config file name (`<board>.config` or the one
+`<board>-*.config` the repository ships); `sdcard-file` had no fsync; `spi_flash.py` got a re-serialised dictionary; the flasher did not
+look at the vector table; a stock recovery image of the wrong offset was accepted. Findings that stay open, by design or for lack of
+hardware: no `hid-flash`; mainboard rollback needs a booting image, otherwise manual SD recovery; the Katapult handshake is also sent
+to the mainboard port (read-only, untested); `--registry` can override the toolhead refusal (documented as bench-only); the installer's
+MCU step dies with code 13 while the toolhead is blocked, `--mcu skip` leaves the stock MCU firmware (v0.12.0-65) under the new host, and
+that skew is untested; GD32 clone and `STM32F103GD_DISABLE_SWD` undecided.
+
 ## Legal-info and SBOM
 
 `make -C os legal-info` completes. 107 target packages (95 host build tools are not distributed): 44 strong copyleft, 15 weak
@@ -185,9 +239,9 @@ with versions and hashes (`venvs.*.packages`), but no licence report exists for 
 
 * **Boot chain:** open TPL DRAM init on this board (fallback: Rockchip DDR blob), BootROM order between microSD and eMMC, mmcblk
   numbering, A/B state sector, TF-A v2.15 BL31, Ethernet (gmac2phy), USB VBUS pin for the camera, regulators.
-* **Which UART is which:** the layer, the installer and the reference config say ttyS2 = toolhead and ttyS0 = mainboard, the original
-  brief said the opposite. Everything probes (`eitri-mcuflash plan`); confirm. Also each board's bootloader (Katapult at 250000?
-  SD-card bootloader on the mainboard?) and chip IDs.
+* **MCUs** (see "MCU firmware"): the toolhead's bootloader and application offset (Katapult? stock?) and a read of `SCB->VTOR` on both
+  boards, both read-only through klippy's `debug_read` or a Katapult handshake. The UART assignment itself is settled by the live
+  `klippy.log` (`/dev/ttyS0` = mainboard, `/dev/ttyS2` = toolhead) and is still confirmed by `eitri-mcuflash plan`, which binds boards by chip.
 * **Screen:** that the panel is on `/dev/ttyS1` at 115200 under mainline, press vs release edge, string escaping, whether marker bytes
   carry terminators, the map against the live panel, 0x71 handling, and that **widget 9 on page 0x3e is a button that reports taps
   and that `t7` is wide enough for "Code 1234-5678 at 192.168.0.5:8099"**.
@@ -232,7 +286,7 @@ with versions and hashes (`venvs.*.packages`), but no licence report exists for 
 
 ## Not built by anyone yet
 
-1. **MCU firmware builds** for both flavors: `mcu-firmware-<version>-<flavor>.tar.zst` with `<flavor>/manifest.json` plus
+1. **MCU firmware builds** (tooling exists in `mcu/`, nothing is built, see "MCU firmware") for both flavors: `mcu-firmware-<version>-<flavor>.tar.zst` with `<flavor>/manifest.json` plus
    `<board>/klipper.bin` (what `eitri-mcuflash` and stage 2 expect), and the mainboard's recovery image (the stock one cannot be
    shipped). The MCU build must use the seed's source tree (or `git -c core.abbrev=9 describe`) so the host and MCU version
    strings agree with `sources.firmware.describe`. **Without them the in-place installer and the wizard's Flash step cannot run.**
@@ -246,30 +300,38 @@ with versions and hashes (`venvs.*.packages`), but no licence report exists for 
 
 ## Next steps to a first boot on the real printer
 
-Nothing below touches the printer until step 5. Steps 1 to 4 are at the desk; Thomas has to do 2, 3 and 5 onwards himself.
+Step 1 touches the printer read-only and needs Thomas's permission. Nothing on the printer is written before step 8 (step 6 boots a microSD card, which is not a write to the printer's storage). Steps 2 to 5 are at the desk; Thomas has to do 1, 3, 4 and 6 onwards himself.
 
-1. **Build the missing pieces** (item 1 of "Not built by anyone yet"): MCU firmware for the mainboard and toolhead in both flavors,
-   built from the seed's Klipper/Kalico tree. Add them to `release.lock` and CI. (Can be done and reviewed without the printer.)
-2. **Generate the trust roots (Thomas, offline):** the minisign key pair and the RAUC CA; commit only the public halves
+1. **Settle the MCUs read-only (Thomas's permission needed; nothing is written).** With klippy stopped: a Katapult handshake on
+   `/dev/ttyS2` at 250000 and 500000, and `debug_read` of `SCB->VTOR` (`0xE000ED08`) plus the words at `0x08000000/04` on **both** boards.
+   Mainboard: confirm `0x08008000`. Toolhead: `0x2000` means Katapult (then also read its `app_start` and baud), `0x8000` means a stock
+   layout (then find its flash protocol, nothing documents one), anything else needs a new analysis. If the toolhead shows no
+   Katapult, the way forward is an ST-Link, not a workaround. Then change `mcu/params.json` and `boards.json` in the same commit
+   (`test_params.py` fails if they drift). Optionally with permission: whether QIDI's OTA package contains the stock MCU images.
+2. **Build the MCU firmware** once the gate passes: resolve the Arm toolchain version and SHA-256 against Arm's page, add
+   `[mcu.toolchain]` to `release.lock`, run `make mcu-build MCU_VERSION=... MCU_TOOLCHAIN=...` (or the `mcu-firmware` workflow), and
+   check the built dictionaries against `mcu/tests/live_constants.json` (`mcu/tests/test_artifacts.py` stops skipping). Decide GD32 /
+   `STM32F103GD_DISABLE_SWD` before the toolhead config is frozen. Get a stock `qd_mcu.bin` for mainboard recovery.
+3. **Generate the trust roots (Thomas, offline):** the minisign key pair and the RAUC CA; commit only the public halves
    (`installer/keys/eitri-release.pub`, `os/board/eitri-plus4/rauc/keyring.crt`); create the protected `release` GitHub environment with
    Thomas as required reviewer and store the private keys as its secrets. Push a tag to run CI once end to end (nothing in this
    repository has run on GitHub yet); fix what the first CI run finds (Ubuntu gcc path of the seed, actions, caches).
-3. **Prepare recovery before any write:** read `docs/RECOVERY.md`; take the full eMMC backup of the stock system; prove maskrom entry
+4. **Prepare recovery before any write:** read `docs/RECOVERY.md`; take the full eMMC backup of the stock system; prove maskrom entry
    and `rkdeveloptool` on the board while the stock system still boots; keep the stock `revert.sh` path ready.
-4. **Choose the first image:** build `make seed && make -C os image` (or take the CI artifact), `dd` the image to a **microSD card**
+5. **Choose the first image:** build `make seed && make -C os image` (or take the CI artifact), `dd` the image to a **microSD card**
    (never the eMMC first). The image already has Klipper, Moonraker, Klarity and the setup wizard on it.
-5. **Bench boot from microSD (printer powered, USB-serial or Ethernet attached, MCU cables removed or the MCUs unpowered for the first
+6. **Bench boot from microSD (printer powered, USB-serial or Ethernet attached, MCU cables removed or the MCUs unpowered for the first
    boot):** watch the open TPL DRAM init, Ethernet, `/data` growth, that the services come up. Check `NoNewPrivileges` and the
    `MemoryHigh` limits against Moonraker, and tune them against measured RSS. Ttys2 is wired to an MCU, so a console needs a
    deliberate bench setting.
-6. **Probe, read-only:** `eitri-mcuflash plan` for UART roles and bootloaders; send `sendme` at 115200 to find the panel UART;
+7. **Probe, read-only:** `eitri-mcuflash plan` for UART roles and bootloaders; send `sendme` at 115200 to find the panel UART;
    `klarity --learn --dry-run` and walk the pages to confirm the map, the touch edge, and widget 9 / `t7` for Unlock setup; boot once
    with the camera unplugged and once plugged in. Put the answers into the screen map and `STATUS.md`.
-7. **Flash the MCUs** only after recovery for both boards is proven (`eitri-mcuflash` insists), then run the wizard from a phone or PC
+8. **Flash the MCUs** only after recovery for both boards is proven (`eitri-mcuflash` insists), then run the wizard from a phone or PC
    with the code shown on the screen: pair, detect, apply, flash, calibrate. Optionally add your SSH key in the Remote access step.
-8. **First motion** with a hand on the power switch: homing (including partial `G28 X`/`Y`), probe polarity, `PROBE_CALIBRATE`, bed mesh,
+9. **First motion** with a hand on the power switch: homing (including partial `G28 X`/`Y`), probe polarity, `PROBE_CALIBRATE`, bed mesh,
    heaters, the interlock and the 85 °C chamber backstop, pause/resume past the idle timeout (motors stay energised), power-loss resume,
    a short print. Re-pin Klipper to the commit that passed (`release.lock`).
-9. Only then write the eMMC: the in-place converter (the user path, decision 1) on a printer you can recover, or the flash-once image on
+10. Only then write the eMMC: the in-place converter (the user path, decision 1) on a printer you can recover, or the flash-once image on
    a spare board. Exercise a RAUC update and a forced rollback, a seed update, a flavor switch, an interrupted install and an interrupted
    restore, and mark pins `tested = true` one by one.

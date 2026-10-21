@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "go": false,
+  "reconciled": "2026-10-22",
+  "note": "Authoritative flash/clock parameters for the two X-Plus 4 MCUs. Every value is DERIVED (never copied from a QIDI binary); 'evidence' says how. A board whose status is 'unresolved' is never built into a release bundle (mcu/build-mcu.sh gate) and never written by eitri-mcuflash (installer/mcuflash boards.json carries the same status). Keep this file and installer/mcuflash/eitri_mcuflash/boards.json in step; mcu/tests/test_params.py fails when they drift.",
+  "boards": {
+    "mainboard": {
+      "status": "resolved",
+      "confidence": "likely",
+      "klipper_ref": "[mcu U_1] on /dev/ttyS0",
+      "mcu": "stm32f401xc",
+      "chip_flash_kib": 256,
+      "ram_size": "0x10000",
+      "flash_base": "0x08000000",
+      "flash_offset": "0x08008000",
+      "kconfig_flash_start": "STM32_FLASH_START_8000",
+      "flash_offset_if_katapult": null,
+      "clock_ref": "8 MHz external crystal (STM32_CLOCK_REF_8M)",
+      "clock_freq": 84000000,
+      "serial": "USART1 PA10/PA9",
+      "baud": 500000,
+      "bootloader": "Stock QIDI/Makerbase bootloader at 0x08000000, about 32 KiB. Not Katapult. Two entry paths: a UART protocol (hid-flash, 115200 8N1) and the SD-card path (qd_mcu.bin to qd_mcu.CUR). Never deploy Katapult here: that overwrites the bootloader.",
+      "bootloader_baud": "115200 8N1 for the hid-flash UART path (the application runs at 500000); not applicable to the SD path",
+      "method": "Application-only write, bootloader preserved. Preferred: Klipper scripts/flash-sdcard.sh -b 500000 /dev/ttyS0 qidi-plus4 (needs a running Klipper application and a FAT32 card in the slot). Fallback: copy the image as qd_mcu.bin to the SD card and power-cycle. The pinned Kalico has no qidi-plus4 board definition, so Kalico trees use the card fallback or the pinned Klipper script tree.",
+      "config": "configs/mainboard-stm32f401.config",
+      "evidence": [
+        "Live klippy.log of the printer: MCU=stm32f401xc CLOCK_FREQ=84000000 RESERVE_PINS_crystal=PH0,PH1 RESERVE_PINS_serial=PA10,PA9 SERIAL_BAUD=500000 (an external crystal is present; its frequency is not printed).",
+        "Offset: a community Plus 4 mainboard Klipper image (not QIDI-authored) has its reset handler code at the position that is consistent only with a link address of 0x08008000, and boots on this board family; its data dictionary equals the live constants.",
+        "Crystal: the same image's PLL setting is the one that derives 84 MHz from an 8 MHz oscillator (PLL M = 4).",
+        "A working community mainline configuration for this printer selects STM32F401, FLASH_START_8000, CLOCK_REF_8M, USART1, 500000.",
+        "Upstream Klipper board_defs.py maps qidi-plus4 to the qidi-x7 definition (spi2, PB12, qd_mcu.bin / qd_mcu.CUR), and src/stm32/Kconfig maps STM32_FLASH_START_8000 to 0x8008000."
+      ],
+      "open_questions": [
+        "A direct read of the stock board's SCB->VTOR is still missing (confirm 0x08008000 read-only, klippy stopped, before the first flash).",
+        "The HSE frequency is inferred (8 MHz); a mismatch would bring the board up at the wrong baud rate (recoverable through the SD bootloader)."
+      ],
+      "kconfig_serial": "STM32_SERIAL_USART1"
+    },
+    "toolhead": {
+      "status": "unresolved",
+      "confidence": "unsure",
+      "klipper_ref": "[mcu] on /dev/ttyS2",
+      "mcu": "stm32f103xe",
+      "mcu_note": "The chip may be a GD32F103 clone; Klipper builds it as stm32f103xe. Whether to set 'Disable SWD at startup' (STM32F103GD_DISABLE_SWD) is undecided.",
+      "chip_flash_kib": 512,
+      "ram_size": "0x5000",
+      "flash_base": "0x08000000",
+      "flash_offset": null,
+      "kconfig_flash_start": null,
+      "flash_offset_if_katapult": "0x08002000",
+      "kconfig_flash_start_if_katapult": "STM32_FLASH_START_2000",
+      "clock_ref": "8 MHz external crystal (STM32_CLOCK_REF_8M). HSE is certain (72 MHz is unreachable from the internal oscillator on an F1); 8 MHz is likely.",
+      "clock_freq": 72000000,
+      "serial": "USART1 remapped PB7/PB6",
+      "baud": 500000,
+      "bootloader": "UNSETTLED. Either Katapult at 0x08000000 (a community add-on installed over SWD with an ST-Link) or the unknown stock bootloader.",
+      "bootloader_baud": "Katapult's baud rate is compile-time: 250000 (FreeDi) or 500000 (other community builds). Probe both. Unknown for a stock bootloader.",
+      "method": "Katapult flashtool over /dev/ttyS2, only if Katapult is detected by a read-only handshake at 250000 and 500000. If it is not detected, refuse: a first-time Katapult install needs an ST-Link, which Eitri cannot do. Never erase or overwrite a bootloader.",
+      "config": "configs/toolhead-stm32f103.config",
+      "evidence": [
+        "Live klippy.log of the printer: MCU=stm32f103xe CLOCK_FREQ=72000000 RESERVE_PINS_serial=PB7,PB6 SERIAL_BAUD=500000.",
+        "A community Plus 4 toolhead Klipper image is linked at 0x08002000 (reset handler position, and a vector table beginning with a RAM-top stack pointer 0x20005000), consistent with Katapult's 8 KiB layout. It says nothing about the factory layout.",
+        "That image's clock setting is PLL x9, which gives 72 MHz from an 8 MHz crystal.",
+        "A Q2 toolhead image suggests 0x08008000 for a stock layout, but it was never observed on a Plus 4."
+      ],
+      "open_questions": [
+        "Does this printer's toolhead currently run Katapult or the stock factory bootloader? Check read-only: a Katapult handshake on /dev/ttyS2 at 250000 and 500000 (no write), and/or a debug_read of SCB->VTOR (0xE000ED08) and the words at 0x08000000/04 through klippy with klippy stopped. Needs permission to touch the printer.",
+        "Application offset from VTOR: 0x2000 means the Katapult-era layout, 0x8000 a stock Makerbase layout, anything else needs a new analysis. If stock, find the bootloader's flash protocol for ttyS2; nothing shows that hid-flash works on the toolhead.",
+        "Whether a QIDI OTA image exists that would settle both offsets directly (needs permission to contact QIDI servers).",
+        "Chip genuineness (GD32 clone) and the 'Disable SWD at startup' option must be settled before the toolhead build config is frozen."
+      ],
+      "kconfig_serial": "STM32_SERIAL_USART1_ALT_PB7_PB6"
+    }
+  },
+  "conflicts": [
+    "Toolhead flash offset: 0x08008000 (inferred from the Q2 sibling) versus 0x08002000 (Katapult 8 KiB). The sources assume different bootloader states.",
+    "Toolhead bootloader type: unknown, possibly a Makerbase UART bootloader, versus Katapult after an ST-Link install. Nothing shows what this printer runs.",
+    "Katapult baud: 250000 versus 500000 (compile-time). Only relevant if Katapult is present.",
+    "The old installer registry listed 'stm32f4*' as the toolhead chip and Katapult at 250000 for both boards; both were wrong and are fixed."
+  ]
+}

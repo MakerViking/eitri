@@ -16,8 +16,9 @@
 #   3  stage              download the signed bundle (system image, data seed, MCU firmware), verify signature +
 #                         checksums, then check the data seed (its manifest, the pinned firmware commit, a rehearsal
 #                         of the unpack rules); works offline from a USB stick or your PC (--bundle-dir, --seed-file)
-#   4  MCU recovery       save a way back for both MCU boards (Katapult read-back + round trip).  This WRITES to the
-#                         toolhead (erase + same image back) before step 5, so it needs --accept-mcu-roundtrip.
+#   4  MCU recovery       save a way back for both MCU boards (mainboard: its stock image; toolhead: Katapult read-back
+#                         + round trip, only while Katapult answers: an unresolved toolhead blocks this step).  The round
+#                         trip WRITES to the toolhead (erase + same image back) before step 5: --accept-mcu-roundtrip.
 #   5  --- you type CONVERT ---
 #   6  arm stage 2        install the boot manager, one-shot RAM installer; reboot
 #      (stage 2, in RAM: shrink the stock root, add rootfs A/B + /data, write + verify, switch)
@@ -711,7 +712,7 @@ mcu_recovery() {
   if ((rc != 0)); then
     err "MCU recovery check failed: $(tail -1 "$STATE_DIR/mcu-backup.jsonl")"
     step_fail mcu "recovery not proven"
-    die 13 "At least one MCU board could not be proven recoverable, so nothing was changed. Details: $STATE_DIR/mcu-backup.jsonl (and run 'eitri-mcuflash plan' for the preflight table)."
+    die 13 "At least one MCU board could not be proven recoverable, so nothing was changed. Details: $STATE_DIR/mcu-backup.jsonl (and run 'eitri-mcuflash plan' for the preflight table). The toolhead is refused until its bootloader and application offset are settled (mcu/README.md); --mcu skip leaves both boards alone, but then the stock MCU firmware keeps running under the new host."
   fi
   step_ok mcu "both boards have a saved way back"
 }
