@@ -123,15 +123,15 @@ SCHEMA: list[dict[str, Any]] = [
         ],
     },
     {
-        "id": "access", "title": "Access", "blurb": "Who may control the printer from the network.",
+        "id": "access", "title": "Web interface sign-in", "blurb": "Who may use the printer's web interface and slicer connection from the network.",
         "fields": [
             {
                 "id": "api_access", "type": "choice", "default": "lan",
-                "label": "Network access to the printer",
-                "help": "Anyone Moonraker trusts can start prints, edit the configuration and, through Klipper's shell commands, run programs on the printer. Moonraker itself only listens on the printer; the web interface on port 80 is the way in.",
+                "label": "Who may use the web interface",
+                "help": "Anyone trusted here can start prints, edit the configuration and, through Klipper's shell commands, run programs on the printer. Everything, slicers and apps included, connects on port 80 (Fluidd or Mainsail); Moonraker itself only listens on the printer. SSH is a separate, optional step at the end.",
                 "choices": [
                     _choice("lan", "Trust my home network", "Devices on private addresses need no sign-in"),
-                    _choice("signin", "Require sign-in", "Only the printer itself is trusted; create a user over SSH first"),
+                    _choice("signin", "Require sign-in", "Only the printer itself is trusted; needs a user created over SSH first (see Remote access)"),
                 ],
             },
         ],

@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The Eitri Authors
+# Adapted in part from the QIDI X-Plus 4 configuration in QIDITECH/QIDI_PLUS4
+# (https://github.com/QIDITECH/QIDI_PLUS4, tag Plus4_v1.7.1; Eitri treats that
+# repository as AGPL-3.0). See LICENSE-NOTE.md and README.md in this directory.
+#
 # Eitri printer.cfg variables (rendered into printer.cfg.tmpl by
 # scripts/render-config.py). Override any of these in a second TOML file
 # passed with --vars, never by editing this file in place on a device.
@@ -86,9 +92,11 @@ chamber_pid_kd = 749.125
 chamber_verify_max_error = 400
 chamber_verify_check_gain_time = 600
 # Limit of the second chamber thermistor (see the comment in printer.cfg.tmpl).
-# 140 is the stock value, kept until the sensor's location is confirmed on
-# hardware; then 85-90 gives a real backstop.
-chamber_backstop_max_temp = 140
+# The stock value was 140; Eitri's default is 85 (the chamber limit is 70, so
+# this is a real backstop). If that sensor turns out to sit on the heater
+# element and trips during normal heating, raise this value (it must stay above
+# the 70 C chamber limit) until its location is confirmed on hardware.
+chamber_backstop_max_temp = 85
 
 # --- probe (the PA10 offset probe on the toolhead MCU) -----------------------------
 probe_x_offset = 25.0

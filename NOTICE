@@ -10,6 +10,30 @@ Klipper and Kalico are used as pristine, unmodified upstream clones. Eitri adds
 its own code beside them and never edits their source.
 
 =============================================================================
+Eitri's own licenses
+=============================================================================
+
+Apache-2.0 (LICENSE)
+  Everything in this repository that is not listed below: Klarity, the
+  configurator, the installer and update client, the camera integration, the OS
+  integration, tools, documentation, and klipper-layer/config/flavors/.
+
+AGPL-3.0-or-later (klipper-layer/config/LICENSE)
+  klipper-layer/config/printer.cfg.tmpl, macros.cfg and eitri-variables.toml,
+  which are adapted from QIDITECH/QIDI_PLUS4 (see below).
+
+GPL-3.0-or-later (klipper-layer/extras/LICENSE)
+  The qd_* Klipper extras and gcode_shell_command.py. A file that is derived
+  from GPLv3-only code says GPL-3.0-only in its header (qd_chamber_fan.py).
+  These modules are loaded by Klipper, which is GPL-3.0.
+
+GPL-2.0 (device tree: GPL-2.0+ OR MIT)
+  Kernel and U-Boot patches and os/board/eitri-plus4/dts/.
+
+Each source file in klipper-layer/config/ and klipper-layer/extras/ carries an
+SPDX-License-Identifier line; tools/check-repo.py enforces it.
+
+=============================================================================
 Runtime and firmware components
 =============================================================================
 
@@ -67,6 +91,14 @@ RAUC
   License: GNU Lesser General Public License v2.1 (LGPL-2.1)
   Source:  https://github.com/rauc/rauc
   Use:     A/B root filesystem update and rollback.
+
+minisign
+  Copyright (C) Frank Denis and contributors
+  License: ISC
+  Source:  https://github.com/jedisct1/minisign
+  Use:     Signs install.json, manifest.json and SHA256SUMS in the release
+           workflow (tools/release/). Not shipped; printers verify the
+           signatures with their own Python code (eitri_update/minisign.py).
 
 uv
   Copyright (C) Astral Software Inc. and the uv contributors
@@ -140,10 +172,19 @@ QIDITECH moonraker (QIDI's Moonraker fork)
 
 QIDITECH QIDI_PLUS4 (QIDI X-Plus 4 configuration and UI sources)
   License: GNU Affero General Public License v3.0, per the LICENSE file in that
-           repository. Its README badge says GPL-3.0. Confirm the applicable
-           license before adapting any code from it.
+           repository. Its README badge says GPL-3.0. Eitri treats the stricter
+           reading, AGPL-3.0, as binding (decision of 2026-10-22).
   Source:  https://github.com/QIDITECH/QIDI_PLUS4
   Pinned:  ec595fc903540564be757bcafa745cd5c4a52cd0 (tag Plus4_v1.7.1)
+  Adapted: hardware facts, calibrated values and the outline of the macro flow
+           in klipper-layer/config/printer.cfg.tmpl, macros.cfg and
+           eitri-variables.toml. Those files are distributed under
+           AGPL-3.0-or-later (SPDX tag in each file, text in
+           klipper-layer/config/LICENSE, reasoning in
+           klipper-layer/config/LICENSE-NOTE.md). The printer.cfg that the setup
+           wizard renders from the template is a derivative and carries the same
+           notice. The files in klipper-layer/config/flavors/ were written for
+           Eitri and are Apache-2.0.
 
 =============================================================================
 Projects referenced for comparison and prior art (no code copied)

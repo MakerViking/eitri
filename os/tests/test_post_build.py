@@ -50,6 +50,13 @@ def test_development_build(tree):
     assert (target / "usr/libexec/eitri/eitri-bootctl").is_file() and (target / "usr/bin/eitri-update").is_file()
     assert (target / "usr/lib/python3.14/site-packages/eitri_update/cli.py").is_file()
     assert (target / "usr/lib/systemd/system/eitri-prepare.service").is_file()
+    # The data seed's installer, the root helpers and the configurator command line.
+    installer = target / "usr/libexec/eitri/eitri-seed-install"
+    assert installer.read_bytes() == (REPO_ROOT / "seed/bin/eitri-seed-install").read_bytes()
+    assert (target / "usr/share/doc/eitri/seed/SPEC.md").is_file()
+    for tool in ("usr/libexec/eitri/eitri-access", "usr/libexec/eitri/seed-first-boot", "usr/bin/eitri-configurator",
+                 "usr/libexec/eitri/eitri-seed-install"):
+        assert stat.S_IMODE((target / tool).stat().st_mode) == 0o755, tool
     # No release key: the image trusts the throwaway CA, loudly.
     assert (target / "etc/rauc/keyring.pem").read_text().startswith("-----BEGIN CERTIFICATE-----")
     assert "development image" in result.stderr
@@ -114,3 +121,27 @@ def test_component_units_are_installed(tree):
     for component, unit in (("klarity", "klarity.service"), ("configurator", "eitri-configurator.service")):
         source = REPO_ROOT / component / "systemd" / unit
         assert (target / "usr/lib/systemd/system" / unit).read_bytes() == source.read_bytes()
+
+
+def test_a_stale_klipper_layer_is_removed_from_the_target_tree(tree):
+    # Buildroot keeps the files of a package that left the configuration; the layer lives on /data now.
+    target, base = tree
+    stale = target / "usr/lib/eitri/klipper-layer/extras"
+    stale.mkdir(parents=True)
+    (stale / "qd_old.py").write_text("")
+    result = post_build(target, base)
+    assert result.returncode == 0, result.stderr
+    assert not (target / "usr/lib/eitri/klipper-layer").exists() and "stale" in result.stderr
+
+
+def test_the_image_does_not_ship_the_layer(tree):
+    target, base = tree
+    post_build(target, base)
+    assert not (target / "usr/lib/eitri/klipper-layer").exists()
+
+
+def test_missing_root_helper_fails_the_build(tree):
+    target, base = tree
+    (target / "usr/libexec/eitri/eitri-access").unlink()
+    result = post_build(target, base)
+    assert result.returncode != 0 and "eitri-access" in result.stderr

@@ -8,7 +8,7 @@ import re
 import pytest
 
 import klippy_harness as kh
-from conftest import git
+from conftest import CONFIG, git
 
 pytestmark = pytest.mark.skipif(not kh.klippy_deps_available(),
                                 reason="klippy Python deps not importable")
@@ -252,10 +252,13 @@ def test_stubs_refuse_to_load(env_factory, section):
 SHELL_CFG = """
 [qd_shell_test touch_it]
 command: /usr/bin/touch
+allow_params: True
 [qd_shell_test say]
 command: /bin/echo
+allow_params: True
 [qd_shell_test slow]
 command: /bin/sleep
+allow_params: True
 timeout: 0.5
 [qd_shell_test fail]
 command: /bin/false
@@ -293,6 +296,53 @@ def test_gcode_shell_command_start_failure_is_a_gcode_error(env_factory):
     assert "Error running command {missing}" in res.log
 
 
+# The real section name: mainline runs the Eitri module, Kalico its own module
+# wrapped by [qd_shell_guard] (included from flavors/kalico.cfg). Same policy.
+NATIVE_SHELL_CFG = """
+[gcode_shell_command plain]
+command: /usr/bin/touch
+[gcode_shell_command open]
+command: /usr/bin/touch
+allow_params: True
+[gcode_shell_command pinned]
+command: /usr/bin/touch
+params_pattern: .*/ok-[a-z]+
+"""
+
+
+def test_params_are_denied_by_default_on_both_flavors(env_factory, tmp_path):
+    env = env_factory()
+    env.append(NATIVE_SHELL_CFG)
+    evil = tmp_path / "evil"
+    res = env.run("RUN_SHELL_COMMAND CMD=plain PARAMS=%s" % evil, timeout=60)
+    assert res.returncode != 0
+    assert "does not accept PARAMS" in res.log and "allow_params" in res.log
+    assert not evil.exists()
+    # without PARAMS the configured command still runs
+    ok(env.run("RUN_SHELL_COMMAND CMD=plain", timeout=60))
+
+
+def test_params_opt_in_options_work_on_both_flavors(env_factory, tmp_path):
+    env = env_factory()
+    env.append(NATIVE_SHELL_CFG)
+    free, good, bad = (tmp_path / n for n in ("free", "ok-yes", "no-way"))
+    ok(env.run("RUN_SHELL_COMMAND CMD=open PARAMS=%s\n"
+               "RUN_SHELL_COMMAND CMD=pinned PARAMS=%s" % (free, good),
+               timeout=60))
+    assert free.exists() and good.exists()
+    res = env.run("RUN_SHELL_COMMAND CMD=pinned PARAMS=%s" % bad, timeout=60)
+    assert res.returncode != 0 and "params_pattern" in res.log
+    assert not bad.exists()
+
+
+def test_contradictory_params_options_fail_the_config(env_factory):
+    env = env_factory()
+    env.append("[gcode_shell_command x]\ncommand: /bin/true\n"
+               "allow_params: False\nparams_pattern: a\n")
+    res = env.run("G4 P1")
+    assert res.returncode != 0 and "contradict" in res.log
+
+
 PLR_JOB = """\
 G90
 M83
@@ -315,7 +365,7 @@ def test_power_loss_recovery_round_trip(env_factory):
     rebuilds a resume file from it and the resumed print runs to the end."""
     env = env_factory()
     env.link_extra("qd_shell_test.py", "gcode_shell_command.py")
-    env.append("[qd_shell_test pad]\ncommand: /bin/sleep\ntimeout: 10\n"
+    env.append("[qd_shell_test pad]\ncommand: /bin/sleep\nallow_params: True\ntimeout: 10\n"
                "verbose: False\n"
                "[qd_shell_test powercut]\ncommand: /bin/sh -c 'kill -9 $PPID'\n"
                "verbose: False\n")
@@ -412,6 +462,57 @@ RESUME
 """))
 
 
+REPORT_CFG = """
+[gcode_macro T_REPORT]
+gcode:
+    {% set se = printer.stepper_enable.steppers %}
+    { action_respond_info("EITRI_MOTORS homed=%s x=%s y=%s z=%s z1=%s bed=%s hotend=%s"
+        % (printer.toolhead.homed_axes, se.stepper_x, se.stepper_y,
+           se.stepper_z, se.stepper_z1, printer.heater_bed.target,
+           printer.extruder.target)) }
+"""
+
+
+def test_motors_stay_energised_through_a_long_pause(env_factory):
+    """Decision: when the idle timeout fires during a pause the heaters go off
+    but X/Y/Z stay energised and homed, so the part position is never lost and
+    RESUME reheats and continues."""
+    env = env_factory()
+    env.append(REPORT_CFG)
+    res = env.run("""
+G28
+M140 S60
+M104 S200
+G1 X100 Y100 F6000
+PAUSE
+T_REPORT
+_QD_IDLE_OFF
+T_REPORT
+RESUME
+T_REPORT
+""")
+    ok(res)
+    states = re.findall(r"EITRI_MOTORS (homed=x.*bed=\S+ hotend=\S+)\n", res.log)
+    assert len(states) == 3, states
+    paused, idle_off, resumed = states
+    assert "homed=xyz x=True y=True z=True z1=True" in paused
+    assert "bed=60.0 hotend=200.0" in paused
+    # the idle timeout action: heaters off, motors and homed state kept
+    assert "homed=xyz x=True y=True z=True z1=True" in idle_off
+    assert "bed=0.0 hotend=0.0" in idle_off
+    # RESUME reheats the previous targets
+    assert "bed=60.0 hotend=200.0" in resumed
+    assert "homed=xyz" in resumed
+
+
+def test_idle_timeout_action_is_the_motor_policy_macro(flavor):
+    """The idle_timeout section must run the macro that keeps a pause's motors
+    energised; a different gcode there would silently drop the policy."""
+    text = (CONFIG / "printer.cfg.tmpl").read_text()
+    m = re.search(r"^\[idle_timeout\]\n(?:[^\[]*?)gcode:\n\s+(\S+)", text, re.M)
+    assert m and m.group(1) == "_QD_IDLE_OFF"
+
+
 def test_idle_timeout_still_releases_the_motors_when_not_paused(env_factory):
     env = env_factory()
     res = env.run("G28\n_QD_IDLE_OFF\nQD_PURGE HOTEND=210")
@@ -484,7 +585,7 @@ def _interrupted_print(env, job):
     env.append("[delayed_gcode PRINTER_INIT]\ninitial_duration: 0\n"
                "gcode:\n    G4 P1\n")
     env.link_extra("qd_shell_test.py", "gcode_shell_command.py")
-    env.append("[qd_shell_test pad]\ncommand: /bin/sleep\ntimeout: 10\n"
+    env.append("[qd_shell_test pad]\ncommand: /bin/sleep\nallow_params: True\ntimeout: 10\n"
                "verbose: False\n"
                "[qd_shell_test powercut]\ncommand: /bin/sh -c 'kill -9 $PPID'\n"
                "verbose: False\n")

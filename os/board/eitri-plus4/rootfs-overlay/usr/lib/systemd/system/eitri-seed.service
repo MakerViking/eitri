@@ -1,0 +1,19 @@
+[Unit]
+Description=Install the data seed carried by the image (first boot, offline)
+Documentation=file:///usr/share/doc/eitri/os/README.md
+# Printer images are seeded when they are built (the flash-once image) or by the in-place installer, and
+# find the seed already present: the tool then only logs that. It unpacks an archive from
+# /usr/share/eitri/seed only on bench and QEMU images that carry one.
+After=eitri-data-init.service eitri-etc.service
+Wants=eitri-data-init.service
+RequiresMountsFor=/data
+# The services that run from the seed, and the update step that matches the MCU firmware to it.
+Before=eitri-prepare.service klipper.service moonraker.service klarity.service eitri-configurator.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/eitri/seed-first-boot
+
+[Install]
+WantedBy=multi-user.target

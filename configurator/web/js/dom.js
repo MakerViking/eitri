@@ -84,6 +84,8 @@ const ICONS = {
   printer: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 8h16M8 13h8"/>',
   eye: '<path d="M2 12s3.500-7 10-7 10 7 10 7-3.500 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   open: '<path d="M16 3h5v5M21 3l-8 8"/><path d="M19 13v6H5V5h6" />',
+  key: '<circle cx="8" cy="15" r="4.500"/><path d="M11.300 11.700L20 3M16 7l3 3M13.500 9.500l2 2"/>',
+  copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
 };
 
 export function icon(name, cls = '') {
@@ -104,6 +106,7 @@ export const RUNES = {
   review:    'M6 3v18M6 3l10 5-10 5M10 13l7 8',                   // raidho
   flash:     'M7 3v18M7 7l9 5-9 5',                               // thurisaz: the hammer
   calibrate: 'M12 21V3M6 9l6-6 6 6',                              // tiwaz
+  remote:    'M12 21V3M12 13L5 6M12 13l7-7',                      // algiz: protection, the open door
   done:      'M12 3l7 6-7 6-7-6zM9.500 12L5 21M14.500 12L19 21',  // othala
 };
 

@@ -1,0 +1,199 @@
+name: data-seed
+
+# Builds the Eitri data seeds: the initial /data application layer (pinned Klipper or Kalico, Moonraker, the
+# uv-managed venvs for CPython 3.14 / aarch64, Klarity, the qd_* extras and a prebuilt c_helper.so), one archive per
+# firmware flavor. See seed/SPEC.md.
+#
+#   pull request   build both flavors and test them, upload nothing
+#   v* tag         build, test, check reproducibility, attach to the draft release
+#
+# Nothing here signs anything. The seeds' SHA-256 digests go into the install.json / channel manifest that the
+# release signing step signs (Thomas holds the keys offline; signing runs only through the protected "release"
+# environment). No secret is available to this workflow.
+
+on:
+  pull_request:
+    paths:
+      - "seed/**"
+      - "release.lock"
+      - "klarity/**"
+      - "klipper-layer/**"
+      - ".github/workflows/data-seed.yml"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  # os-image.yml and qemu-smoke.yml build the seed they put into the image through this workflow (one flavor, nothing
+  # published), so the image never embeds a seed that was built differently from the released one.
+  workflow_call:
+    inputs:
+      flavors:
+        description: "JSON list of the flavors to build"
+        type: string
+        default: '["klipper", "kalico"]'
+      attach:
+        description: "attach the seeds to the draft release (tags only); callers that only need the files pass the string false"
+        type: string
+        default: "true"
+
+permissions:
+  contents: read
+
+# github.workflow is the caller's name in a called workflow, so a direct run and a call at the same ref never share a group.
+concurrency:
+  group: data-seed-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  test:
+    name: Seed specification and installer tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.14"
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zstd git
+          python -m pip install --quiet pytest
+
+      # No seeds are built here, so the tests that need built seeds, a Buildroot image or qemu skip.
+      - name: Tests
+        run: make -C seed seed
+
+  build:
+    name: Build the ${{ matrix.flavor }} seed
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: ${{ fromJSON(inputs.flavors || '["klipper", "kalico"]') }}
+    env:
+      # The image's glibc (Buildroot 2026.02.3: 2.42). The distribution C library used here is older and must not
+      # decide what the wheels and the C helper are allowed to need.
+      EITRI_GLIBC_MAX: "2.42"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.14"
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            zstd git qemu-user gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libc6-arm64-cross
+          uv_version=$(python -c 'import tomllib; print(tomllib.load(open("release.lock", "rb"))["uv"]["version"])')
+          python -m pip install --quiet "uv==$uv_version" pytest
+          uv --version
+
+      - name: Decide the seed version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0.dev0+g${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # CPython headers and sysconfig data (pinned, SHA-256 checked) for cross-compiling extension modules, and
+      # an aarch64 root for the qemu-user smoke test. The C compiler and C library come from the distribution.
+      - name: Prepare the cross toolchain inputs
+        run: |
+          eval "$(seed/tools/ci-toolchain.sh "$RUNNER_TEMP/toolchain")"
+          {
+            echo "EITRI_PY_INCLUDE=$EITRI_PY_INCLUDE"
+            echo "EITRI_SYSCONFIGDATA=$EITRI_SYSCONFIGDATA"
+            echo "EITRI_SYSROOT=$EITRI_SYSROOT"
+            echo "EITRI_VERIFY_SYSROOT=$EITRI_VERIFY_SYSROOT"
+            echo "EITRI_CROSS_CC=aarch64-linux-gnu-gcc"
+            echo "EITRI_CROSS_STRIP=aarch64-linux-gnu-strip"
+            echo "EITRI_READELF=aarch64-linux-gnu-readelf"
+            echo "EITRI_BUILD_ROOT=$RUNNER_TEMP/build"
+          } >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          seed/build-seed.sh --flavor "${{ matrix.flavor }}" --version "${{ steps.version.outputs.version }}" \
+            --out "$RUNNER_TEMP/out" --work "$RUNNER_TEMP/work"
+
+      - name: Verify the archive and run its environments under qemu-user
+        run: |
+          seed/verify-seed.sh "$RUNNER_TEMP/out/data-seed-${{ steps.version.outputs.version }}-${{ matrix.flavor }}.manifest.json"
+
+      - name: Seed tests against the built seed
+        env:
+          EITRI_SEED_OUT: ${{ runner.temp }}/out
+        run: python -m pytest seed/tests -q -p no:cacheprovider
+
+      # A release is only trusted if a second build from empty caches gives the same bytes.
+      - name: Reproducibility (tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          seed/build-seed.sh --flavor "${{ matrix.flavor }}" --version "${{ steps.version.outputs.version }}" \
+            --out "$RUNNER_TEMP/out2" --work "$RUNNER_TEMP/work2" > /dev/null
+          a=$(cd "$RUNNER_TEMP/out" && sha256sum ./*.tar.zst | cut -d' ' -f1)
+          b=$(cd "$RUNNER_TEMP/out2" && sha256sum ./*.tar.zst | cut -d' ' -f1)
+          echo "first build:  $a"
+          echo "second build: $b"
+          [ "$a" = "$b" ] || { echo "::error::the seed is not reproducible"; exit 1; }
+
+      - name: Package
+        id: package
+        run: |
+          cd "$RUNNER_TEMP/out"
+          sha256sum ./*.tar.zst ./*.manifest.json | sed 's#\./##' > "SHA256SUMS-${{ matrix.flavor }}"
+          cat "SHA256SUMS-${{ matrix.flavor }}"
+          ls -l
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: eitri-data-seed-${{ matrix.flavor }}
+          path: ${{ runner.temp }}/out
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/') && 90 || 7 }}
+          if-no-files-found: error
+
+  publish:
+    name: Attach the seeds to the release
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && (inputs.attach || 'true') == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: eitri-data-seed-*
+          merge-multiple: true
+          path: dist
+
+      # download-artifact can finish with a partly extracted file and still succeed.
+      - name: Verify the downloaded files
+        run: |
+          cd dist
+          for f in SHA256SUMS-*; do sha256sum --check --strict "$f"; done
+          ls -l
+
+      - name: Create or update the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+            if [ "$draft" != true ]; then
+              echo "::error::release $GITHUB_REF_NAME is already published; refusing to change its files"
+              exit 1
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
+              --title "Eitri ${GITHUB_REF_NAME#v}" \
+              --notes "Release candidate. Nothing in this release has been tested on a printer unless release.lock says so."
+          fi
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber dist/*

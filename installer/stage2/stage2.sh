@@ -25,9 +25,13 @@
 #   * progress is visible at http://<printer>:8099/ (status.json) and in
 #     /boot/eitri/stage2.log; a failure is also left in /boot/eitri/LAST_ERROR.
 #
+# The /data layer (Klipper or Kalico, Moonraker, the Python environments, Klarity, the extras) comes from the data
+# seed (seed/SPEC.md) and is installed by eitri-seed-install, which stage 1 appends to this initramfs: it verifies the
+# archive digest, refuses anything outside the seed layout and places each component with one rename.
+#
 # Needs in the initramfs: bash, busybox applets (mount, dd, sync, awk, sed, tr,
-# tee, mktemp, udhcpc, httpd), util-linux (sfdisk, blockdev, blkid), e2fsprogs
-# (e2fsck, resize2fs, dumpe2fs, mke2fs, debugfs), sha256sum, zstd, tar, gzip.
+# tee, mktemp, udhcpc, httpd, find, grep, date, df, mv, rm, rmdir, mkdir, cat), util-linux (sfdisk, blockdev, blkid),
+# e2fsprogs (e2fsck, resize2fs, dumpe2fs, mke2fs, debugfs), sha256sum, zstd, tar, gzip.
 
 set -Eeuo pipefail
 
@@ -134,7 +138,7 @@ s2_load_modules() {
 
 s2_require_tools() {
   local t missing=""
-  for t in ${S2_REQUIRED_TOOLS:-sfdisk blockdev e2fsck resize2fs dumpe2fs mke2fs sha256sum zstd tar dd awk sed mount umount sync}; do
+  for t in ${S2_REQUIRED_TOOLS:-sfdisk blockdev e2fsck resize2fs dumpe2fs mke2fs sha256sum zstd tar dd awk sed mount umount sync find grep date df mv rm rmdir mkdir cat tr}; do
     command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
   done
   [[ -z "$missing" ]] || s2_fail_early "the installer environment lacks:$missing"
@@ -178,14 +182,17 @@ s2_verify_payload() {
   ROOTFS_RAW_SIZE="$(kv_get "$PAYLOAD/payload.env" rootfs_raw_size)"
   ROOTFS_RAW_SHA="$(kv_get "$PAYLOAD/payload.env" rootfs_raw_sha256)"
   SEED_FILE="$(kv_get "$PAYLOAD/payload.env" data_seed_file)"
+  SEED_SHA="$(kv_get "$PAYLOAD/payload.env" data_seed_sha256)"
   MCU_FW_FILE="$(kv_get "$PAYLOAD/payload.env" mcu_firmware_file)"
   ROOT_MIB="$(kv_get "$PAYLOAD/payload.env" root_mib)"
   DATA_MIN_MIB="$(kv_get "$PAYLOAD/payload.env" data_min_mib)"
   local v
-  for v in ROOTFS_FILE ROOTFS_RAW_SIZE ROOTFS_RAW_SHA SEED_FILE MCU_FW_FILE ROOT_MIB DATA_MIN_MIB; do
+  for v in ROOTFS_FILE ROOTFS_RAW_SIZE ROOTFS_RAW_SHA SEED_FILE SEED_SHA MCU_FW_FILE ROOT_MIB DATA_MIN_MIB; do
     [[ -n "${!v}" ]] || s2_fail_early "payload.env lacks $v"
   done
   [[ "$ROOTFS_RAW_SHA" =~ ^[0-9a-f]{64}$ ]] || s2_fail_early "bad rootfs checksum in payload.env"
+  [[ "$SEED_SHA" =~ ^[0-9a-f]{64}$ ]] || s2_fail_early "bad data seed checksum in payload.env"
+  [[ "$SEED_FILE" =~ ^data-seed-[0-9A-Za-z.+_~-]+-(klipper|kalico)\.tar\.zst$ ]] || s2_fail_early "bad data seed file name in payload.env"
   ((ROOTFS_RAW_SIZE <= ROOT_MIB * 1024 * 1024)) || s2_fail_early "rootfs image ($ROOTFS_RAW_SIZE B) does not fit a $ROOT_MIB MiB slot"
 }
 
@@ -348,11 +355,10 @@ s2_make_data() {
   s2_status running 72 "data" "creating /data"
   mke2fs -F -q -t ext4 -L eitri-data -m 1 -E lazy_itable_init=1,lazy_journal_init=1 "$DATA_DEV" >>"$S2_LOG" 2>&1 || s2_fail_early_boot "mke2fs failed"
   mount "$DATA_DEV" "$M_DATA" || s2_fail_early_boot "cannot mount the new /data"
-  zstd -dc "$PAYLOAD/$SEED_FILE" | tar -x -C "$M_DATA" --numeric-owner -p || s2_fail_early_boot "unpacking the /data seed failed"
+  s2_install_seed
   mkdir -p "$M_DATA/eitri/state" "$M_DATA/eitri/migrate" "$M_DATA/eitri/mcu/firmware"
   # Where the pre-install backup lives, for revert.sh --full
   [[ -r "$M_STOCK/var/lib/eitri-install/backup.env" ]] && cp -f "$M_STOCK/var/lib/eitri-install/backup.env" "$M_DATA/eitri/state/backup.env"
-  printf '%s\n' "$(cfg flavor)" >"$M_DATA/eitri/flavor"
   # The release this /data belongs to: eitri-update compares it with the channel (also read by the configurator).
   printf '%s\n' "$(kv_get "$PAYLOAD/payload.env" version)" >"$M_DATA/eitri/release"
   # MCU firmware that matches this release, and the firmware backups taken from the stock boards (stage 1).
@@ -367,10 +373,27 @@ s2_make_data() {
   kv_write "$M_DATA/eitri/state/install.env" \
     "installed_at=$(_now)" "flavor=$(cfg flavor)" "stock_partuuid=$(cfg stock_partuuid)" "stock_part=$(cfg stock_part)" \
     "stock_uuid=$(cfg stock_fs_uuid)" "stock_soc=$(cfg stock_soc)" "bundle_version=$(kv_get "$PAYLOAD/payload.env" version)" \
+    "seed_version=$(kv_get "$M_DATA/eitri/state/seed-installed.env" SEED_VERSION)" "seed_sha256=$SEED_SHA" \
     "mcu_flash=$(cfg mcu_mode)" "backup_sha256=$(cfg backup_sha256)"
   sync
   umount "$M_DATA"
   kv_set "$M_BOOT/eitri/stage2.state" phase data_written
+}
+
+# The data seed: Klipper/Kalico, Moonraker, venvs, Klarity, extras and the layer config, ready to run, no network.  The tool
+# checks the archive digest first (the value comes from the signed install.json, via payload.env), applies the member policy
+# before extracting anything and places each component with one rename.  It also ships eitri/flavor; the flavor chosen at
+# stage 1 must agree with it.
+s2_install_seed() {
+  local tool="${S2_SEED_INSTALL:-/usr/libexec/eitri/eitri-seed-install}" flavor
+  flavor="$(cfg_req flavor)"
+  s2_status running 74 "data-seed" "installing the Klipper, Moonraker and Klarity environments (a few minutes)"
+  [[ -x "$tool" ]] || s2_fail_early_boot "eitri-seed-install is missing from the installer environment"
+  "$tool" --archive "$PAYLOAD/$SEED_FILE" --sha256 "$SEED_SHA" --flavor "$flavor" --data "$M_DATA" --mode install --owner 1000:1000 -q >>"$S2_LOG" 2>&1 ||
+    s2_fail_early_boot "installing the data seed failed (see $S2_LOG)"
+  [[ "$(tr -d ' \t\r\n' <"$M_DATA/eitri/flavor" 2>/dev/null)" == "$flavor" ]] || s2_fail_early_boot "the data seed is not a $flavor seed"
+  [[ -f "$M_DATA/eitri/state/seed-installed.env" ]] || s2_fail_early_boot "the data seed was not recorded as installed"
+  s2_log "data seed $(kv_get "$M_DATA/eitri/state/seed-installed.env" SEED_VERSION) installed"
 }
 
 # The OS image's RAUC configuration describes the flash-once disk: GPT, slots in partitions 2 and 3, its own

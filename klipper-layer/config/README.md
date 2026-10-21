@@ -5,6 +5,7 @@
 | `printer.cfg.tmpl` | X-Plus 4 `printer.cfg`, rendered once by `../scripts/render-config.py` |
 | `eitri-variables.toml` | default values for every `@@variable@@` in the template |
 | `macros.cfg` | all G-code macros, included as `[include eitri/macros.cfg]` |
+| `LICENSE`, `LICENSE-NOTE.md` | AGPL-3.0 text and which file is under which licence |
 | `flavors/klipper.cfg`, `flavors/kalico.cfg` | settings that exist on only one of the two hosts |
 
 `printer_data/config/eitri` is a symlink to this directory (created by
@@ -22,11 +23,15 @@ QIDI's Box/AMS sections and `T0`-`T15` tool changes, the dual-probe switching
 `gcode_macro_break` webhook hack and every option that only exists in QIDI's
 Klipper fork were left out.
 
-Licence note for review: the upstream `QIDI_PLUS4` repository carries an AGPL-3.0
-`LICENSE` file while its README badge says GPL-3.0 (recorded in `release.lock`).
-This directory contains only hardware constants plus text written for Eitri, but
-whoever publishes the repository should confirm that is enough before
-distributing it under Apache-2.0.
+## Licence
+
+`printer.cfg.tmpl`, `macros.cfg` and `eitri-variables.toml` adapt material from QIDI's
+public Plus 4 configuration, whose repository carries an AGPL-3.0 `LICENSE` file while its
+README badge says GPL-3.0 (recorded in `release.lock`). Eitri takes the stricter reading:
+those three files are `AGPL-3.0-or-later` and carry an attribution line to
+`QIDITECH/QIDI_PLUS4`; the two files in `flavors/` are `Apache-2.0`. The licence text is in
+`LICENSE` and the reasoning in `LICENSE-NOTE.md`. The `extras/` code that these
+configs load stays `GPL-3.0-or-later`.
 
 ## Differences from the stock configuration
 

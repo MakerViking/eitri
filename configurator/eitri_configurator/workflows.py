@@ -17,7 +17,7 @@ from . import options as opts
 from .context import Context
 from .jobs import Job
 from .moonraker import MoonrakerError
-from .state import atomic_write
+from .state import set_symlink, write_shared
 
 
 async def _pause(ctx: Context, seconds: float) -> None:
@@ -151,7 +151,7 @@ def _hostname(ctx: Context) -> str:
     if ctx.state.data["hostname"]:
         return ctx.state.data["hostname"]
     try:
-        return opts.validate_hostname((ctx.settings.eitri_dir / "hostname").read_text())
+        return opts.validate_hostname(ctx.settings.hostname_file.read_text())
     except (OSError, opts.ValidationError):
         return "eitri"
 
@@ -203,9 +203,19 @@ async def run_apply(ctx: Context, job: Job) -> dict[str, Any]:
     step("flavor", "Recording firmware flavor", "start")
     prev = ctx.settings.flavor_file.read_text().strip() if ctx.settings.flavor_file.is_file() else None
     options = opts.validate(st["options"])
-    atomic_write(ctx.settings.flavor_file, st["flavor"] + "\n")
-    atomic_write(ctx.settings.eitri_dir / "channel", options["channel"] + "\n")
-    atomic_write(ctx.settings.eitri_dir / "ui", options["ui"] + "\n")
+    for shared, value in ((ctx.settings.flavor_file, st["flavor"]), (ctx.settings.eitri_dir / "channel", options["channel"])):
+        try:
+            write_shared(shared, value + "\n")
+        except PermissionError:
+            # /data/eitri is root's and these files come from the data seed / eitri-data-init; without them there is no
+            # installed layer to switch anyway (a bench image built without a seed).
+            job.emit("log", level="warn", message=f"{shared} does not exist and cannot be created by the service user (the data seed provides it)")
+    ui_dir = ctx.settings.ui_dir
+    if ui_dir.is_symlink():
+        job.emit("log", level="warn", message="/data/eitri/ui is still the old single link; the next boot converts it, then the UI choice applies")
+    else:
+        ui_dir.mkdir(exist_ok=True)          # eitri-data-init makes it (the service user's); only a bench tree lacks it
+        set_symlink(ui_dir / "current", f"/usr/share/eitri/ui/{options['ui']}")
     if prev and prev != st["flavor"]:
         step("flavor", f"Switching host firmware to {opts.FLAVORS[st['flavor']]['name']}", "start")
         if not await _run_hook(ctx, job, ["/usr/libexec/eitri/switch-flavor", st["flavor"]], "switch-flavor"):
@@ -222,6 +232,11 @@ async def run_apply(ctx: Context, job: Job) -> dict[str, Any]:
         step("hostname", "Hostname set", "done")
 
     step("services", "Applying service choices", "start")
+    # The new printer.cfg / moonraker.conf only take effect on a restart, and on a freshly installed system
+    # these two were skipped at boot (their ConditionPathExists= files did not exist before this Apply).
+    # Klipper first: Moonraker connects to its socket. (apply_start refused to get here during a print.)
+    await ctx.services.act("restart", "klipper")
+    await ctx.services.act("restart", "moonraker")
     await ctx.services.act("restart" if options["klarity"] else "stop", "klarity")
     await ctx.services.act("restart" if options["camera"] else "stop", "eitri-camera")
     await ctx.services.act("restart" if options["go2rtc"] else "stop", "go2rtc")

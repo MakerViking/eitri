@@ -88,7 +88,7 @@ class Stage2Rig:
             "S2_LIB": os.path.join(INSTALLER, "lib"), "S2_ROOT": self.root, "S2_PART_FMT": self.disk + "p%s",
             "S2_NO_SYSMOUNT": "1", "S2_NO_NET": "1", "S2_NO_REBOOT": "1",
             "FAKE_LOG": self.log, "FAKE_TABLE": self.table, "FAKE_MOUNTS": self.mounts, "FAKE_PART_DIR": self.devdir,
-            "NO_COLOR": "1",
+            "NO_COLOR": "1", "S2_SEED_INSTALL": os.path.join(INSTALLER, "bin", "eitri-seed-install"),
         })
         env.update(extra)
         return env
@@ -141,7 +141,14 @@ def test_convert_success_end_to_end(rig):
         assert fh.read(len(rig.fixture.rootfs_raw)) == rig.fixture.rootfs_raw
     assert open(rig.disk + "p6", "rb").read(4 * 1024 * 1024) == b"\0" * (4 * 1024 * 1024)
     data = rig.p("/mnt/data")
-    assert open(data + "/eitri/VERSION").read().strip() == "2026.10.0"
+    # the data seed: every component in place, recorded, flavor shipped by the seed itself
+    assert open(data + "/firmware/klipper/klippy/klippy.py").read().startswith("# klipper 2026.10.0")
+    assert os.path.isfile(data + "/venv/moonraker/bin/python") and os.path.isfile(data + "/eitri/klarity/venv/bin/klarity")
+    assert os.path.isfile(data + "/eitri/extras/qd_dummy.py") and os.path.isfile(data + "/eitri/klipper-layer/config/printer.cfg.tmpl")
+    rec = dict(l.split("=", 1) for l in open(data + "/eitri/state/seed-installed.env").read().splitlines() if "=" in l and not l.startswith("#"))
+    assert rec["SEED_VERSION"] == "2026.10.0" and rec["SEED_FLAVOR"] == "klipper" and rec["SEED_MODE"] == "install"
+    assert rec["SEED_ARCHIVE_SHA256"] == rig.fixture.seeds["klipper"]["sha256"] and rec["SEED_KEPT"] == ""
+    assert not os.path.exists(data + "/.eitri-seed-staging") and not os.path.exists(data + "/.eitri-seed.lock")
     assert open(data + "/eitri/flavor").read().strip() == "klipper"
     assert open(data + "/eitri/release").read().strip() == "2026.10.0"
     assert open(data + "/eitri/migrate/stock-config/printer.cfg").read().startswith("[mcu]")
@@ -278,10 +285,10 @@ def test_bad_write_readback_never_switches_to_eitri(rig):
 
 def test_resume_after_an_interrupted_run_reuses_the_partitions(rig):
     # a run that fails (a payload file went missing) must leave the disk exactly as it was ...
-    os.rename(os.path.join(rig.payload, "data-seed.tar.zst"), os.path.join(rig.payload, "seed.moved"))
+    os.rename(os.path.join(rig.payload, "data-seed-2026.10.0-klipper.tar.zst"), os.path.join(rig.payload, "seed.moved"))
     r = rig.run(S2_FAIL_DELAY="0")
     assert r.returncode == 1                                                         # payload.sha256 no longer matches -> stops early
-    os.rename(os.path.join(rig.payload, "seed.moved"), os.path.join(rig.payload, "data-seed.tar.zst"))
+    os.rename(os.path.join(rig.payload, "seed.moved"), os.path.join(rig.payload, "data-seed-2026.10.0-klipper.tar.zst"))
     assert rig.run().returncode == 0
     n_before = len([c for c in rig.calls() if c == "sfdisk-apply"])
     # a second full run on the already converted table must not repartition or shrink again

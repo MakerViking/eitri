@@ -128,10 +128,27 @@ def test_data_init_builds_the_whole_layout(data_env):
         assert (data / rel).is_dir(), rel
     assert (data / "printer_data/moonraker.asvc").read_text() == "klipper\nmoonraker\n"
     assert (data / "printer_data/config/go2rtc.yaml").is_file()
-    assert (data / "eitri/ui").is_symlink()
+    assert (data / "eitri/ui").is_dir() and not (data / "eitri/ui").is_symlink()
+    assert os.readlink(data / "eitri/ui/current") == "/usr/share/eitri/ui/fluidd"        # nginx root is eitri/ui/current
+    assert (data / "eitri/channel").read_text() == "eitri\n" and not (data / "eitri/flavor").exists()   # flavor is the seed's
     assert (data / "eitri/state/layout-version").read_text().strip() == "1"
     assert (data / "eitri/state/first-boot").is_file()
     assert stat.S_IMODE((data / "eitri/home").stat().st_mode) == 0o750
+
+
+def test_data_init_converts_the_old_ui_link_and_keeps_existing_flavor_and_channel(data_env):
+    data = Path(data_env["EITRI_DATA"])
+    (data / "eitri").mkdir(parents=True)
+    Path(data_env["EITRI_CONFIGURATOR_SRC"]).mkdir()
+    os.symlink("/usr/share/eitri/ui/mainsail", data / "eitri/ui")            # layout of an older image
+    (data / "eitri/flavor").write_text("kalico\n")
+    (data / "eitri/channel").write_text("upstream\n")
+    result = run([LIBEXEC / "data-init"], env=data_env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert (data / "eitri/ui").is_dir() and os.readlink(data / "eitri/ui/current") == "/usr/share/eitri/ui/mainsail"
+    assert (data / "eitri/flavor").read_text() == "kalico\n" and (data / "eitri/channel").read_text() == "upstream\n"
+    again = run([LIBEXEC / "data-init"], env=data_env, capture_output=True, text=True)
+    assert again.returncode == 0 and os.readlink(data / "eitri/ui/current") == "/usr/share/eitri/ui/mainsail"
 
 
 def test_data_init_creates_the_configurator_venv_from_the_image_copy(data_env, tmp_path):
@@ -199,13 +216,26 @@ def stubs(tmp_path):
     calls = tmp_path / "calls"
     inactive = tmp_path / "inactive"
     inactive.write_text("")
-    (bin_dir / "systemctl").write_text(f'#!/bin/sh\nshift; ! grep -qx "$2" "{inactive}"\n')
+    # is-active --quiet UNIT: fails for the units listed in "inactive". show -p PROP --value UNIT: ActiveState
+    # follows the same file, Result comes from "results" (lines "unit=value", default success).
+    results = tmp_path / "results"
+    results.write_text("")
+    (bin_dir / "systemctl").write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = show ]; then\n'
+        '  case "$3" in\n'
+        f'  ActiveState) if grep -qx "$5" "{inactive}"; then echo inactive; else echo active; fi ;;\n'
+        f'  Result) sed -n "s/^$5=//p" "{results}" | head -n 1 | grep . || echo success ;;\n'
+        '  esac\n'
+        '  exit 0\n'
+        'fi\n'
+        f'shift; ! grep -qx "$2" "{inactive}"\n')
     (bin_dir / "mountpoint").write_text("#!/bin/sh\nexit 0\n")
     (bin_dir / "sleep").write_text("#!/bin/sh\nexit 0\n")
     (bin_dir / "rauc").write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\n')
     for f in bin_dir.iterdir():
         f.chmod(0o755)
-    return {"bin": bin_dir, "calls": calls, "inactive": inactive}
+    return {"bin": bin_dir, "calls": calls, "inactive": inactive, "results": results}
 
 
 def mark_good(stubs, cmdline_path, timeout="6", *args, update_bin=None):
@@ -269,3 +299,25 @@ def test_mark_good_check_gates_without_committing(stubs, cmdline, tmp_path):
 def test_mark_good_rejects_unknown_arguments(stubs, cmdline):
     result = mark_good(stubs, cmdline("eitri.disk=/dev/mmcblk1"), "6", "--force")
     assert result.returncode == 2 and not stubs["calls"].exists()
+
+
+def test_mark_good_accepts_a_configurator_that_retired_after_setup(stubs, cmdline, tmp_path):
+    # Decision 8: the configurator exits cleanly once setup is complete. That must not fail the health gate, or
+    # every boot after setup would count as bad and every update would roll back.
+    (tmp_path / "image-configurator").mkdir()
+    line = cmdline("eitri.disk=/dev/mmcblk1 rauc.slot=B")
+    env = {"EITRI_CONFIGURATOR_SRC": str(tmp_path / "image-configurator")}
+
+    def check():
+        full = {**os.environ, "PATH": f"{stubs['bin']}:{os.environ['PATH']}", "EITRI_CMDLINE": str(line), "EITRI_TIMEOUT": "6",
+                "EITRI_UPDATE_BIN": str(stubs["bin"] / "none"), **env}
+        return run([LIBEXEC / "mark-good", "--check"], env=full)
+
+    stubs["inactive"].write_text("eitri-configurator.service\n")
+    assert check().returncode == 0, "stopped after a clean exit is healthy"
+    stubs["results"].write_text("eitri-configurator.service=exit-code\n")
+    result = check()
+    assert result.returncode != 0 and "eitri-configurator.service is not active" in result.stderr, "a crash is not"
+    stubs["results"].write_text("eitri-configurator.service=success\n")
+    stubs["inactive"].write_text("eitri-configurator.service\nnginx.service\n")
+    assert check().returncode != 0, "every other unit must still be active"

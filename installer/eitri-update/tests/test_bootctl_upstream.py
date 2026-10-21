@@ -186,3 +186,20 @@ def test_boot_dir_is_found_where_the_os_image_mounts_it(tmp_path, monkeypatch):
     (fw / "boot.env").write_text("eitri_slot=B\n")
     monkeypatch.setattr(bootenv, "BOOT_DIRS", (str(tmp_path / "boot" / "firmware"), str(tmp_path / "boot")))
     assert bootenv.BootControl(cmdline_path="/nonexistent").get_primary() == "B"
+
+
+# ---- upstream mode must not downgrade the seed's environments ----------------------------------------------------------
+def test_upstream_mode_points_the_update_manager_at_the_seed_locks_when_they_exist(tmp_path):
+    paths = UpstreamPaths(str(tmp_path), str(tmp_path / "printer_data"))
+    os.makedirs(paths.seed_locks)
+    for name in ("klippy", "moonraker"):
+        open(os.path.join(paths.seed_locks, name + ".txt"), "w").write("# lock\n")
+    text = render_upstream_update_manager("klipper", paths)
+    assert "requirements: %s/klippy.txt" % paths.seed_locks in text and "requirements: %s/moonraker.txt" % paths.seed_locks in text
+    assert "scripts/klippy-requirements.txt" not in text and "scripts/moonraker-requirements.txt" not in text
+
+
+def test_without_seed_locks_no_pip_step_is_configured_at_all(tmp_path):
+    paths = UpstreamPaths(str(tmp_path), str(tmp_path / "printer_data"))
+    text = render_upstream_update_manager("kalico", paths)
+    assert "requirements" not in text and "virtualenv: %s" % paths.venv_klippy in text and "managed_services: klipper" in text

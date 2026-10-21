@@ -7,6 +7,8 @@
 # cause is gone: smoke.py warns when a listed unit did not fail.
 #
 # eitri-camera.service is not listed: with no camera its ConditionPathExists=/dev/eitri-cam skips it
-# (inactive/dead) and multi-user.target is no longer delayed (verified 2026-10-22).
-eitri-prepare.service     qemu  no boot slot: QEMU boots the kernel directly, so there is no eitri.slot=/rauc.slot= on the command line and eitri-update refuses (correct). The /data/eitri/logs bug is fixed (verified 2026-10-22).
+# (inactive/dead) and multi-user.target is not delayed. klipper, moonraker and klarity are not listed either: with the
+# data seed and the first-run setup they must be active (smoke.py checks it); klippy reports the missing MCU, which is
+# not a unit failure.
+eitri-prepare.service     qemu  no boot slot: QEMU boots the kernel directly, so there is no eitri.slot=/rauc.slot= on the command line and eitri-update refuses (correct).
 eitri-verify.service      qemu  same cause as eitri-prepare.service (no boot slot under QEMU)

@@ -16,29 +16,37 @@ WorkingDirectory=/data/eitri/configurator
 # The app layer ships the package under /data/eitri/configurator; its venv is created with uv.
 # Every write needs a browser paired with the printer (the code is on its screen, in the journal and in
 # /data/eitri/configurator/pairing.json), and the service locks when setup is finished: see README.md,
-# "Pairing and lock". Add --retire-when-locked to also exit at start-up while locked.
+# "Pairing and lock". Retiring is the default (--retire-when-locked): once setup is complete and the finishing
+# browser's grace period is over, the process exits cleanly (frees ~30 MiB; Restart=on-failure leaves it
+# stopped) and starts again as "eitri-configurator unlock" (Klarity's "Unlock setup") asks.
 ExecStart=/data/eitri/configurator/venv/bin/python -m eitri_configurator --host 0.0.0.0 --port 8099
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=2
 
+# Remote access (optional step) calls the narrow sudoers rule for /usr/libexec/eitri/eitri-access. sudo is a
+# setuid program, so this unit cannot set NoNewPrivileges=true (unlike klipper and moonraker, which never
+# need root). The rule allows that one helper and nothing else (os/.../sudoers.d/eitri), and every call needs
+# a browser paired with the printer.
+#
+# Measured on the QEMU image (os/qemu/smoke.py, systemd 258): systemd sets NoNewPrivs on the process anyway, even
+# with NoNewPrivileges=false, as soon as the unit uses any of the options that it implements with seccomp
+# (ProtectKernelTunables, ProtectKernelModules, RestrictNamespaces, LockPersonality, RestrictAddressFamilies,
+# MemoryDenyWriteExecute, SystemCallFilter): the service user has no CAP_SYS_ADMIN to install a filter without it.
+# sudo then refuses to run ("the no new privileges flag is set"). So this unit uses only the mount, device and
+# cgroup sandbox options, which leave NoNewPrivs at 0; the smoke test checks /proc/<pid>/status.
+NoNewPrivileges=false
+
 # Needs: write /data (config, state), start/stop the managed units (polkit rule for
 # the eitri user, see README), open the board UARTs, talk to Moonraker on loopback
 # and, for Wi-Fi onboarding, NetworkManager over D-Bus.
-NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=/data
 ProtectHome=true
 PrivateTmp=true
 DevicePolicy=closed
 DeviceAllow=char-ttyS rw
-ProtectKernelTunables=true
-ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
-RestrictNamespaces=true
-LockPersonality=true
-SystemCallFilter=@system-service
 UMask=0022
 
 [Install]

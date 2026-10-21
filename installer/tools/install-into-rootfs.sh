@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Put the on-device half of the installer family (eitri-update, eitri-bootctl, their systemd units and the
-# trusted release keys) into a root filesystem tree.  For the OS build (Buildroot post-build step or package)
-# and for CI; the eitri_mcuflash package itself comes from the eitri-mcuflash package.
+# Put the on-device half of the installer family (eitri-update, eitri-bootctl, eitri-seed-install, the configurator's
+# switch-flavor helper, their systemd units and the trusted release keys) into a root filesystem tree.  For the OS build
+# (Buildroot post-build step or package) and for CI; the eitri_mcuflash package itself comes from the eitri-mcuflash package.
 #
 #   install-into-rootfs.sh DESTDIR [SITE_PACKAGES_DIR]
 #
@@ -49,6 +49,15 @@ if __name__ == "__main__":
     sys.exit(main())
 PY
 chmod 0755 "$DEST/usr/bin/eitri-update" "$DEST/usr/libexec/eitri/eitri-bootctl"
+
+# The data seed installer (seed/bin/eitri-seed-install, the reference implementation of seed/SPEC.md "Installing a seed"):
+# eitri-update uses it to deliver a new seed with a release and to switch flavor; the OS lane's data-init may use it for a
+# first-boot unpack.  EITRI_SEED_INSTALL_SRC overrides where it is taken from (a CI checkout layout without seed/).
+SEED_TOOL_SRC="${EITRI_SEED_INSTALL_SRC:-$HERE/../seed/bin/eitri-seed-install}"
+[[ -f "$SEED_TOOL_SRC" ]] || { echo "error: eitri-seed-install not found at $SEED_TOOL_SRC (set EITRI_SEED_INSTALL_SRC)" >&2; exit 1; }
+install -m 0755 "$SEED_TOOL_SRC" "$DEST/usr/libexec/eitri/eitri-seed-install"
+# What the configurator runs when the wizard asks for the other flavor (it calls /usr/libexec/eitri/switch-flavor if present).
+install -m 0755 "$HERE/bin/eitri-switch-flavor" "$DEST/usr/libexec/eitri/switch-flavor"
 
 for unit in eitri-prepare.service eitri-verify.service eitri-update-check.service eitri-update-check.timer; do
   install -m 0644 "$HERE/eitri-update/systemd/$unit" "$DEST/usr/lib/systemd/system/$unit"

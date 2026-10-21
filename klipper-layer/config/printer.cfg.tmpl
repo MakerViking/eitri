@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The Eitri Authors
+# Adapted in part from the QIDI X-Plus 4 configuration in QIDITECH/QIDI_PLUS4
+# (https://github.com/QIDITECH/QIDI_PLUS4, tag Plus4_v1.7.1; Eitri treats that
+# repository as AGPL-3.0). See LICENSE-NOTE.md and README.md in this directory.
+#
 # Eitri printer.cfg for the QIDI X-Plus 4 (Klipper or Kalico, rendered from
 # config/printer.cfg.tmpl by scripts/render-config.py).
 #
@@ -428,13 +434,14 @@ hysteresis: 5
 heating_gain: 2
 
 # Second thermistor carried over from the stock config. The MCU shuts down if
-# it reads above max_temp. Its physical location is not confirmed (it may sit
-# at the heater element rather than in the chamber air), and the stock 140 C
-# limit is far above the 70 C chamber limit, so do NOT rely on it to catch a
-# primary chamber sensor that reads too low. That failure is caught only by
-# [verify_heater chamber] above. Once the sensor is known to measure chamber
-# air, lower chamber_backstop_max_temp (85-90 C is above the 70 C limit with
-# margin).
+# it reads above max_temp. The stock limit was 140 C; Eitri defaults to 85 C
+# (chamber_backstop_max_temp), safely above the 70 C chamber limit, so it is a
+# real backstop and no longer sits far above everything else. Its physical
+# location is not confirmed: if it measures the heater element rather than the
+# chamber air it can read much hotter than the air and trip during normal
+# heating. In that case raise chamber_backstop_max_temp (keep it above 70 C)
+# instead of removing the sensor. It does not replace [verify_heater chamber]
+# above, which is what catches a primary chamber sensor that reads too low.
 [temperature_sensor Chamber_Thermal_Protection_Sensor]
 sensor_type: NTC 100K MGB18-104F39050L32
 sensor_pin: U_1:PC2

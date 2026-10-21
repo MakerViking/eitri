@@ -1,0 +1,21 @@
+[Unit]
+Description=Apply the optional shell access chosen in the configurator
+Documentation=file:///usr/share/doc/eitri/os/README.md
+# Runs the privileged half of /usr/libexec/eitri/eitri-access with a normal view of /etc: the callers of
+# `sudo eitri-access` (configurator, Klarity) are sandboxed with a read-only /etc, which sudo's child inherits.
+# Started by eitri-access.path whenever the tool records a request, and once per boot before sshd, so the
+# password in /etc/shadow always follows the state kept under /data/eitri/state/access.
+After=eitri-data-init.service eitri-etc.service
+Wants=eitri-data-init.service
+Before=sshd.service
+RequiresMountsFor=/data
+ConditionPathExists=/data/eitri/state/access/generation
+# Requests can follow each other quickly; never let the rate limit swallow one.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/eitri/eitri-access apply
+
+[Install]
+WantedBy=multi-user.target

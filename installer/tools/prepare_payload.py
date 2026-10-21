@@ -10,7 +10,11 @@ transport; this tool does all JSON handling so the shell never parses JSON.
                DIR/install.env    key=value summary for install.sh
 
     prepare_payload.py finalize --install-json install.json --flavor klipper --dir PAYLOAD
-        writes PAYLOAD/payload.env + PAYLOAD/payload.sha256 after verifying every file
+        writes PAYLOAD/payload.env + PAYLOAD/payload.sha256 after verifying every file, including the
+        data seed (archive digest, its manifest, version, flavor, pinned firmware commit, size)
+
+    prepare_payload.py check-seed --install-json install.json --flavor klipper --dir PAYLOAD
+        only the data-seed checks of `finalize`; prints what it found as JSON
 """
 import argparse
 import hashlib
@@ -20,15 +24,22 @@ import re
 import sys
 from urllib.parse import urljoin
 
+# eitri_update.seed holds the one definition of what a data seed manifest must say (shared with eitri-update).
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path[:0] = [os.path.join(_HERE, "..", "eitri-update"), os.path.join(_HERE, "..", "mcuflash")]
+from eitri_mcuflash.errors import FlashError  # noqa: E402
+from eitri_update import seed as seedlib  # noqa: E402
+
 SHA = re.compile(r"^[0-9a-f]{64}$")
 FLAVORS = ("klipper", "kalico")
 # Canonical on-disk names, whatever the release calls its files.
 FILE_NAMES = {
     "rootfs": "rootfs.img.zst",
     "stage2_initramfs": "stage2-initramfs.cpio.gz",
-    "data_seed": "data-seed.tar.zst",
     "mcu_firmware": "mcu-firmware.tar.zst",
 }
+# The data seed (seed/SPEC.md) keeps its own file names: eitri-seed-install insists on data-seed-<version>-<flavor>.tar.zst.
+MIB = 1024 * 1024
 REQUIRED = ("rootfs", "stage2_initramfs", "data_seed", "mcu_firmware")
 
 
@@ -60,7 +71,22 @@ def _entry(doc, key, flavor):
         raise PayloadError("%s: size missing" % key)
     if not entry.get("url"):
         raise PayloadError("%s: url missing" % key)
+    if key == "data_seed":
+        seed_manifest = entry.get("manifest")
+        if not isinstance(seed_manifest, dict) or not seed_manifest.get("url"):
+            raise PayloadError("data_seed has no manifest entry for flavor %s (the seed's own manifest is verified before anything is changed)" % flavor)
+        if not SHA.match(str(seed_manifest.get("sha256", ""))) or not isinstance(seed_manifest.get("size"), int) or seed_manifest["size"] <= 0:
+            raise PayloadError("data_seed manifest: sha256 and size are required")
     return entry
+
+
+def seed_files(doc, flavor):
+    """[(canonical file name, entry)] for the data seed archive and its manifest."""
+    version = str(doc.get("version", ""))
+    if not seedlib.safe_version(version):
+        raise PayloadError("install.json: version %r cannot name a data seed file" % version)
+    entry = _entry(doc, "data_seed", flavor)
+    return [(seedlib.archive_name(version, flavor), entry), (seedlib.manifest_name(version, flavor), entry["manifest"])]
 
 
 def validate(doc, flavor):
@@ -85,6 +111,20 @@ def validate(doc, flavor):
         raise PayloadError("rootfs image does not fit its %d MiB slot" % layout["root_mib"])
     for key in REQUIRED:
         _entry(doc, key, flavor)
+    seed_files(doc, flavor)
+
+
+def downloads(doc, flavor):
+    """[(canonical file name, entry)] of everything stage 1 has to fetch, in download order (the small signed seed
+    manifest comes before the big archive so a mismatch is found early)."""
+    out = []
+    for key in REQUIRED:
+        if key == "data_seed":
+            archive, manifest = seed_files(doc, flavor)
+            out.extend([manifest, archive])
+        else:
+            out.append((FILE_NAMES[key], _entry(doc, key, flavor)))
+    return out
 
 
 def plan(doc, flavor, base_url, out_dir):
@@ -92,10 +132,9 @@ def plan(doc, flavor, base_url, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     total = 0
     lines = []
-    for key in REQUIRED:
-        e = _entry(doc, key, flavor)
+    for name, e in downloads(doc, flavor):
         url = urljoin(base_url, e["url"]) if base_url else e["url"]
-        lines.append("\t".join((FILE_NAMES[key], url, e["sha256"], str(e["size"]))))
+        lines.append("\t".join((name, url, e["sha256"], str(e["size"]))))
         total += e["size"]
     with open(os.path.join(out_dir, "downloads.tsv"), "w") as fh:
         fh.write("\n".join(lines) + "\n")
@@ -124,17 +163,46 @@ def sha256_file(path):
     return h.hexdigest()
 
 
+def check_staged_seed(doc, flavor, directory):
+    """The staged data seed is the one this (signed) install.json announced, for the flavor chosen, from this release,
+    carrying the firmware commit the release pins, built for the interpreter ABI install.json names (`target.python_abi`,
+    optional: the stock system cannot know the image's), and small enough for /data.
+    Returns what stage 2 and the summary need.  Nothing is trusted from the seed's own manifest that the signed
+    install.json does not confirm."""
+    archive, manifest = seed_files(doc, flavor)
+    arc_name, arc_entry = archive
+    man_name, man_entry = manifest
+    arc_path, man_path = os.path.join(directory, arc_name), os.path.join(directory, man_name)
+    try:
+        seedlib.check_archive_file(arc_path, arc_entry["sha256"], arc_entry["size"])
+        seedlib.check_archive_file(man_path, man_entry["sha256"], man_entry["size"])
+        info = seedlib.check_manifest(
+            seedlib.load_manifest(man_path), flavor=flavor, version=str(doc["version"]),
+            archive={"name": arc_name, "sha256": arc_entry["sha256"], "size": arc_entry["size"]},
+            release_flavor=doc["flavors"].get(flavor), expect_abi=doc.get("target", {}).get("python_abi") or None)
+        seedlib.check_archive_contents(arc_path, flavor, info)
+    except FlashError as exc:
+        raise PayloadError(exc.message) from exc
+    need = int(info["uncompressed_size"] * 1.1) + 64 * MIB
+    have = doc["layout"]["data_min_mib"] * MIB
+    if need > have:
+        raise PayloadError("the %s data seed unpacks to %d MiB and needs about %d MiB of room, but this release's /data is planned at "
+                           "%d MiB" % (flavor, info["uncompressed_size"] // MIB, need // MIB, have // MIB))
+    return {"version": info["version"], "archive_name": arc_name, "archive_sha256": arc_entry["sha256"], "manifest_name": man_name,
+            "uncompressed_size": info["uncompressed_size"], "commit": info["commit"], "describe": info["describe"]}
+
+
 def finalize(doc, flavor, directory):
     validate(doc, flavor)
     sums = []
-    for key in REQUIRED:
-        e = _entry(doc, key, flavor)
-        path = os.path.join(directory, FILE_NAMES[key])
+    for name, e in downloads(doc, flavor):
+        path = os.path.join(directory, name)
         if not os.path.isfile(path):
-            raise PayloadError("%s is missing" % FILE_NAMES[key])
+            raise PayloadError("%s is missing" % name)
         if os.path.getsize(path) != e["size"] or sha256_file(path) != e["sha256"]:
-            raise PayloadError("%s does not match install.json" % FILE_NAMES[key])
-        sums.append("%s  %s\n" % (e["sha256"], FILE_NAMES[key]))
+            raise PayloadError("%s does not match install.json" % name)
+        sums.append("%s  %s\n" % (e["sha256"], name))
+    seed = check_staged_seed(doc, flavor, directory)
     rootfs = _entry(doc, "rootfs", flavor)
     env = {
         "version": doc.get("version", ""),
@@ -142,7 +210,11 @@ def finalize(doc, flavor, directory):
         "rootfs_file": FILE_NAMES["rootfs"],
         "rootfs_raw_size": rootfs["raw_size"],
         "rootfs_raw_sha256": rootfs["raw_sha256"],
-        "data_seed_file": FILE_NAMES["data_seed"],
+        "data_seed_file": seed["archive_name"],
+        "data_seed_sha256": seed["archive_sha256"],
+        "data_seed_manifest_file": seed["manifest_name"],
+        "data_seed_version": seed["version"],
+        "data_seed_unpacked_bytes": seed["uncompressed_size"],
         "mcu_firmware_file": FILE_NAMES["mcu_firmware"],
         "root_mib": doc["layout"]["root_mib"],
         "data_min_mib": doc["layout"]["data_min_mib"],
@@ -158,6 +230,10 @@ def finalize(doc, flavor, directory):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("check-seed")
+    c.add_argument("--install-json", required=True)
+    c.add_argument("--flavor", required=True)
+    c.add_argument("--dir", required=True)
     p = sub.add_parser("plan")
     p.add_argument("--install-json", required=True)
     p.add_argument("--flavor", required=True)
@@ -172,6 +248,9 @@ def main(argv=None):
         doc = load(args.install_json)
         if args.cmd == "plan":
             plan(doc, args.flavor, args.base_url, args.out_dir)
+        elif args.cmd == "check-seed":
+            validate(doc, args.flavor)
+            print(json.dumps(check_staged_seed(doc, args.flavor, args.dir), sort_keys=True))
         else:
             finalize(doc, args.flavor, args.dir)
     except PayloadError as exc:

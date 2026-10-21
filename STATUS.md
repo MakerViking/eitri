@@ -1,303 +1,275 @@
 # Status
 
-Last integration pass: 2026-10-21 (overnight hardening run). Pre-alpha. **Nothing in this repository has run on a printer.** Every
-test below is a unit, simulation or static test; "needs hardware" lists what none of them can prove.
+Last integration pass: 2026-10-22 (data seed and Thomas's 13 decisions). Pre-alpha. **Nothing in this repository has run on a printer.**
+Every test below is a unit, simulation, emulation or static test; "Needs hardware" lists what none of them can prove.
 
-`make test` runs every suite below (about 5 minutes, most of it the real klippy). `make test-fast`
-skips the klippy integration tests (about 1 minute). `make lint` is the syntax gate.
+`make test` runs every suite below (about 8 minutes, most of it the real klippy). `make test-fast` skips the klippy
+integration tests. `make lint` is the syntax gate. `make seed` builds and verifies both data seeds (network, uv, zstd, the
+Buildroot cross toolchain). `os/qemu/smoke-test.sh` boots the real image under QEMU and runs the first-run setup (about 10 minutes).
 
-Legend: **done** = complete as far as it can be without hardware, **partial** = works but has a known
-gap, **stub** = deliberately refuses to run.
+Legend: **done** = complete as far as it can be without hardware, **partial** = works but has a known gap, **stub** =
+deliberately refuses to run.
+
+## Where it stands
+
+* The OS image (`make -C os image`, 2.14 GiB image, 119 MiB RAUC bundle) now ships with **a populated `/data`**: the klipper-flavor data seed is installed
+  into `data.ext4` at image build time. Nothing is downloaded or compiled on a first boot.
+* In QEMU the whole application layer runs for the first time: **Klipper (klippy), Moonraker, nginx, Klarity** are active, the
+  setup wizard drives the real services (pair, detect, apply, optional SSH key, finish, retire, unlock) and every one of its 75
+  checks passes, with the Klipper seed and with the Kalico seed. klippy loads the rendered `printer.cfg` and every `qd_*`
+  extra and then, correctly, cannot find an MCU.
+* What is still unproven is everything that needs a printer: see "Needs hardware" and "Next steps".
 
 ## Components
 
-Test counts are from the final `make test` of the hardening run (all suites passed, `make lint` clean).
-
-| Component | State | Tests (last run) | What is missing |
+| Component | State | Tests (last `make test`) | What is missing |
 |---|---|---|---|
-| Repository core (`README`, `docs/`, `release.lock`, licences, CI) | done | `tools/check-repo.py`: 744 checks pass; `tools/lint.py` clean | Python and nginx source digests are resolved from Buildroot at build time, not pinned in `release.lock`. Every pin is `tested = false`. Klipper is pinned to an untested master commit. CI actions are pinned to commit SHAs; the release key is still written to the runner during the Buildroot build (see Open). |
-| `os/` (Buildroot image, RAUC bundle, U-Boot, kernel, DTS) | partial | 117 passed, 4 skipped (U-Boot sandbox build not present); `check-pins` and `check-defconfig` (162 options) pass; the image built earlier; QEMU smoke test passed 15/15 before the hardening changes | Never booted on the board. No release signing CA or key is committed. The image was **not rebuilt** after the hardening changes, so the QEMU run must be repeated. |
-| `klarity/` (screen daemon) | partial | 207 passed (warnings are errors), ruff clean | Screen map is 66 pages / 511 widgets, **105 flagged `todo`**, none checked against a live panel. File browser, preview/print start, session state, thumbnails and forced page changes are not expressible. No camera page exists in the stock UI. Home e-stop widget is still `todo` (inert). |
-| `klipper-layer/` (qd_* extras, printer.cfg template, macros) | partial | 208 passed: unit tests, overlay install on throw-away clones of Klipper and Kalico, render tests, real klippy batch tests for both flavors | `qd_probe` and `qd_reverse_home` are **stubs** (they refuse to load). Macros, currents, probe, interlock and power-loss recovery are untested on a machine. |
-| `installer/` (in-place install, `eitri-mcuflash`, `eitri-update`, boot manager) | partial | mcuflash 72, eitri-update 118, installer suite 115 (includes a real U-Boot 2021.07 sandbox run of `boot.scr`) | Never run against a board. No release signing key, placeholder download URLs, no data-bundle or stage-2 initramfs builder (see "Not built by anyone"). |
-| `configurator/` (setup wizard, port 8099) | done | 92 passed, including the real `eitri-mcuflash` CLI against non-existent ports and the real klipper-layer renderer | Pairing, lock-after-setup, nmcli handling, polkit and the sandbox are untested on hardware. |
+| Repository core (`README`, `docs/`, `release.lock`, licences, CI, `tools/release`) | done | `tools/check-repo.py`: 1235 checks; release tooling 106 passed; `tools/lint.py` clean | Python and nginx source digests are resolved from Buildroot at build time, not pinned in `release.lock`. Every pin is `tested = false`. Klipper is pinned to an untested master commit. No release key is committed (the public halves do not exist yet). CI has never run on GitHub. |
+| `seed/` (data seed: build, verify, reference installer) | done (never on a printer) | 159 passed (spec, manifest, archive policy, installer on synthetic and real seeds, built-seed checks, workflow shape); `make seed` verifies both seeds under qemu-aarch64 | The CI workflow (`data-seed.yml`, also called by `os-image.yml` and `qemu-smoke.yml`) has not run on GitHub; the Ubuntu gcc and the pinned python-build-standalone headers path was only emulated locally. First-boot timing of an unpack on the A53 and the first slow `git status` are unmeasured. |
+| `os/` (Buildroot image, RAUC bundle, U-Boot, kernel, DTS, QEMU rig) | partial | 234 passed, 4 skipped (U-Boot sandbox); `check-pins` and `check-defconfig` (163 options) pass; QEMU smoke test 75/75 with the Klipper seed and 75/75 with the Kalico seed | Never booted on the board. No release signing CA or key is committed. U-Boot sandbox tests skip (no sandbox build here). |
+| `klarity/` (screen daemon) | partial | 242 passed (warnings are errors), ruff clean | Screen map is 66 pages / 511 widgets, **104 flagged `todo`**, none checked against a live panel. The **Unlock setup** button reuses stock Settings widget 9 (page 0x3e) and the text field `t7`: both are assumptions about the panel. File browser, preview/print start, session state, thumbnails and forced page changes are not expressible. No camera page exists in the stock UI. Home e-stop widget is still `todo` (inert). |
+| `klipper-layer/` (qd_* extras, printer.cfg template, macros) | partial | 259 passed: unit tests, overlay install on throw-away clones of Klipper and Kalico, render tests, licence tags, real klippy batch tests for both flavors | `qd_probe` and `qd_reverse_home` are **stubs** (they refuse to load). Macros, currents, probe, interlock, power-loss recovery and the new 85 °C chamber backstop are untested on a machine. |
+| `installer/` (in-place install, `eitri-mcuflash`, `eitri-update`, boot manager, seed/MCU delivery, flavor switch) | partial | mcuflash 72, eitri-update 223, installer suite 162 passed (includes a real U-Boot 2021.07 sandbox run of `boot.scr`) | Never run against a board. No release signing key, placeholder download URLs, no stage-2 initramfs builder, **no MCU firmware builder** (see "Not built by anyone yet"). |
+| `configurator/` (setup wizard, port 8099) | done | 167 passed, including the real `eitri-mcuflash` CLI against non-existent ports, the real klipper-layer renderer and the real `eitri-access` helper | Pairing, lock/retire, nmcli handling, polkit and the remote-access step are proven in QEMU, not on hardware. |
 | `camera/` (ustreamer, go2rtc, udev) | done | 125 passed, 0 failed, 4 skipped (hardware only), including real go2rtc 1.9.14 auth enforcement | ustreamer v6.67 flags unchecked against the real binary. The 23.7 fps cause is unknown. `/webcam/` has no authentication (RTSP does). |
+
+## The data seed (decision 3)
+
+Built by `seed/build-seed.sh` (CI: `.github/workflows/data-seed.yml`), one archive per flavor, specified in `seed/SPEC.md`.
+Reproducible: two builds from empty work directories give identical archives, also with uv 0.11.19 and the pinned 0.13.4.
+
+| | archive | unpacked | pinned firmware | sha256 (this build) |
+|---|---:|---:|---|---|
+| Klipper | 55.2 MiB (57,869,239 B) | 383.0 MiB | Klipper `a08fc79` (`v0.13.0-813`), Moonraker `v0.11.0` | `7f5c893ed2ff...` |
+| Kalico | 94.4 MiB (98,961,199 B) | 471.9 MiB | Kalico `v2026.10.00`, Moonraker `v0.11.0` | `b83ece442f31...` |
+
+Contents: shallow git clones at the exact `release.lock` commits (clean `git status`), uv venvs for CPython 3.14 / aarch64 built
+from hash-pinned locks (klippy, Moonraker, Klarity), a cross-compiled `c_helper.so` (klippy never calls gcc on the printer),
+the `qd_*` extras, the klipper-layer config set, `eitri/flavor` and the seed record. The flash-once `data.ext4` is 609 MiB with the Klipper seed. The in-place installer's stage 2 and `eitri-update` consume the same archive with `eitri-seed-install`.
 
 ## Measurements (QEMU virt, no printer)
 
-**Re-measured 2026-10-22 on the hardened code** (after fixing the stale local-package build, see below): boot 1 (blank /data) = 0.49 s kernel + 17.6 s userspace to `multi-user.target`; boot 2 = 0.49 s + **13.0 s** (was 29.9 s — the camera unit no longer blocks boot); idle ≈ **143 MiB** used of 982 MiB; 16/16 smoke checks pass. `eitri-prepare`/`eitri-verify` now fail only because QEMU boots without a bootloader (no `eitri.slot=`), which is correct behaviour; the `/data/eitri/logs` bug is fixed.
+Taken on the final image, one run, with the data seed installed and **Klipper (klippy) + Moonraker + Klarity + nginx
+running** and the configurator retired (second boot, after the setup). QEMU virt is 4 x Cortex-A53 under TCG (software emulation)
+with 1024 MiB on a 24-core x86 host: **times compare one run with the next, not with the printer; memory sizes do not depend on
+the CPU.** klippy has no MCU here (it only loaded its config and keeps retrying), so its numbers are a floor, not the printing figure.
 
-**Build-system fix (2026-10-22):** Buildroot only rsyncs `SITE_METHOD = local` packages (eitri-camera, eitri-configurator, eitri-klipper-layer, eitri-mcuflash) on their first build, so earlier images/QEMU runs shipped stale copies after code edits. `make -C os image` and `os/qemu/build.sh` now run `<pkg>-rebuild` for every local package first.
+| | first boot, before the setup (configurator running) | same boot, after the setup (configurator retired) | second boot (configurator retired) |
+|---|---:|---:|---:|
+| kernel | 0.49 s | 0.49 s | 0.49 s |
+| userspace to `multi-user.target` | 15.6 s | | 14.9 s |
+| last service active (since kernel start) | 14.1 s (sshd) | 73.6 s (klarity, started by Apply) | 12.8 s (klarity) |
+| memory used (total - available - the measuring tool) | 142 MiB | 211 MiB | **215 MiB** |
+| processes: RSS / PSS | 134,336 / 77,290 kB | 234,852 / 155,184 kB | 233,636 / 154,716 kB |
+| poweroff | 3.3 s | | 3.1 s |
 
-`os/qemu/smoke-test.sh` boots the real image (same Buildroot tree, overlay, packages and units; no TF-A or
-U-Boot) on a blank `/data`, powers off, boots again on the same `/data` and writes a report. QEMU virt is
-4 x Cortex-A53 under TCG (software emulation) with 1024 MiB: **times compare one run with the next, not with
-the printer; memory sizes do not depend on the CPU.** These numbers were taken **before** the hardening
-changes; repeat the run on the rebuilt image.
-
-| | first boot (blank /data) | second boot |
-|---|---|---|
-| kernel | 0.51 s | 0.49 s |
-| userspace to `multi-user.target` | 31.3 s | 29.7 s |
-| last non-camera service active (since kernel start) | 13.8 s (sshd) | 12.2 s (nginx) |
-| QEMU start to login prompt (wall clock) | 18.5 s | 16.9 s |
-| poweroff | 2.3 s | 2.1 s |
-
-`multi-user.target` came about 17 s after the real services were up because of the camera unit waiting 20 s for
-a device that does not exist; without it userspace is roughly 14 s. The camera unit is now skipped with
-`ConditionPathExists=/dev/eitri-cam` and waits 5 s at most, so this should be gone (unverified). First-boot
-critical path: `dev-vda.device` 5.3 s, `systemd-udev-trigger` 4.0 s, `eitri-data-init` 1.9 s (0.2 s on the second
-boot), `eitri-prepare` and `eitri-verify` 2.4 s and 1.8 s (spent on a traceback caused by the missing
-`/data/eitri/logs`, fixed).
-
-Idle RAM (`MemTotal` 982 MiB): `free -m` used 92 to 95 MiB, buff/cache 108 MiB, available 820 MiB; about
-140 MiB in use at idle (total minus available, minus the 19 MiB measuring tool); slab 20 MiB; zram swap 491 MiB
-unused. Per unit, RSS / PSS in kB:
+Per unit on the second boot, kB (RSS / PSS):
 
 | unit | RSS | PSS |
 |---|---:|---:|
-| eitri-configurator | 38,984 | 32,433 |
-| NetworkManager | 16,224 | 9,883 |
-| systemd (init) | 11,676 | 6,447 |
-| udevd | 10,296 | 5,181 |
-| polkit | 6,300 | 2,986 |
-| journald | 7,664 | 2,956 |
-| sshd | 7,148 | 2,897 |
-| wpa_supplicant | 5,536 | 2,626 |
-| nginx | 5,732 | 2,399 |
-| logind | 7,032 | 2,372 |
-| chrony | 4,892 | 2,071 |
-| dbus | 3,884 | 1,693 |
-| avahi | 4,724 | 1,260 |
-| **total** | **138,112** | **78,047** |
+| moonraker | 65,352 | 55,432 |
+| klipper (klippy) | 38,536 | 30,040 |
+| klarity | 34,276 | 25,406 |
+| NetworkManager | 16,396 | 9,707 |
+| systemd (init) | 11,744 | 6,552 |
+| udevd | 10,284 | 5,134 |
+| journald | 7,832 | 3,046 |
+| sshd | 7,172 | 2,529 |
+| logind | 7,164 | 2,419 |
+| polkit | 6,848 | 3,357 |
+| nginx | 5,692 | 2,344 |
+| wpa_supplicant | 5,484 | 2,545 |
+| chrony | 4,860 | 1,671 |
+| dbus | 3,780 | 1,708 |
+| avahi | 4,520 | 1,195 |
+| **total** | **233,636** | **154,716** |
 
-Klipper, Moonraker, Klarity and the camera streamer never ran (no data seed, no camera), so they have no
-numbers; the real budget is unknown until they do. The configurator is the largest idle process; the
-`--retire-when-locked` option (implemented, not enabled) would exit it after setup.
+Kalico instead of Klipper (its own run, 75/75): klippy 53.6 MB RSS / 44.7 MB PSS (Klipper 38.5 / 30.0), memory used 221 MiB (Klipper 215 MiB). The configurator was the largest process before the setup (33 MiB PSS); retiring it
+saves that much (the second-boot total would be roughly 33 MiB higher with it running). On the printer klippy and Moonraker will grow with a real MCU connection,
+a bed mesh and a file list, so the real budget is still unknown.
 
-First-boot `/data` layout is created correctly (`eitri/{extras,klarity,toolchain,configurator/venv,home,state}`,
-`printer_data/{config,logs,gcodes,database,comms}`, `venv/*`, `state/first-boot`, `layout-version=1`, the `ui`
-symlink, the `/etc` overlay). The configurator answers on 8099 and nginx on 80. `klipper`, `moonraker`, `klarity`
-show `inactive (dead)` with "start condition unmet" until the data seed exists: no error is logged, so the
-missing seed is invisible in `systemctl --failed`. `os/qemu/known-failures.txt` lists the units expected to
-fail in QEMU; its `eitri-prepare` and `eitri-verify` lines are stale if the rebuilt image passes.
+`multi-user.target` is reached about 15 s into userspace in both boots (the camera unit is skipped with no camera; the
+critical path is device probing, `eitri-data-init` and sshd). Details of the rig: `os/qemu/README.md`.
+
+## What the first-run setup checks in QEMU
+
+`os/qemu/smoke.py` (75 checks; the rootfs is the real image, `/data` is built from the seed by the same `mkdata.sh` as the
+printer image, only the kernel's platform options and the missing hardware differ):
+
+* the seed is on `/data` from the first boot, the Klipper clone has a clean `git status`, Klipper/Moonraker/Klarity wait quietly
+  for their configuration;
+* pairing from the code in `/data/eitri/configurator/pairing.json`, detect, **apply** (renders `printer.cfg`, `klarity.cfg`,
+  `moonraker.conf`, `eitri-access.conf`, links the extras, restarts Klipper/Moonraker/Klarity);
+* Klipper, Moonraker, Klarity active with no restarts; Moonraker answers on `127.0.0.1:7125` and through nginx on 80, and not on
+  the guest's address; klippy loaded the config with all its `qd_*` extras and reports only the missing MCU; Klarity has the
+  Unlock-setup feature and a valid map and waits for `/dev/ttyS1` with a back-off instead of crash-looping;
+* the optional **root-access step**: add an SSH key through `sudo -n eitri-access`, log in over SSH with it from the host, remove it,
+  login refused;
+* finish: the configurator locks and **retires** by itself; Klarity's sandbox (a transient unit with `klarity.service`'s own mount,
+  device and cgroup options) runs `sudo -n /usr/bin/eitri-configurator unlock` under the image's sudoers rule and the wizard
+  comes back with a new code; lock again, retire again; on the next boot it stays retired.
+
+## What the integration pass found and fixed
+
+None of these was visible in a unit test; each came from running the real services together.
+
+* **sudo was blocked in the configurator and Klarity units.** systemd sets `NoNewPrivs` on a service that uses any
+  seccomp-based sandbox option (`SystemCallFilter`, `ProtectKernelTunables`, `RestrictNamespaces`, `LockPersonality`,
+  `RestrictAddressFamilies`, `MemoryDenyWriteExecute`, ...) when the service user cannot install a filter itself, even with
+  `NoNewPrivileges=false`. `sudo -n eitri-access` and Klarity's `sudo -n eitri-configurator unlock` would have failed on the
+  printer. Both units now use only mount, device and cgroup sandboxing; tests forbid the seccomp options in them.
+* **Apply failed on a root-owned `/data/eitri`** (the OS lane keeps it root's for sshd's StrictModes and the root helpers): the
+  configurator could not create `flavor`/`channel`/`ui`/`hostname`. `flavor`/`channel` are now service-user files rewritten in
+  place (and kept by `eitri-update`), the hostname memo lives in `eitri/configurator`, and the web UI choice is the symlink
+  `eitri/ui/current` (which also fixes a latent bug: the old code replaced the `ui` symlink with a text file, which would have
+  broken nginx). `data-init` converts the old layout.
+* **Apply did not start Klipper and Moonraker** on a fresh install (they are skipped at boot until their configuration exists);
+  Calibrate would have found Moonraker down. Apply now restarts Klipper, then Moonraker.
+* **`eitri-access` reset its own request counter to 0** while waiting (it truncated the file before reading it), and its sshd reload
+  deadlocked against its own `Before=sshd.service` ordering until a 30 s timeout. Both fixed (`reload --no-block`).
+* **The seed shipped a stale Klarity**: uv's cache reused an older wheel with the same name and version (fixed build time stamps),
+  so the seeded Klarity had no Unlock-setup feature. The build now refreshes locally built wheels, and a test compares the seed's
+  Klarity and extras with the repository byte for byte.
+* **CI did not build a seed for the image.** `os-image.yml` and `qemu-smoke.yml` now call `data-seed.yml` (klipper flavor, nothing
+  attached to a release) and put the seed into the image / the QEMU `/data` disk; `release.yml` takes the release seeds from the
+  data-seed run only.
+* The shared interface said the pairing file is `/run/eitri/configurator/pairing.json`. The real path, used by the configurator and
+  Klarity, is `/data/eitri/configurator/pairing.json`.
+* Removed the duplicate `configurator/bin/eitri-configurator` (the OS overlay's `/usr/bin/eitri-configurator` is the only one).
+
+## What each decision changed (Thomas, 2026-10-22)
+
+| # | Decision | Done in |
+|---|---|---|
+| 1 | DOS in-place is the user default; the GPT image is for bench/microSD/CI | `installer/` docs, `install.sh --help`, `docs/BOOT.md`; QEMU/CI use the GPT layout |
+| 2 | Extras and layer config live on `/data`, follow Klipper/Kalico | package `eitri-klipper-layer` and `/usr/lib/eitri/klipper-layer` removed; seed ships `eitri/extras` + `eitri/klipper-layer`; `overlay-install.sh` links to `/data/eitri/extras`; docs updated |
+| 3 | Seed built by CI per release, first boot offline | `seed/` (this pass's biggest piece); `mkdata.sh` populates `data.ext4`; stage 2 and `eitri-update` consume it; `eitri-seed.service` is the first-boot fallback |
+| 4 | Root access is an optional configurator step, off by default | `eitri-access` helper + sudoers + `eitri-access.path`; configurator "Remote access" step; proven in QEMU incl. a real SSH login |
+| 5 | Release keys offline; CI signs only via the protected `release` environment | `release.yml`, `tools/release/`, `docs/RELEASING.md`, deferred signing in `post-bundle.sh` (no keys committed yet) |
+| 6 | Web login asked in setup, default "Trust my home network"; RTSP password on a separate page | configurator option + `camera.html` |
+| 7 | nginx IPv6 listener removed | `nginx.conf` listens on `0.0.0.0:80` only |
+| 8 | Configurator exits after setup; Klarity "Unlock setup" | `--retire-when-locked` default; `eitri-configurator unlock` wrapper; Klarity `unlock: setup` action (stock widget 9 on page 0x3e); proven end to end in QEMU except the panel tap |
+| 9 | Moonraker loopback only, slicers use :80 | Moonraker binds 127.0.0.1; proven in QEMU (not reachable on the guest address) |
+| 10 | shell PARAMS denied by default; motors stay energised in a long pause; PLR uses live Z when homed; chamber backstop 85 °C | `gcode_shell_command` + `qd_shell_guard` (Kalico), idle/pause macros, `qd_plr`, `eitri-variables.toml`; real-klippy tests for both flavors |
+| 11 | Klarity print-control widget without a guard stays a load error | unchanged, tests keep it |
+| 12 | `QIDI_PLUS4` treated as AGPL-3.0 | SPDX `AGPL-3.0-or-later` on `klipper-layer/config/{printer.cfg.tmpl,macros.cfg,eitri-variables.toml}`, `config/LICENSE`, `LICENSE-NOTE.md`, README/NOTICE |
+| 13 | Keep `.py` source in the image | unchanged (the seed's venvs also keep `.py` next to the byte-code) |
 
 ## Legal-info and SBOM
 
-`make -C os legal-info` now completes (it failed on `eitri-camera`, `eitri-configurator` and `eitri-mcuflash`
-before; fixed in this pass by copying the repository `LICENSE` into each build directory). 107 target
-packages (95 host build tools are not distributed): 44 strong copyleft, 15 weak copyleft (LGPL, MPL), 48
-permissive, 1 proprietary-but-redistributable (`linux-firmware`, Realtek rtlwifi blobs, unmodified redistribution
-allowed with the notice). The source set is 1.29 GB; without the 557 MiB `linux-firmware` tarball it is about
-709 MB and fits a GitHub release asset. `os/legal/make-sbom.py` writes CycloneDX 1.5 and SPDX 2.3 (110
-components with Klipper, Kalico, Moonraker; 12 are `NOASSERTION` where Buildroot gives prose licences).
-`os/legal/package-legal.sh` and `.github/workflows/legal.yml` pack sources, licences, the SBOMs and a
-`git archive` of the tag; **neither has run end to end** (the 1.3 GB packing and the CI run were not done).
-Rockchip `rkbin` is not in the default image. Details and open findings: `os/legal/README.md`.
+`make -C os legal-info` completes. 107 target packages (95 host build tools are not distributed): 44 strong copyleft, 15 weak
+copyleft (LGPL, MPL), 48 permissive, 1 proprietary-but-redistributable (`linux-firmware`, Realtek rtlwifi blobs, unmodified
+redistribution allowed with the notice). The source set is 1.29 GB; without the 557 MiB `linux-firmware` tarball it is about 709 MB
+and fits a GitHub release asset. `os/legal/make-sbom.py` writes CycloneDX 1.5 and SPDX 2.3. `os/legal/package-legal.sh` and
+`.github/workflows/legal.yml` pack sources, licences, the SBOMs and a `git archive` of the tag; **neither has run end to end**. The
+SBOM was not regenerated for the data seed (Python wheels, Klipper, Kalico, Moonraker clones): the seed manifest lists every package
+with versions and hashes (`venvs.*.packages`), but no licence report exists for the wheels yet. Details: `os/legal/README.md`.
 
-## Earlier integration changes (before the hardening run)
+## Earlier work (kept for context)
 
-* **printer.cfg now comes from the klipper-layer.** The configurator had its own fallback templates, which
-  put the mainboard in `[mcu]` and the toolhead in `[mcu U_1]`: the reverse of the layer, and of the
-  reference unit's config. They are gone. The configurator renders `klipper-layer/config/printer.cfg.tmpl`
-  with the layer's own renderer, fills the MCU ports from detection, runs `overlay-install.sh` after writing,
-  and seeds `moonraker.conf` and `eitri-update-manager.conf` once. Per-printer overrides go in
-  `printer_data/config/eitri-vars.toml`.
-* Options the layer cannot honour (probe type, filament sensor, adaptive mesh) were removed from the
-  wizard instead of being shown and ignored. Power-loss recovery and the ADXL345 are template switches
-  (`plr_enabled`, `adxl_enabled`) and are verified to load in real klippy with both off.
-* **OS image ships the layer and the installer's on-device half.** New package `eitri-klipper-layer`
-  (installs `/usr/lib/eitri/klipper-layer`); `post-build.sh` runs `installer/tools/install-into-rootfs.sh`
-  (eitri-update, eitri-bootctl, units, keys). Without this the configurator could not find its templates
-  and the update tooling never reached the image.
-* **Config path clash fixed.** `eitri-update` wrote its Moonraker include to
-  `printer_data/config/eitri/update_manager.conf`, but `config/eitri` is a symlink to the read-only layer.
-  It is now `printer_data/config/eitri-update-manager.conf`.
-* **Klarity** gained what the extracted screen map needs: the stock `71 page widget lo hi` frame, per-widget
-  `on_number` actions with `clamp`/`scale`/`zero_ok`, `bind.offset`, `derived.speed_mms`, and a link-state
-  file for the configurator. Default panel port is `/dev/ttyS1` at 115200 (what the stock software opens;
-  unconfirmed on mainline) and text is UTF-8 (the stock software sends UTF-8, so the panel fonts are).
-  The stock cancel button only opens the confirmation page; a test enforces that every live print-control
-  action has a state guard.
-* Unit files: Klarity and the configurator units now wait for their venvs and for `eitri-data-init`.
-* Removed a real printer address from an installer test shim. `release.lock` lists the new components.
-* New: `Makefile`, `tools/lint.py`, `tools/check-repo.py`, `.github/workflows/ci.yml` (the earlier integration pass).
-
-## What the hardening run changed
-
-Audit findings fixed overnight, by severity. Everything is covered by tests; none of it has met hardware.
-
-**High**
-* **Slot committed too early (os, installer).** `eitri-update` (`eitri-verify.service`) is now the only
-  committer; the OS health checks run as its `ExecStartPre` (`mark-good --check`). A slot is marked good only after
-  `eitri-prepare` finished and Klipper, Moonraker and the MCUs passed health, so the 3-boot countdown is no longer refilled
-  by an early commit. The GPT flash-once layout works too (BootControl delegates to `rauc-bootloader`; an
-  unconfirmed or never-written slot is never a rollback target).
-* **`eitri-prepare` and `eitri-verify` died on a fresh `/data`** (missing `/data/eitri/logs`): data-init creates it,
-  the units wait for data-init, and the event log survives an unwritable file.
-* **Camera gateway open to the LAN (camera).** RTSP now needs a per-install random password, WebRTC is off, and
-  `go2rtc.service` refuses to start with a non-loopback listener that lacks credentials.
-* **Unauthenticated configurator that could change the printer (configurator).** Every state-changing call needs a
-  paired session (8-digit one-time code, rotated after use, CSRF and strict Origin checks); pairing closes when
-  setup completes and re-opens only with `eitri-configurator unlock`. Apply and service restarts are refused while
-  printing.
-* **Moonraker exposed with wildcard CORS and `trusted_clients` (configurator, os).** Moonraker binds `127.0.0.1`;
-  nginx is the only way in, with a LAN allow-list, a 1 MB body limit (1 GB only on file uploads).
-* **Blanket passwordless root (os).** `sudo` is passwordless only for `eitri-update` and `eitri-bootctl`; sshd is keys
-  only; klipper and moonraker run with `NoNewPrivileges`.
-* **Bricking paths in the installer.** `revert --full` buffers and verifies before it writes the MBR last; `revert --hard`
-  proves both boards can be restored before touching either; a blocked or incomplete MCU plan no longer counts as
-  "already flashed"; an interrupted conversion re-enters stage 2 (start counter) instead of falling to a half-converted
-  disk; the backup is re-validated right before the point of no return; the toolhead erase/write round trip needs
-  named consent (`--accept-mcu-roundtrip`).
-* **Release supply chain.** GitHub Actions pinned to commit SHAs, tag builds start with empty caches, the draft release
-  race is fixed. Updates: mandatory manifest `expires`, revocation list, sequence floor, default trust root only
-  `/usr/share/eitri/keys`, hostile toolchain tarballs rejected before extraction.
-* **Machine safety (klipper-layer).** `G28 X`/`Y` no longer leaves a faked homed Z; resume after the 30 min idle timeout
-  stays possible and refuses (before heating) when not homed; power-loss resume rebuilds an adaptive mesh that never
-  existed as a saved profile and no longer overwrites a measured Z; the saved Z offset is tied to the probe
-  calibration; `M290` is bounded; the chamber interlock parks and restores its own target.
-
-**Medium / low**
-* Klarity: each loop runs under a restarting supervisor; print-cancel, pause, resume and start must carry a state guard
-  (load error otherwise), e-stop needs `unguarded: true`; repeated taps and gcode runs are limited; a pending `get` can
-  no longer swallow a keypad frame; format strings are validated at load; chamber presets use 45 instead of 40.
-* Configurator: Wi-Fi passphrase no longer on the command line; ports validated with full matches; backups are atomic
-  and fsynced; **all fire imagery and wording removed** (new tempered-steel palette, hammer and nozzle icons,
-  `test_ui_wording.py` enforces it, also the installer's stage-2 page).
-* Services: `MemoryHigh` (never `MemoryMax`) on moonraker, camera, go2rtc and the configurator; Klipper is unlimited
-  with `OOMScoreAdjust=-500`; `/data` mounts `noatime,errors=remount-ro`; pip and setuptools are gone from the image
-  and so are jinja2 and the configurator's template override.
-* Camera unit no longer blocks boot for 20 s or loops without a camera; fallback cameras start on hotplug.
-* Simplify pass: one atomic-write and one hashing helper for the installer, no dead code (about -490 lines).
-* `make legal-info` fixed (above); licence tooling, SBOM and a legal workflow added.
-
-**Not changed**: heater runaway protection (`verify_heater`) is untouched and live in every configuration; a
-pre-triggered probe is still an error; the MCU flasher still never erases a bootloader and refuses without proven
-recovery; installer writes are still dry-run by default. No Qidi binary or asset entered the repository.
+* **Before the hardening run:** `printer.cfg` comes from the klipper-layer (the configurator renders `printer.cfg.tmpl` with the
+  layer's renderer and seeds `moonraker.conf`); options the layer cannot honour were removed from the wizard; the config path clash
+  for `eitri-update-manager.conf` was fixed; Klarity gained the stock frame/`on_number` actions; `Makefile`, `tools/lint.py`,
+  `tools/check-repo.py` and CI were added.
+* **The hardening run (2026-10-21)** fixed, among others: slot commit only after health (`eitri-update` is the only committer), the
+  fresh-`/data` boot failures, the open camera gateway (RTSP password, no WebRTC), the unauthenticated configurator (pairing code,
+  CSRF, lock), Moonraker's wildcard CORS (loopback + nginx), blanket passwordless root, the bricking paths in the installer
+  (`revert`, MCU round trip consent), the release supply chain (SHA-pinned actions, expiring manifests, revocation, sequence
+  floor), and machine safety in the klipper-layer (`G28 X/Y`, resume after the idle timeout, PLR mesh, chamber interlock). It also
+  removed all fire imagery and wording. `verify_heater` is untouched and live in every configuration; a pre-triggered probe is
+  still an error; the MCU flasher still never erases a bootloader; installer writes are dry-run by default. No Qidi binary or asset
+  entered the repository.
+* Build-system fix: local Buildroot packages are rebuilt (`<pkg>-rebuild`) by `make -C os image` and `os/qemu/build.sh`.
 
 ## Needs hardware (none of this is proven)
 
-* **Boot chain:** open TPL DRAM init on this board (fallback: Rockchip DDR blob), BootROM order between
-  microSD and eMMC, mmcblk numbering, A/B state sector, TF-A v2.15 BL31, Ethernet (gmac2phy), USB VBUS pin
-  for the camera, regulators.
-* **Which UART is which:** the layer, the installer and the reference config say ttyS2 = toolhead and
-  ttyS0 = mainboard, the original brief said the opposite. Everything probes (`eitri-mcuflash plan`); confirm.
-  Also each board's bootloader (Katapult at 250000? SD-card bootloader on the mainboard?) and chip IDs.
-* **Screen:** that the panel is on `/dev/ttyS1` at 115200 under mainline, press vs release edge, string
-  escaping, whether marker bytes carry terminators, the map against the live panel, 0x71 handling.
-* **Klipper machine:** sensorless XY homing currents and thresholds, the 7 mm lift then probe-down Z homing,
-  the PA10 probe identity and polarity (`probe_z_offset` ships as 0 and PRINT_START refuses to run until it
-  is calibrated), the bed/chamber interlock against the real PSU, chamber PID, power-loss resume, the 0.1 s
-  multi-MCU homing timeout.
-* **Updates:** RAUC A/B with rollback, boot counting, `eitri-verify`, MCU rollback, in-place conversion
-  (U-Boot `boot.scr` order, `fatwrite`, stage 2 on the stock 5.16 kernel, resize time).
-* **Camera:** 1080p fps and whether auto-exposure throttles it, `--encoder=HW` passthrough, udev
-  hot-plug, OBS over RTSP/MJPEG, hardware H.264 (expected absent).
+* **Boot chain:** open TPL DRAM init on this board (fallback: Rockchip DDR blob), BootROM order between microSD and eMMC, mmcblk
+  numbering, A/B state sector, TF-A v2.15 BL31, Ethernet (gmac2phy), USB VBUS pin for the camera, regulators.
+* **Which UART is which:** the layer, the installer and the reference config say ttyS2 = toolhead and ttyS0 = mainboard, the original
+  brief said the opposite. Everything probes (`eitri-mcuflash plan`); confirm. Also each board's bootloader (Katapult at 250000?
+  SD-card bootloader on the mainboard?) and chip IDs.
+* **Screen:** that the panel is on `/dev/ttyS1` at 115200 under mainline, press vs release edge, string escaping, whether marker bytes
+  carry terminators, the map against the live panel, 0x71 handling, and that **widget 9 on page 0x3e is a button that reports taps
+  and that `t7` is wide enough for "Code 1234-5678 at 192.168.0.5:8099"**.
+* **Klipper machine:** sensorless XY homing currents and thresholds, the 7 mm lift then probe-down Z homing, the PA10 probe identity
+  and polarity (`probe_z_offset` ships as 0 and PRINT_START refuses to run until it is calibrated), the bed/chamber interlock against
+  the real PSU, chamber PID, the 85 °C backstop against where the sensor really sits, power-loss resume with live Z, pause with
+  energised motors past the idle timeout, the 0.1 s multi-MCU homing timeout. klippy on the A53 with a real MCU link: memory, CPU,
+  first-start time of the seeded venv (byte-code is pre-compiled), the first slow `git status` (stat-free index).
+* **Updates:** RAUC A/B with rollback, boot counting, `eitri-verify`, MCU rollback, in-place conversion (U-Boot `boot.scr` order,
+  `fatwrite`, stage 2 on the stock 5.16 kernel, resize time, the seed unpack on stage 2), seed update and flavor switch with real MCU flashing.
+* **Camera:** 1080p fps and whether auto-exposure throttles it, `--encoder=HW` passthrough, udev hot-plug, OBS over RTSP/MJPEG,
+  hardware H.264 (expected absent).
 * **Network:** rtl8xxxu throughput and AP mode, NetworkManager hotspot, mDNS name.
+* **Sandboxes:** `MemoryHigh` values against real RSS; Moonraker's `machine`/`update_manager` components under `NoNewPrivileges`.
 
 ## Known quirks and open issues
 
-* A Klipper clone with the overlay reports a version ending in `-dirty` (klippy marks any untracked or ignored
-  file under `klippy/extras/`). `git status` and Moonraker stay clean. Compare commits, not version strings.
-* **Release signing is not whole yet.** The bundle is signed inside `make -C os image`, so the RAUC key is on the runner
-  during the Buildroot package builds (narrowed to the Build step, removed right after). A deferred-signing mode in
-  `os/board/eitri-plus4/post-bundle.sh` plus a separate signing job under a protected GitHub Environment is needed;
-  `installer/keys/eitri-release.pub` does not exist, so the updater cannot verify anything yet.
-* The flash-once U-Boot environment still counts down into the never-written `rootfs-b`; `eitri-update` ignores unconfirmed
-  slots, but U-Boot itself does not (initialise B as bad in `os/board/eitri-plus4/uboot.env`).
-* Already-flashed devices keep their seeded `go2rtc.yaml`; `eitri-go2rtc-auth check` makes go2rtc refuse to start with
-  the old open one (migration is unwritten).
-* `EITRI_DEV_PASSWORD_HASH` has no effect (Buildroot creates the `eitri` user after `post-build.sh`); it only affects
-  bench images and belongs in a post-fakeroot hook. The image has no root shell for users until the password decision
-  below is made.
-* nginx's LAN allow-list covers IPv4 only; IPv6 is open (see decisions).
-* `NoNewPrivileges` and the `MemoryHigh` values are unmeasured; Moonraker's machine and update components may need them
-  relaxed on the first bench boot.
-* The image carries no licence texts or `SOURCE-OFFER` (`os/legal/README.md`, finding 2); `uboot` is named `custom` in the
-  manifest.
-* `RESUME` after a pause with released motors refuses and asks for `G28`, which probes at the bed centre (possibly onto the
-  part). A part-safe recovery needs a design.
-* `shellcheck` and `actionlint` are not installed here and were not run after the last shell edits.
-* Licences to confirm before publishing: `QIDITECH/QIDI_PLUS4` is AGPL-3.0 by its LICENSE file but GPL-3.0 by its README;
-  `klipper-layer/config/` carries no SPDX tag; the CRC16/VLQ code in `eitri_mcuflash/klipper_proto.py` is
-  protocol-dictated but close to Klipper's GPL `msgproto.py`.
+* A Klipper clone with the overlay reports a version ending in `-dirty` (klippy marks any untracked file under `klippy/extras/`; it
+  shows in Moonraker too: `v0.13.0-813-ga08fc79fc-dirty`). `git status` stays clean. Compare commits, not version strings.
+* **Release signing is not whole yet.** `release.yml` + `tools/release` exist (deferred signing under a protected `release`
+  environment), but `installer/keys/*.pub` and `os/board/eitri-plus4/rauc/keyring.crt` are not committed, so a tag build refuses to run
+  and the updater cannot verify anything. Nothing has run on GitHub.
+* The flash-once U-Boot environment still counts down into the never-written `rootfs-b`; `eitri-update` ignores unconfirmed slots,
+  but U-Boot itself does not (initialise B as bad in `os/board/eitri-plus4/uboot.env`).
+* Already-flashed devices keep their seeded `go2rtc.yaml`; `eitri-go2rtc-auth check` makes go2rtc refuse to start with the old open
+  one (migration is unwritten).
+* `EITRI_DEV_PASSWORD_HASH` has no effect (Buildroot creates the `eitri` user after `post-build.sh`); the QEMU image sets the bench
+  passwords in `os/qemu/post-fakeroot.sh`. The printer image has no password at all: the first way in is the optional remote-access
+  step, or the touchscreen/web UI.
+* The seccomp-based systemd sandboxing is not available to the configurator and Klarity units (above): a flaw in either runs with
+  the user's file access and the narrow sudo rules, without a syscall filter. Klipper and Moonraker keep `NoNewPrivileges`.
+* The image carries no licence texts or `SOURCE-OFFER` (`os/legal/README.md`, finding 2); `uboot` is named `custom` in the manifest.
+* `RESUME` after a pause with released motors refuses and asks for `G28`, which probes at the bed centre (possibly onto the part). With
+  decision 10 the motors stay energised in a long pause, so this should now only apply after a manual motor release or a Klipper restart (not re-tested).
+* `/data/eitri/updates/os-*.raucb` is not deleted after a committed update.
+* `shellcheck` and `actionlint` are not installed here and were not run on the shell scripts and workflows (`sh -n`/`bash -n` and a
+  YAML parse only).
 * **Clean-room review pending:** `klarity/src/klarity/maps/default.yaml` was derived from analysis of the stock host and is
-  interoperability data (ids, component names, what a tap does). `docs/CLEAN-ROOM.md` requires a second-person review
-  of such a specification before it is published.
-* One klipper-layer batch test (`test_config_loads_and_homes[kalico-chamber]`) failed once in an early full run and not in
-  three later ones; the cause was not found. Watch for it.
-
-## Decisions (made by Thomas, 2026-10-22)
-
-1. **Boot backend: DOS in-place** is the user default (keeps the stock U-Boot; `revert.sh` is the recovery path). The GPT
-   flash-once image stays for bench, microSD and CI/QEMU only.
-2. **Extras live on `/data`** (`/data/eitri/extras` + config) and update with Klipper/Kalico, not with the OS. Drop the
-   `/usr/lib/eitri/klipper-layer` copy as the source of truth.
-3. **Data seed: built by CI** for aarch64 (pinned Klipper/Kalico + Moonraker clones and uv venvs) and shipped per release
-   as `data-seed.tar.zst`. First boot is offline. (Follow-upstream mode may rebuild on the printer.)
-4. **Root access: optional configurator step** (add SSH key and/or set a password), off by default.
-5. **Release trust:** Thomas holds the minisign and RAUC private keys offline; CI signs only via a protected GitHub
-   `release` environment with Thomas as required reviewer (deferred signing).
-6. **Web UI login: asked in setup, default "Trust my home network"**; "Require sign-in" available. The RTSP password is
-   shown on a separate page, not in the wizard.
-7. **IPv6: remove the nginx IPv6 listener** for now (the LAN allow-list is IPv4-only).
-8. **Configurator exits after setup** (`--retire-when-locked` default, frees ~30 MiB); **Klarity shows an "Unlock setup"
-   button** that restarts it and displays the pairing code.
-9. **Moonraker stays loopback-only**; slicers/apps use port 80.
-10. **Klipper-layer policy:** `gcode_shell_command` **denies extra PARAMS by default**; **motors stay energised** during a
-    long pause; PLR resume **uses live Z when Z is homed**; **chamber backstop limit = 85 °C**.
-11. **Klarity: a print-control widget without a state guard stays a load error.**
-12. **Licences: treat `QIDITECH/QIDI_PLUS4` as AGPL-3.0** (the stricter reading). Consequence: files in
-    `klipper-layer/config/` adapted from QIDI's configs must be tagged **AGPL-3.0-or-later** (not GPL), and the README/NOTICE
-    must say so. The lead (Claude) does the clean-room review of the Klarity map.
-13. **Keep `.py` source in the image** (readable tracebacks; ~20 MiB accepted).
+  interoperability data. `docs/CLEAN-ROOM.md` requires a second-person review of such a specification before it is published (the
+  lead does it, decision 12).
+* The configurator's `/usr/libexec/eitri/toolchain` helper (upstream mode's compiler add-on) does not exist; choosing it is only recorded.
 
 ## Not built by anyone yet
 
-1. **The data seed.** Nothing creates `/data/firmware/klipper` and `/data/firmware/moonraker` (pinned clones),
-   `/data/venv/klippy` and `/data/venv/moonraker` (uv, Python 3.14, within Moonraker's dependency caps),
-   `/data/eitri/klarity/venv` (needs pyserial-asyncio-fast, websockets, PyYAML), or the data bundle that
-   `installer/docs/BUNDLE.md` describes (`data-seed.tar.zst`, `mcu-firmware.tar.zst`). `klipper.service` and
-   `moonraker.service` do not start until it exists. This is the largest gap on the way to a first boot.
-2. **MCU firmware builds** for both flavors (`installer/mcuflash` expects `<flavor>/manifest.json` plus
-   `<board>/klipper.bin`), and the mainboard's recovery image (the stock one cannot be shipped).
-3. **Release CI:** the minisign key, the RAUC CA (`os/board/eitri-plus4/rauc/keyring.crt` and the three `EITRI_RAUC_*`
-   secrets), signing and upload of `install.json` and `manifest.json`, the stage-2 initramfs and the
-   conservative-feature rootfs for U-Boot 2021.07 used by the in-place path. Download URLs in `install.sh` and
-   `eitri-update` are guesses.
-4. **Helpers the configurator calls if present:** `/usr/libexec/eitri/switch-flavor` and `/usr/libexec/eitri/toolchain`.
-   Without them a flavor switch or the upstream add-on is only recorded.
-5. MCU rebuild-and-flash after a git update in upstream mode is not hooked to Moonraker.
-6. `spi_flash.py` needs `fatfs.so` or a host gcc on the device; the image has neither, so the mainboard can only be flashed
-   through the `sdcard-file` method (and `revert --hard` cannot restore it automatically) until one is provided.
-7. `eitri-configurator` is not on the SSH user's PATH (`python -m eitri_configurator unlock` in its venv works).
+1. **MCU firmware builds** for both flavors: `mcu-firmware-<version>-<flavor>.tar.zst` with `<flavor>/manifest.json` plus
+   `<board>/klipper.bin` (what `eitri-mcuflash` and stage 2 expect), and the mainboard's recovery image (the stock one cannot be
+   shipped). The MCU build must use the seed's source tree (or `git -c core.abbrev=9 describe`) so the host and MCU version
+   strings agree with `sources.firmware.describe`. **Without them the in-place installer and the wizard's Flash step cannot run.**
+2. **Release trust roots and the first signed release:** minisign key, RAUC CA, the three `EITRI_RAUC_*` secrets / protected
+   environment, the stage-2 initramfs and the conservative-feature rootfs for U-Boot 2021.07 used by the in-place path, final download
+   URLs in `install.sh` and `eitri-update`.
+3. Upstream mode: the compiler add-on helper, and MCU rebuild-and-flash after a git update (not hooked to Moonraker).
+4. `spi_flash.py` needs `fatfs.so` or a host gcc on the device; the image has neither, so the mainboard can only be flashed through
+   the `sdcard-file` method (and `revert --hard` cannot restore it automatically) until one is provided.
+5. Licence report for the seed's wheels and clones in the SBOM.
 
-## Ordered next steps to a first boot on the printer
+## Next steps to a first boot on the real printer
 
-Nothing below touches the printer until step 6.
+Nothing below touches the printer until step 5. Steps 1 to 4 are at the desk; Thomas has to do 2, 3 and 5 onwards himself.
 
-1. **Decide** the items in "Decisions for Thomas" that block building: boot backend (1), extras location (2), data seed
-   design (3), root access (4), release trust (5).
-2. **Commit the trust roots:** generate the minisign key and the RAUC CA, commit the public halves, set the CI secrets in a
-   protected `release` Environment, add deferred signing. Confirm the licence questions; get the Klarity map reviewed.
-3. **Build the data seed** (gap 1) and the MCU firmware for both boards (gap 2); add them to `release.lock` and CI.
-4. **Rebuild the OS image** (`make -C os image`), run `make test` and `make -C os check`, then **repeat the QEMU smoke test**
-   on the new image (`os/qemu/smoke-test.sh`): confirm `eitri-prepare`, `eitri-verify` and the camera skip behave as
-   described, trim `known-failures.txt`, re-measure boot time and RAM, and add Klipper, Moonraker and Klarity to the RAM
-   table once the seed lets them run. Run `package-legal.sh` once end to end.
-5. **Prepare recovery before any write:** read `docs/RECOVERY.md`, take the full eMMC backup, prove maskrom entry and
-   `rkdeveloptool` on the board while the stock system still boots.
-6. **Bench boot from microSD** (never the eMMC first): open TPL DRAM init, Ethernet, `/data` creation, services. Check
-   that `NoNewPrivileges` and the `MemoryHigh` limits do not break Moonraker, and tune them against measured RSS.
-   Resolve the console question first: ttyS2 is wired to an MCU, so a console needs a deliberate bench setting.
-7. **Probe, read-only:** `eitri-mcuflash plan` for UART roles and bootloaders; send `sendme` at 115200 to find the panel
-   UART; `klarity --learn --dry-run` and walk the pages to confirm the map and the touch edge; boot once with the camera
-   unplugged and once plugged in.
-8. **Flash the MCUs** only after recovery for both boards is proven (`eitri-mcuflash` insists), then run the configurator:
-   pair, detect, apply, flash, calibrate.
-9. **First motion** with a hand on the power switch: homing (including partial `G28 X`/`Y`), probe polarity,
-   `PROBE_CALIBRATE`, bed mesh, heaters, the interlock, pause/resume past the idle timeout, a short print. Re-pin
-   Klipper to the commit that passed.
-10. Only then write the eMMC (flash-once image or the in-place converter), exercise a RAUC update and a forced rollback,
-    an interrupted install and an interrupted restore, and mark pins `tested = true` one by one.
+1. **Build the missing pieces** (item 1 of "Not built by anyone yet"): MCU firmware for the mainboard and toolhead in both flavors,
+   built from the seed's Klipper/Kalico tree. Add them to `release.lock` and CI. (Can be done and reviewed without the printer.)
+2. **Generate the trust roots (Thomas, offline):** the minisign key pair and the RAUC CA; commit only the public halves
+   (`installer/keys/eitri-release.pub`, `os/board/eitri-plus4/rauc/keyring.crt`); create the protected `release` GitHub environment with
+   Thomas as required reviewer and store the private keys as its secrets. Push a tag to run CI once end to end (nothing in this
+   repository has run on GitHub yet); fix what the first CI run finds (Ubuntu gcc path of the seed, actions, caches).
+3. **Prepare recovery before any write:** read `docs/RECOVERY.md`; take the full eMMC backup of the stock system; prove maskrom entry
+   and `rkdeveloptool` on the board while the stock system still boots; keep the stock `revert.sh` path ready.
+4. **Choose the first image:** build `make seed && make -C os image` (or take the CI artifact), `dd` the image to a **microSD card**
+   (never the eMMC first). The image already has Klipper, Moonraker, Klarity and the setup wizard on it.
+5. **Bench boot from microSD (printer powered, USB-serial or Ethernet attached, MCU cables removed or the MCUs unpowered for the first
+   boot):** watch the open TPL DRAM init, Ethernet, `/data` growth, that the services come up. Check `NoNewPrivileges` and the
+   `MemoryHigh` limits against Moonraker, and tune them against measured RSS. Ttys2 is wired to an MCU, so a console needs a
+   deliberate bench setting.
+6. **Probe, read-only:** `eitri-mcuflash plan` for UART roles and bootloaders; send `sendme` at 115200 to find the panel UART;
+   `klarity --learn --dry-run` and walk the pages to confirm the map, the touch edge, and widget 9 / `t7` for Unlock setup; boot once
+   with the camera unplugged and once plugged in. Put the answers into the screen map and `STATUS.md`.
+7. **Flash the MCUs** only after recovery for both boards is proven (`eitri-mcuflash` insists), then run the wizard from a phone or PC
+   with the code shown on the screen: pair, detect, apply, flash, calibrate. Optionally add your SSH key in the Remote access step.
+8. **First motion** with a hand on the power switch: homing (including partial `G28 X`/`Y`), probe polarity, `PROBE_CALIBRATE`, bed mesh,
+   heaters, the interlock and the 85 °C chamber backstop, pause/resume past the idle timeout (motors stay energised), power-loss resume,
+   a short print. Re-pin Klipper to the commit that passed (`release.lock`).
+9. Only then write the eMMC: the in-place converter (the user path, decision 1) on a printer you can recover, or the flash-once image on
+   a spare board. Exercise a RAUC update and a forced rollback, a seed update, a flavor switch, an interrupted install and an interrupted
+   restore, and mark pins `tested = true` one by one.

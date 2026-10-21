@@ -25,9 +25,19 @@ RestartSec=3
 # failure should take the screen down.
 
 # Hardening: Klarity needs the UART, loopback HTTP/websocket and its own log directory.
-NoNewPrivileges=true
+# "Unlock setup" (Decision 8) runs `sudo -n /usr/bin/eitri-configurator unlock` and
+# `systemctl start eitri-configurator`, so this unit cannot set NoNewPrivileges (it would stop the
+# setuid sudo from working). It also cannot use any option that systemd implements with seccomp
+# (ProtectKernelTunables, ProtectKernelModules, RestrictNamespaces, LockPersonality, RestrictAddressFamilies,
+# MemoryDenyWriteExecute, SystemCallFilter): they make systemd set NoNewPrivs on the process even with
+# NoNewPrivileges=false, because the service user cannot install a filter without it (measured on the QEMU image,
+# os/qemu/smoke.py checks /proc/<pid>/status). So only the mount, device and cgroup sandbox options are used.
+# The only sudoers rule that reaches Klarity is that one command; /data/eitri/configurator is the
+# directory that command writes its maintenance flag into, so it is writable here too (ProtectSystem
+# is inherited by the sudo child).  Set `enabled: false` in klarity.cfg [unlock] if you do not want it.
+NoNewPrivileges=false
 ProtectSystem=strict
-ReadWritePaths=/data/printer_data/logs
+ReadWritePaths=/data/printer_data/logs /data/eitri/configurator
 ProtectHome=true
 RuntimeDirectory=klarity
 PrivateTmp=true
@@ -36,14 +46,7 @@ DevicePolicy=closed
 DeviceAllow=char-ttyS rw
 DeviceAllow=char-ttyAMA rw
 DeviceAllow=char-ttyUSB rw
-ProtectKernelTunables=true
-ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-RestrictNamespaces=true
-LockPersonality=true
-MemoryDenyWriteExecute=true
-SystemCallFilter=@system-service
 UMask=0027
 Environment=PYTHONUNBUFFERED=1
 

@@ -8,7 +8,9 @@ updates without conflicts.
 ```
 klipper-layer/
   extras/                 Klipper extras, GPL-3.0-or-later (own LICENSE)
-  config/                 printer.cfg template, macros, flavor files
+  config/                 printer.cfg template, macros, flavor files;
+                          AGPL-3.0-or-later where adapted from QIDI (see
+                          config/LICENSE-NOTE.md), Apache-2.0 for the flavors
   scripts/
     overlay-install.sh    link extras + config into a clone / printer_data
     render-config.py      printer.cfg.tmpl + variables -> printer.cfg
@@ -19,7 +21,7 @@ klipper-layer/
 
 | QIDI fork change | Eitri |
 |---|---|
-| `gcode_shell_command` | `extras/gcode_shell_command.py` (clean implementation, mainline only; Kalico already ships one) |
+| `gcode_shell_command` | `extras/gcode_shell_command.py` (clean implementation, mainline only; Kalico already ships one) with PARAMS denied by default; `extras/qd_shell_guard.py` applies the same policy to Kalico's module |
 | `chamber_fan` | `extras/qd_chamber_fan.py` |
 | chamber/bed power interlock in `heaters.py` | `extras/qd_power_interlock.py` (no Klipper file touched, `verify_heater` untouched) |
 | `SAVE/LOAD_ZOFFSET_*` in `gcode_move.py` | `extras/qd_zoffset_var.py` |
@@ -40,13 +42,24 @@ scripts/overlay-install.sh --klipper-dir ~/klipper --printer-data ~/printer_data
 scripts/overlay-install.sh --uninstall
 ```
 
+* **Source of truth is `/data`.** On the device the layer lives in
+  `/data/eitri/extras` (the `qd_*` extras and `gcode_shell_command.py`, flat)
+  and `/data/eitri/klipper-layer/{config,scripts}` (with
+  `extras -> ../extras`), laid down by the data seed and refreshed with
+  Klipper/Kalico, not with the OS image. Run from there, the script links the
+  clone's extras to `/data/eitri/extras/*` and `printer_data/config/eitri` to
+  `/data/eitri/klipper-layer/config`. Older images carried a copy in
+  `/usr/lib/eitri/klipper-layer`; the current image does not. If the script is
+  run from such a copy and the `/data` layer exists, it uses the `/data` layer
+  (and re-points links made earlier against the image). `--extras-dir` / `--config-dir` always win. (The environment
+  variables `EITRI_DATA_ROOT` and `EITRI_IMAGE_LAYER_DIR` exist for tests.)
 * Flavor (Klipper or Kalico) is detected from the clone; `--flavor` forces it
   and `/data/eitri/flavor` is cross-checked (warning on mismatch, never
   written).
 * Each `extras/*.py` is symlinked into `klippy/extras/` and listed in the
   clone's `.git/info/exclude` (managed block, rewritten on every run). A name
   that is **tracked in the clone is skipped** (that is how Kalico keeps its own
-  `gcode_shell_command`); an untracked regular file with one of our names is
+  `gcode_shell_command`, which `[qd_shell_guard]` then restricts); an untracked regular file with one of our names is
   left alone and the run exits 3.
 * `config/` is linked as `printer_data/config/eitri`, and
   `printer_data/config/eitri-flavor.cfg` points at `eitri/flavors/<flavor>.cfg`.
@@ -124,9 +137,38 @@ only the reference unit's.
     as a session-only profile (`plr-resume`), because the default adaptive mesh
     is never saved. If Z is already homed when `QD_PLR_RESUME` runs, the live Z
     is used instead of the recorded one.
-* `gcode_shell_command` (Klipper only): `PARAMS` from any G-code source is
-  appended verbatim to the configured argv (no shell). Set `params_pattern` in
-  a `[gcode_shell_command ...]` section to restrict it.
+* `gcode_shell_command` **denies extra `PARAMS` by default** (both flavors).
+  `RUN_SHELL_COMMAND CMD=x PARAMS=...` is refused unless the
+  `[gcode_shell_command x]` section opts in, because any G-code source (the
+  API, a macro, an uploaded print file) can send `PARAMS`:
+
+  ```ini
+  [gcode_shell_command beep]
+  command: /usr/bin/aplay
+  params_pattern: [A-Za-z0-9_./-]+\.wav   # PARAMS must match all of this ('' = none)
+
+  [gcode_shell_command tool]
+  command: /usr/local/bin/tool
+  allow_params: True                      # any PARAMS, appended as argv (no shell)
+  ```
+
+  Without either option the command only runs with no `PARAMS`.
+  `allow_params: False` together with `params_pattern` is a config error. On
+  mainline Klipper the policy is built into `extras/gcode_shell_command.py`;
+  Kalico's own module is wrapped by `[qd_shell_guard]`, which
+  `flavors/kalico.cfg` (and `klipper.cfg`, where it does nothing) includes. A
+  hand-written `printer.cfg` that does not include `eitri-flavor.cfg` must
+  put `[qd_shell_guard]` before every `[gcode_shell_command ...]` section;
+  a section loaded earlier refuses all commands instead of running unguarded.
+* Chamber backstop: the second chamber thermistor
+  (`Chamber_Thermal_Protection_Sensor`) shuts the MCU down above
+  `chamber_backstop_max_temp`, default **85 C** (stock 140 C), above the 70 C
+  chamber limit. If that sensor sits on the heater element and trips in normal
+  use, raise the variable (keep it above 70) rather than dropping the sensor.
+* Motors stay energised through a long pause: the idle timeout during a pause
+  (30 min, `pause_idle_timeout`) turns the heaters and fans off but keeps X/Y/Z
+  energised and homed, so `RESUME` reheats and continues without losing the
+  part position (`_QD_IDLE_OFF`; tested with the real klippy).
 
 See `config/README.md` for attribution and the stock-vs-Eitri differences.
 

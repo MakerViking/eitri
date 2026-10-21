@@ -268,7 +268,7 @@ def _color(value: Any, ctx: str) -> int:
 
 # ------------------------------------------------------------------------------ actions
 
-_ACTION_VERBS = {"gcode", "print", "page", "beep", "set", "log"}
+_ACTION_VERBS = {"gcode", "print", "page", "beep", "set", "log", "unlock"}
 _ACTION_MODS = {
     "guard",
     "cooldown",
@@ -329,6 +329,8 @@ class Action:
             raise MapError(f"{ctx}.page: expected a page key from this map")
         if verb == "beep" and (isinstance(arg, bool) or not isinstance(arg, int) or arg < 0):
             raise MapError(f"{ctx}.beep: expected milliseconds")
+        if verb == "unlock" and arg != "setup":
+            raise MapError(f"{ctx}.unlock: only 'setup' is supported")
         if verb == "set":
             _keys(arg, {"obj", "attr", "value"}, f"{ctx}.set")
             if not all(k in arg for k in ("obj", "attr", "value")):
@@ -336,6 +338,11 @@ class Action:
         guard = None
         if "guard" in node:
             guard = Test.parse(node["guard"], f"{ctx}.guard", need_source=True)
+        if verb == "unlock" and guard is None:
+            raise MapError(
+                f"{ctx}: 'unlock: setup' needs a 'guard' (a state test) so it cannot run during "
+                "a print"
+            )
         if verb == "print" and guard is None:
             if arg in GUARDED_PRINT_VERBS:
                 raise MapError(

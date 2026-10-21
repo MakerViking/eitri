@@ -1,0 +1,55 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: Apache-2.0
+"""eitri-configurator pairing | unlock | lock
+
+The command-line half of the first-run configurator, for the printer's owner and for Klarity's
+"Unlock setup" button (decision 8):
+
+    eitri-configurator pairing   show the pairing code, if one is open
+    eitri-configurator unlock    allow pairing again after setup (creates the maintenance flag)
+    eitri-configurator lock      close it again
+
+It is installed as /usr/bin/eitri-configurator so that it is on every user's PATH and so that the
+sudo rule can name it (`sudo -n /usr/bin/eitri-configurator unlock`, etc/sudoers.d/eitri).
+
+Because that rule makes it run as root on behalf of the eitri account, it must never execute anything
+the eitri account can write. The web service runs from a virtual environment under /data/eitri/configurator,
+which is eitri's; this tool therefore runs the configurator's own copy in the read-only image,
+/usr/lib/eitri/configurator, under `python3 -I` (no PYTHON* variables, no user site, no current
+directory on the path), and accepts exactly one of the three words and nothing else: no options, in
+particular no --data-dir. The configurator's own command line drops to the eitri user before it touches
+any file and, for `unlock`, starts eitri-configurator.service as that user (polkit allows it), which
+brings back a configurator that retired after setup.
+"""
+import os
+import sys
+
+LIB = "/usr/lib/eitri/configurator"
+COMMANDS = ("pairing", "unlock", "lock")
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if len(args) != 1 or args[0] not in COMMANDS:
+        print("usage: eitri-configurator pairing | unlock | lock", file=sys.stderr)
+        return 2
+    lib, extra = LIB, []
+    # Test hooks, honoured only when not running as root (sudo starts this with a clean environment as
+    # root, so they cannot redirect the privileged run).
+    if os.geteuid() != 0:
+        lib = os.environ.get("EITRI_CONFIGURATOR_LIB", lib)
+        if os.environ.get("EITRI_CONFIGURATOR_DATA"):
+            extra = ["--data-dir", os.environ["EITRI_CONFIGURATOR_DATA"]]
+    sys.path.insert(0, lib)
+    os.umask(0o022)
+    try:
+        from eitri_configurator import __main__ as cli
+    except ImportError as exc:
+        print(f"eitri-configurator: cannot load {lib}: {exc}", file=sys.stderr)
+        return 1
+    cli.main([*args, *extra])  # exits through sys.exit
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

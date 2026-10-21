@@ -47,6 +47,7 @@ class UpstreamPaths:
         self.updates = os.path.join(self.eitri, "updates")
         self.klipper = os.path.join(data_root, "firmware", "klipper")
         self.moonraker = os.path.join(data_root, "firmware", "moonraker")
+        self.seed_locks = os.path.join(self.eitri, "seed", "locks")       # the data seed's hash-pinned requirement sets
         self.venv_klippy = os.path.join(data_root, "venv", "klippy")
         self.venv_moonraker = os.path.join(data_root, "venv", "moonraker")
 
@@ -66,6 +67,14 @@ def render_upstream_update_manager(flavor: str, paths: UpstreamPaths, upstream: 
         if key in up and isinstance(value, dict):
             up[key] = {**up[key], **{k: str(v) for k, v in value.items() if k in ("origin", "branch")}}
     k, m = up[flavor], up["moonraker"]
+    # The upstream repositories' own requirement files pin versions the seed deliberately replaced (Jinja2==2.11.3, an old
+    # python-can ...) and would downgrade the venvs on a 3.14 image.  The data seed's lock files are given instead when they
+    # exist: Moonraker compares the file's content before and after an update, so it never installs anything unless a forced
+    # recovery asks for the pinned set.  Without the seed's locks (a bench image) no pip step is configured at all.
+    reqs = {}
+    for name, key in (("klippy", "klipper"), ("moonraker", "moonraker")):
+        lock = os.path.join(paths.seed_locks, name + ".txt")
+        reqs[key] = "requirements: %s\n" % lock if os.path.isfile(lock) else ""
     return (
         "# Managed by eitri-update (upstream mode). `eitri-update upstream disable` returns to the Eitri channel.\n"
         "[update_manager]\n"
@@ -80,8 +89,7 @@ def render_upstream_update_manager(flavor: str, paths: UpstreamPaths, upstream: 
         "origin: %s\n"
         "primary_branch: %s\n"
         "virtualenv: %s\n"
-        "requirements: scripts/klippy-requirements.txt\n"
-        "managed_services: klipper\n"
+        "%smanaged_services: klipper\n"
         "info_tags:\n"
         "  desc=%s (upstream mode)\n"
         "\n"
@@ -92,10 +100,9 @@ def render_upstream_update_manager(flavor: str, paths: UpstreamPaths, upstream: 
         "origin: %s\n"
         "primary_branch: %s\n"
         "virtualenv: %s\n"
-        "requirements: scripts/moonraker-requirements.txt\n"
-        "managed_services: moonraker\n"
-    ) % (paths.klipper, k["origin"], k["branch"], paths.venv_klippy, flavor.capitalize(),
-         paths.moonraker, m["origin"], m["branch"], paths.venv_moonraker)
+        "%smanaged_services: moonraker\n"
+    ) % (paths.klipper, k["origin"], k["branch"], paths.venv_klippy, reqs["klipper"], flavor.capitalize(),
+         paths.moonraker, m["origin"], m["branch"], paths.venv_moonraker, reqs["moonraker"])
 
 
 def _atomic_symlink(target: str, link: str) -> None:

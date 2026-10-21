@@ -1,0 +1,15 @@
+# Source distributions that have no aarch64 wheel on PyPI and are cross-compiled by the seed build
+# (tools/cross_wheel.py) with the Buildroot toolchain against the image's own Python headers.
+#
+# Each entry is pinned by URL and SHA-256. Add an entry, then list the package name in the lock input of
+# the venv that needs it ("venv") so that its dependencies are resolved there.
+schema = 1
+
+[[sdist]]
+name    = "streaming-form-data"
+version = "2.1.0"
+venv    = "moonraker"
+url     = "https://files.pythonhosted.org/packages/source/s/streaming-form-data/streaming_form_data-2.1.0.tar.gz"
+sha256  = "2c5c81fc9c451ea133083bc6da959f87e9b91fba3effe99411f1f90461ea7c5b"
+# Ships its Cython output (_parser.c), so no Cython is needed to build it.
+prune   = ["*.c"]

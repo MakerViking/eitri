@@ -10,7 +10,7 @@ from typing import Any
 
 STEPS = [
     "welcome", "network", "detect", "flavor", "options",
-    "review", "flash", "calibrate", "done",
+    "review", "flash", "calibrate", "remote", "done",
 ]
 
 
@@ -64,6 +64,37 @@ def atomic_write(path: Path, data: str | bytes, mode: int = 0o644) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+def write_shared(path: Path, data: str, mode: int = 0o644) -> None:
+    """Write a small file that other programs also read or write (eitri/flavor, eitri/channel).
+
+    /data/eitri is root's (sshd and the root helpers under /data/eitri/state need a directory the service user cannot
+    rearrange), so the configurator cannot create a temporary file next to these.  They are files the service user
+    owns, created by the data seed or eitri-data-init: when the directory refuses a new file, the existing file is
+    rewritten in place (one short write, then fsync).  Anything that replaces them as root must keep the owner."""
+    try:
+        atomic_write(path, data, mode)
+    except PermissionError:
+        if not path.is_file():
+            raise
+        with open(path, "wb") as fh:
+            fh.write(data.encode())
+            fh.flush()
+            os.fsync(fh.fileno())
+
+
+def set_symlink(link: Path, target: str) -> None:
+    """Point `link` at `target` atomically (symlink next to it, then rename over it)."""
+    tmp = link.parent / f".{link.name}.{os.getpid()}"
+    tmp.unlink(missing_ok=True)
+    os.symlink(target, tmp)
+    try:
+        os.replace(tmp, link)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    fsync_dir(link.parent)
 
 
 class StateStore:

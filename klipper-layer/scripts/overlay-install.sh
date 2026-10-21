@@ -14,6 +14,17 @@
 #   * The visible `git status` of the clone is compared before and after; any
 #     change is a hard error (exit 4).
 #
+# Source of truth (Eitri OS): the layer lives on /data and updates with
+# Klipper/Kalico, not with the OS image. The default extras are
+# /data/eitri/extras and the default config set is
+# /data/eitri/klipper-layer/config (the data seed lays both out; the script's
+# own directory /data/eitri/klipper-layer/scripts has `extras -> ../extras`).
+# Older images carried a copy in /usr/lib/eitri/klipper-layer (the current one
+# does not): when this script is run from there and the /data layer exists, the
+# /data layer is used instead, so the symlinks in the clone never point into
+# the read-only image. Symlinks made earlier
+# against the image copy are re-pointed (they are recognised as ours).
+#
 # Exit codes: 0 ok, 1 usage/invalid tree, 3 conflict (something that is not
 # ours is in the way), 4 clean-tree violation.
 #
@@ -34,6 +45,12 @@ UNINSTALL=0
 DRY_RUN=0
 QUIET=0
 RENDER_VARS=()
+EXTRAS_GIVEN=0
+CONFIG_GIVEN=0
+# Where the layer lives on a device. Overridable for tests (environment only).
+DATA_EITRI="${EITRI_DATA_ROOT:-/data/eitri}"
+IMAGE_LAYER_DIR="${EITRI_IMAGE_LAYER_DIR:-/usr/lib/eitri/klipper-layer}"
+RENDER_SCRIPT="$SCRIPT_DIR/render-config.py"
 CONFLICTS=0
 OWNER=""
 CREATED=()
@@ -46,8 +63,11 @@ usage() {
 Usage: overlay-install.sh [options]
 
   --klipper-dir DIR    Klipper/Kalico clone (default /data/firmware/klipper)
-  --extras-dir DIR     directory holding the extras (default: ../extras)
-  --config-dir DIR     directory holding the config set (default: ../config)
+  --extras-dir DIR     directory holding the extras (default: ../extras next
+                       to this script; /data/eitri/extras when run from the
+                       OS image's fallback copy and the /data layer exists)
+  --config-dir DIR     directory holding the config set (default: ../config;
+                       /data/eitri/klipper-layer/config as above)
   --printer-data DIR   printer_data root (default /data/printer_data)
   --flavor F           auto (default), klipper or kalico
   --flavor-file FILE   /data/eitri/flavor; only cross-checked, never written
@@ -79,8 +99,8 @@ act() {
 while [ $# -gt 0 ]; do
     case "$1" in
         --klipper-dir)  KLIPPER_DIR="${2:?missing value for $1}"; shift 2 ;;
-        --extras-dir)   EXTRAS_DIR="${2:?missing value for $1}"; shift 2 ;;
-        --config-dir)   CONFIG_DIR="${2:?missing value for $1}"; shift 2 ;;
+        --extras-dir)   EXTRAS_DIR="${2:?missing value for $1}"; EXTRAS_GIVEN=1; shift 2 ;;
+        --config-dir)   CONFIG_DIR="${2:?missing value for $1}"; CONFIG_GIVEN=1; shift 2 ;;
         --printer-data) PRINTER_DATA="${2:?missing value for $1}"; shift 2 ;;
         --flavor)       FLAVOR="${2:?missing value for $1}"; shift 2 ;;
         --flavor-file)  FLAVOR_FILE="${2:?missing value for $1}"; shift 2 ;;
@@ -96,6 +116,26 @@ while [ $# -gt 0 ]; do
 done
 
 case "$FLAVOR" in auto|klipper|kalico) ;; *) die 1 "--flavor must be auto, klipper or kalico" ;; esac
+
+# Run from the OS image's fallback copy: prefer the layer on /data (decision:
+# /data is the source of truth, the image copy only bridges the first boot).
+prefer_data_layer() {
+    [ "$EXTRAS_GIVEN" -eq 0 ] && [ "$CONFIG_GIVEN" -eq 0 ] || return 0
+    local image
+    image="$(cd -- "$IMAGE_LAYER_DIR" 2>/dev/null && pwd -P)" || return 0
+    [ "$LAYER_DIR" = "$image" ] || return 0
+    local data_cfg="$DATA_EITRI/klipper-layer/config"
+    if [ -d "$DATA_EITRI/extras" ] && [ -f "$data_cfg/printer.cfg.tmpl" ]; then
+        EXTRAS_DIR="$DATA_EITRI/extras"
+        CONFIG_DIR="$data_cfg"
+        [ ! -f "$DATA_EITRI/klipper-layer/scripts/render-config.py" ] \
+            || RENDER_SCRIPT="$DATA_EITRI/klipper-layer/scripts/render-config.py"
+        log "using the layer on $DATA_EITRI (the image copy is only a first-boot fallback)"
+    else
+        warn "no layer under $DATA_EITRI yet: installing from the image fallback copy $image; re-run once the data seed is installed so the links point at $DATA_EITRI"
+    fi
+}
+prefer_data_layer
 
 command -v git >/dev/null 2>&1 || die 1 "git is required"
 [ -d "$KLIPPER_DIR/klippy/extras" ] || die 1 "$KLIPPER_DIR is not a Klipper/Kalico clone (no klippy/extras)"
@@ -316,10 +356,11 @@ init_config() {
         log "keep   $out (user-owned; not re-rendered)"
         return
     fi
-    local args=(--output "$out")
+    local args=(--template "$CONFIG_DIR/printer.cfg.tmpl"
+                --defaults "$CONFIG_DIR/eitri-variables.toml" --output "$out")
     local v
     for v in ${RENDER_VARS[@]+"${RENDER_VARS[@]}"}; do args+=(--vars "$v"); done
-    act "$py" "$SCRIPT_DIR/render-config.py" "${args[@]}"
+    act "$py" "$RENDER_SCRIPT" "${args[@]}"
     CREATED+=("$out")
     log "render $out"
 }

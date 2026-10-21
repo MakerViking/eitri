@@ -226,6 +226,39 @@ verified = "2026-10-21"
 commit = "ec595fc903540564be757bcafa745cd5c4a52cd0"
 source = "https://github.com/QIDITECH/QIDI_PLUS4"
 tag = "Plus4_v1.7.1"
-license = "AGPL-3.0-or-later"  # from the LICENSE file; the README badge says GPL-3.0 — confirm before adapting code
+license = "AGPL-3.0-or-later"  # LICENSE file says AGPL-3.0, the README badge says GPL-3.0; Eitri treats it as AGPL (decision 12, 2026-10-22)
+adapted_into = "klipper-layer/config/"   # files there carry SPDX AGPL-3.0-or-later
 license_file = "LICENSE"
 verified = "2026-10-21"
+
+# ---------------------------------------------------------------------------
+# Release metadata (read by tools/release/release.py, the release workflow and
+# the OS image build). Bump these in the release pull request, never in CI.
+# docs/RELEASING.md explains each field and when it moves.
+# ---------------------------------------------------------------------------
+
+[release]
+channel = "stable"
+# Sequence number of the channel manifest signed for this release. Strictly
+# greater than every sequence ever signed on this channel (eitri-update refuses
+# a lower one than it has seen, so a manifest that reuses a number is a replay).
+manifest_sequence = 1
+# Floor baked into the OS image (EITRI_MIN_MANIFEST_SEQUENCE,
+# /usr/share/eitri/min-manifest-sequence). Raise it to retire old manifests
+# for good; it may never exceed manifest_sequence.
+min_manifest_sequence = 1
+# Must equal CLOCK_FLOOR in installer/eitri-update/eitri_update/manifest.py (the
+# printer has no battery-backed clock). Move it forward with every release to a
+# date before the release is built.
+clock_floor = "2026-10-01T00:00:00Z"
+# How long the signed channel manifest stays valid (14..400 days).
+manifest_validity_days = 90
+
+[release.install]
+# install.json parameters (installer/docs/BUNDLE.md section 1). The kernel
+# command line must never put a console on ttyS0/ttyS2: those are the MCU UARTs.
+compatible = "firefly,roc-rk3328-cc"
+root_mib = 2048
+data_min_mib = 4096
+stock_soc = ["1.7.1"]
+kernel_cmdline = "console=tty1 loglevel=4 panic=10 net.ifnames=0"

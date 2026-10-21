@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-# Runs on every boot BEFORE Klipper: finishes a queued update (data bundles) and, on the first boot after
-# the in-place conversion or an update, puts firmware matching this host on the MCU boards.
+# Runs on every boot BEFORE Klipper, Moonraker and Klarity: finishes a queued update (the release's MCU firmware tree and data
+# seed, older-style data bundles), undoes an interrupted flavor switch, and, on the first boot after the in-place conversion or an
+# update, puts firmware matching this host on the MCU boards.  It must not `systemctl stop` units that are not running yet.
 [Unit]
 Description=Eitri: finish pending updates and match MCU firmware
 DefaultDependencies=no

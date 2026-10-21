@@ -3,7 +3,6 @@ config BR2_PACKAGE_EITRI_CONFIGURATOR
 	select BR2_PACKAGE_PYTHON3
 	select BR2_PACKAGE_PYTHON_AIOHTTP
 	select BR2_PACKAGE_EITRI_MCUFLASH
-	select BR2_PACKAGE_EITRI_KLIPPER_LAYER
 	help
 	  The first-run and maintenance web configurator (port 8099).
 	  Built from the configurator/ directory of this repository and

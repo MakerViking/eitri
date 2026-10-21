@@ -17,11 +17,13 @@
 # split with shlex and appended as additional arguments, verbatim.
 #
 # SECURITY: every G-code source (the API, macros, uploaded print files) can
-# supply PARAMS, so it chooses extra arguments for the configured program. For
-# a program that treats arguments as options or file names, set
-# `params_pattern`: a regular expression PARAMS must match completely (use ''
-# to allow none) or the command is refused. Without it PARAMS is unrestricted,
-# as in the community module. Example:
+# supply PARAMS, so it would choose extra arguments for the configured
+# program. Eitri therefore DENIES PARAMS by default: RUN_SHELL_COMMAND with a
+# non-empty PARAMS is refused unless the section opts in, either with
+# `params_pattern` (a regular expression PARAMS must match completely; '' allows
+# none) or with `allow_params: True` (anything, as in the community module).
+# The policy lives in qd_shell_guard.py, which also applies it to Kalico's own
+# module. Example:
 #
 #   [gcode_shell_command beep]
 #   command: /usr/bin/aplay
@@ -29,8 +31,10 @@
 #
 # Kalico already ships a module with this name; overlay-install.sh therefore
 # does not link this file into a Kalico tree (it never shadows a tracked
-# file). Only the options shared by both implementations are used in the
-# shipped configs: command, timeout, verbose.
+# file); [qd_shell_guard] makes Kalico's copy honour the same PARAMS options.
+# Only the options shared by both implementations are used in the shipped
+# configs: command, timeout, verbose (plus allow_params / params_pattern,
+# which both accept).
 #
 # Copyright (C) 2026  The Eitri Authors
 #
@@ -38,10 +42,14 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 import os
-import re
 import shlex
 import signal
 import subprocess
+
+from . import qd_shell_guard
+
+# Set so [qd_shell_guard] knows this module enforces the PARAMS policy itself
+EITRI_PARAMS_POLICY = True
 
 # Grace period between SIGTERM and SIGKILL for a command that hit its timeout
 KILL_GRACE_TIME = 1.0
@@ -64,14 +72,7 @@ class ShellCommand:
             raise config.error("gcode_shell_command %s: command is empty"
                                % (self.name,))
         self.timeout = config.getfloat("timeout", 2.0, above=0.0)
-        pattern = config.get("params_pattern", None)
-        self.params_pattern = None
-        if pattern is not None:
-            try:
-                self.params_pattern = re.compile(pattern)
-            except re.error as e:
-                raise config.error("gcode_shell_command %s: bad "
-                                   "params_pattern: %s" % (self.name, e))
+        self.policy = qd_shell_guard.ParamsPolicy(config, self.name)
         self.verbose = config.getboolean("verbose", True)
         self.last_returncode = None
         self._running = False
@@ -147,15 +148,8 @@ class ShellCommand:
     cmd_RUN_SHELL_COMMAND_help = "Run a configured host command"
 
     def cmd_RUN_SHELL_COMMAND(self, gcmd):
-        params = gcmd.get("PARAMS", "")
-        if (self.params_pattern is not None
-                and not self.params_pattern.fullmatch(params)):
-            raise gcmd.error("RUN_SHELL_COMMAND: PARAMS for {%s} do not match "
-                             "its params_pattern" % (self.name,))
-        try:
-            extra_args = shlex.split(params)
-        except ValueError as e:
-            raise gcmd.error("RUN_SHELL_COMMAND: bad PARAMS: %s" % (e,))
+        extra_args = self.policy.extra_args(gcmd.get("PARAMS", ""),
+                                            gcmd.error)
         reactor = self.printer.get_reactor()
         try:
             proc = subprocess.Popen(

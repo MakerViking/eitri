@@ -6,7 +6,7 @@ def test_bootstrap_shape(srv):
     st, b = srv.get("/api/bootstrap")
     assert st == 200
     assert b["app"]["mock"] is True
-    assert b["steps"][0] == "welcome" and b["steps"][-1] == "done" and len(b["steps"]) == 9
+    assert b["steps"][0] == "welcome" and b["steps"][-1] == "done" and len(b["steps"]) == 10 and b["steps"][-2] == "remote"
     assert {f["id"] for f in b["flavors"]} == {"klipper", "kalico"}
     assert all(f["version"] and f["pros"] and f["cons"] for f in b["flavors"])
     assert b["options_schema"] and b["klarity"]["connected"] is True
@@ -62,7 +62,7 @@ def test_network_and_hostname(srv):
     assert srv.post("/api/network/hostname", {"hostname": "-no"})[0] == 422
     st, r = srv.post("/api/network/hostname", {"hostname": "anvil"})
     assert r["hostname"] == "anvil"
-    assert (srv.settings.eitri_dir / "hostname").read_text().strip() == "anvil"
+    assert srv.settings.hostname_file.read_text().strip() == "anvil"
 
 
 def test_detect_job_streams_events_and_stores_result(srv):
@@ -121,6 +121,9 @@ def test_preview_apply_flow(detected):
     assert (cfg / ".eitri-backups").is_dir() and j["result"]["backed_up"] == ["printer.cfg"]
     assert (s.settings.flavor_file).read_text().strip() == "klipper"
     assert ("restart", "klarity") in s.ctx.services.calls
+    # Klipper and Moonraker pick up the new files (and start for the first time on a fresh install), Klipper first
+    calls = s.ctx.services.calls
+    assert calls.index(("restart", "klipper")) < calls.index(("restart", "moonraker"))
     # idempotent: nothing left to write except the timestamped header
     st, pv2 = s.post("/api/preview")
     # moonraker.conf is yours once written: it no longer appears in the plan at all

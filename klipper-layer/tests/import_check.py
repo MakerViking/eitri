@@ -12,6 +12,21 @@ import os
 import sys
 
 
+def install_overlay_finder(pkg, extras_dir):
+    """Resolve ``from . import qd_x`` to the sibling files of the layer, the way
+    the symlinks of overlay-install.sh do in a real clone. The host tree's own
+    modules always win (the finder is last)."""
+    class OverlayFinder:
+        @staticmethod
+        def find_spec(fullname, path=None, target=None):
+            parent, _, leaf = fullname.rpartition(".")
+            file = os.path.join(extras_dir, leaf + ".py")
+            if parent == pkg and os.path.isfile(file):
+                return importlib.util.spec_from_file_location(fullname, file)
+            return None
+    sys.meta_path.append(OverlayFinder)
+
+
 def main(argv):
     flavor, root, path = argv
     if flavor == "klipper":
@@ -22,6 +37,7 @@ def main(argv):
         pkg = "klippy.extras"
     else:
         raise SystemExit("unknown flavor %r" % (flavor,))
+    install_overlay_finder(pkg, os.path.dirname(os.path.abspath(path)))
     name = "%s.%s" % (pkg, os.path.splitext(os.path.basename(path))[0])
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)

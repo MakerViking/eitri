@@ -26,8 +26,10 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import secrets
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -250,6 +252,48 @@ def unlock(data_dir: Path) -> Path:
     flag.parent.mkdir(parents=True, exist_ok=True)
     flag.touch(mode=0o640)
     return flag
+
+
+UNIT = "eitri-configurator.service"
+
+
+def unlock_and_start(data_dir: Path, systemctl: tuple[str, ...] = ("systemctl", "--no-ask-password"), timeout: float = 20.0,
+                     sleep=time.sleep, clock=time.time) -> dict[str, Any]:
+    """`eitri-configurator unlock` on the printer: open maintenance, make sure the service is running (a configurator
+    that retired after setup is started again) and wait until it shows the pairing code.
+
+    Returns {"flag": Path, "started": bool, "error": str|None, "pairing": dict}: `pairing` is the published pairing.json,
+    with a "code" only once the service has switched from "locked" to "pairing".
+    """
+    t0 = clock()
+    before = show_pairing(data_dir)
+    flag = unlock(data_dir)
+    out: dict[str, Any] = {"flag": flag, "started": False, "error": None, "pairing": before}
+
+    def run(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([*systemctl, *args], capture_output=True, text=True, timeout=60)
+
+    try:
+        was_active = run("is-active", "--quiet", UNIT).returncode == 0
+        if not was_active:
+            started = run("start", UNIT)
+            if started.returncode != 0:
+                out["error"] = (started.stderr.strip() or started.stdout.strip() or f"systemctl start exited {started.returncode}")[:300]
+                return out
+            out["started"] = True
+    except (OSError, subprocess.SubprocessError) as exc:
+        out["error"] = f"cannot control {UNIT}: {exc}"
+        return out
+    deadline = clock() + timeout
+    while True:
+        info = show_pairing(data_dir)
+        fresh = was_active or (isinstance(info.get("updated"), (int, float)) and info["updated"] >= int(t0) - 1)
+        if info.get("state") == "pairing" and info.get("code") and fresh:
+            out["pairing"] = info
+            return out
+        if clock() >= deadline:
+            return out
+        sleep(0.25)
 
 
 def lock(data_dir: Path) -> None:

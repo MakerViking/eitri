@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+#
+# /usr/libexec/eitri/switch-flavor <klipper|kalico>
+#
+# The helper the configurator calls when the wizard asks for the other firmware flavor.  It runs
+# `eitri-update switch-flavor`, which installs the other flavor's data seed and MCU firmware from the installed release,
+# re-flashes both MCUs and restarts the services, and puts everything back if the result does not come up healthy.
+# Needs root (it stops services and writes /data/firmware, /data/venv and the MCU boards): the configurator's user gets there
+# through one narrow sudoers rule for /usr/bin/eitri-update.
+set -eu
+case "${1:-}" in
+klipper | kalico) ;;
+*) echo "usage: switch-flavor klipper|kalico" >&2; exit 2 ;;
+esac
+[ "$#" -eq 1 ] || { echo "usage: switch-flavor klipper|kalico" >&2; exit 2; }
+if [ "$(id -u)" -eq 0 ]; then
+	exec /usr/bin/eitri-update --json --events-file /data/eitri/logs/update.jsonl switch-flavor --yes "$1"
+fi
+exec sudo -n /usr/bin/eitri-update --json --events-file /data/eitri/logs/update.jsonl switch-flavor --yes "$1"

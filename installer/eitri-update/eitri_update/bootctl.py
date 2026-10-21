@@ -6,7 +6,8 @@ RAUC calls the handler configured as `bootloader-custom-backend` with:
     get-primary | set-primary SLOT | get-state SLOT | set-state SLOT good|bad | get-current
 
 where SLOT is the bootname (A or B).  Extra operator commands: status, mark-good.  Works on both layouts (see
-bootenv.py): the in-place boot.env, and the flash-once image's raw state sector via rauc-bootloader.
+bootenv.py): the in-place boot.env (backend "inplace": the conversion of a stock printer, the layout users get) and the
+flash-once image's raw state sector via rauc-bootloader (backend "gpt": bench boards, microSD cards and CI only).
 """
 from __future__ import annotations
 
@@ -21,7 +22,9 @@ from .bootenv import BootControl
 def main(argv: Optional[List[str]] = None, control: Optional[BootControl] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        sys.stderr.write("usage: eitri-bootctl get-primary|set-primary SLOT|get-state SLOT|set-state SLOT STATE|get-current|status|mark-good\n")
+        sys.stderr.write("usage: eitri-bootctl get-primary|set-primary SLOT|get-state SLOT|set-state SLOT STATE|get-current|status|mark-good\n"
+                         "  boot state lives in /boot/eitri/boot.env (backend=inplace, the in-place conversion users get); the flash-once\n"
+                         "  GPT disk image (backend=gpt, raw state sector) is for bench boards, microSD cards and CI only\n")
         return 2
     ctl = control or BootControl()
     cmd, rest = args[0], args[1:]

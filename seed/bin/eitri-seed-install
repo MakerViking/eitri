@@ -1,0 +1,379 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+#
+# eitri-seed-install: put an Eitri data seed (data-seed-<version>-<flavor>.tar.zst) onto a /data file system.
+#
+#   eitri-seed-install --archive FILE --sha256 HEX --flavor klipper|kalico [options]
+#
+# Reference implementation of seed/SPEC.md "Installing a seed". POSIX sh; runs under dash, bash and the
+# BusyBox ash of the stage-2 initramfs and of the OS image. Needs: zstd tar sha256sum awk sed df mv rm rmdir mkdir
+# cat date find sync printf tr grep; chown only when --owner is given.
+#
+# Modes
+#   install (default)  First boot / blank /data. Every component that is absent (or an empty directory, which
+#                      data-init pre-creates) is put in place with one rename. A component that already has
+#                      content is left alone, never merged or overwritten. Re-running changes nothing.
+#   update             A newer seed of the SAME flavor (or --switch-flavor). Each component is swapped for the new
+#                      one with two renames; the old one stays as ".<name>.seed-old" until every swap worked
+#                      (all are rolled back otherwise) and is then deleted (--keep-old keeps it).
+#                      Stop klipper, moonraker and klarity first. Firmware trees and venvs that the user moved
+#                      forward (upstream mode: HEAD is not the commit the installed seed recorded) are kept
+#                      unless --force. printer_data/ is never touched in either mode.
+#
+# Options
+#   --archive FILE     the seed archive (required)
+#   --sha256 HEX       expected SHA-256 of the archive, from the signed install.json / channel manifest (required)
+#   --manifest FILE    also cross-check the archive name, sha256 and flavor against this manifest (needs python3)
+#   --flavor F         klipper | kalico (required); must equal the flavor inside the archive and /data/eitri/flavor
+#   --data DIR         the /data mount (default /data)
+#   --mode M           install | update
+#   --switch-flavor    (update) allow the archive's flavor to differ from /data/eitri/flavor
+#   --force            (update) replace firmware trees and venvs even when the installed ones were moved forward
+#   --keep-old         (update) keep the replaced trees as .<name>.seed-old
+#   --owner UID:GID    chown -R the installed components (default: keep the archive's 1000:1000)
+#
+# Two more modes finish or undo an update made with --keep-old (no archive needed):
+#   --mode rollback    put the ".seed-old" trees back (and the previous flavor and record)
+#   --mode finish      delete the ".seed-old" trees once the new seed has proved healthy
+#   --dry-run          verify and report; change nothing
+#   -q                 quiet
+#
+# Exit codes: 0 ok / nothing to do, 2 usage, 3 integrity or policy failure (nothing was changed),
+#             4 conflict (flavor mismatch, moved-forward tree without --force), 5 not enough space, 6 failure
+#             (the update was rolled back where it had started).
+set -eu
+umask 022
+
+COMPONENTS="firmware/klipper firmware/moonraker venv/klippy venv/moonraker eitri/klarity/venv eitri/extras eitri/klipper-layer eitri/seed"
+PARENTS="firmware venv eitri eitri/klarity"
+ARCHIVE="" SHA="" MANIFEST="" FLAVOR="" DATA=/data MODE=install SWITCH=0 FORCE=0 KEEP_OLD=0 OWNER="" DRY=0 QUIET=0
+
+die() { code=$1; shift; echo "eitri-seed-install: $*" >&2; exit "$code"; }
+say() { [ "$QUIET" -eq 1 ] || echo "eitri-seed-install: $*"; }
+
+# check_listing LISTFILE: apply the layout policy to a `tar -tv` listing; prints refusals and 'bytes N' (unpacked size).
+check_listing() {
+	awk -v comps="$COMPONENTS" -v parents="$PARENTS" '
+	function bad(msg) { printf "refused: %s: %s\n", name, msg; rc = 1 }
+	BEGIN { n = split(comps, C, " "); m = split(parents, P, " ") }
+	{
+		sym = ($7 == "->")
+		if (!(NF == 6 || (NF == 8 && sym))) { printf "refused: unparsable listing line: %s\n", $0; rc = 1; next }
+		t = substr($1, 1, 1); name = $6
+		if (t == "d") sub(/\/$/, "", name)
+		if (t != "-" && t != "d" && t != "l") { bad("not a regular file, directory or symlink"); next }
+		if (substr($1, 4, 1) ~ /[sS]/ || substr($1, 7, 1) ~ /[sS]/ || substr($1, 10, 1) ~ /[tT]/) { bad("set-uid, set-gid or sticky"); next }
+		if (name ~ /^\// || name ~ /(^|\/)\.\.?(\/|$)/ || name ~ /\/\// || name !~ /^[A-Za-z0-9._+@=,:~\/-]+$/) { bad("unsafe or non-normalised name"); next }
+		ok = 0
+		if (name == "eitri/flavor") ok = 1
+		for (i = 1; i <= m; i++) if (name == P[i]) ok = 1
+		for (i = 1; i <= n; i++) if (name == C[i] || index(name, C[i] "/") == 1) ok = 1
+		if (!ok) { bad("outside the seed layout"); next }
+		if ((t == "l") != sym) { bad("link listing mismatch"); next }
+		if (sym) {
+			tg = $8
+			if (tg ~ /^\//) { if (tg !~ /^\/(data|usr|etc|lib|run)\//) bad("symlink to an absolute path outside /data, /usr, /etc, /lib, /run") }
+			else {
+				d = split(name, NP, "/") - 1; k = split(tg, TP, "/")
+				for (i = 1; i <= k; i++) { if (TP[i] == "..") { d--; if (d < 0) { bad("symlink escapes the seed tree"); break } } else if (TP[i] != "" && TP[i] != ".") d++ }
+			}
+		}
+		if (t == "-") bytes += $3
+	}
+	END { printf "bytes %d\n", bytes; exit rc }' "$1"
+}
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--archive) ARCHIVE=${2:?}; shift 2 ;;
+	--sha256) SHA=${2:?}; shift 2 ;;
+	--manifest) MANIFEST=${2:?}; shift 2 ;;
+	--flavor) FLAVOR=${2:?}; shift 2 ;;
+	--data) DATA=${2:?}; shift 2 ;;
+	--mode) MODE=${2:?}; shift 2 ;;
+	--switch-flavor) SWITCH=1; shift ;;
+	--force) FORCE=1; shift ;;
+	--keep-old) KEEP_OLD=1; shift ;;
+	--owner) OWNER=${2:?}; shift 2 ;;
+	--dry-run) DRY=1; shift ;;
+	--check-listing) check_listing "${2:?}"; exit $? ;; # test hook: policy check of a `tar -tv` listing
+	-q) QUIET=1; shift ;;
+	-h | --help) sed -n '3,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	*) die 2 "unknown option: $1" ;;
+	esac
+done
+case "$MODE" in install | update | rollback | finish) ;; *) die 2 "--mode must be install, update, rollback or finish" ;; esac
+[ -d "$DATA" ] || die 2 "$DATA is not a directory"
+if [ "$MODE" = install ] || [ "$MODE" = update ]; then
+	[ -n "$ARCHIVE" ] && [ -f "$ARCHIVE" ] || die 2 "--archive FILE is required (and must exist)"
+	case "$SHA" in
+	*[!0-9a-f]* | "") die 2 "--sha256 must be 64 lowercase hex digits" ;;
+	esac
+	[ "${#SHA}" -eq 64 ] || die 2 "--sha256 must be 64 lowercase hex digits"
+	case "$FLAVOR" in klipper | kalico) ;; *) die 2 "--flavor must be klipper or kalico" ;; esac
+fi
+for t in zstd tar sha256sum awk sed df mv rm rmdir mkdir cat date find sync printf tr grep; do
+	command -v "$t" >/dev/null 2>&1 || die 6 "required tool not found: $t"
+done
+
+# One run at a time. mkdir is atomic; a lock left by a dead process is taken over.
+LOCK="$DATA/.eitri-seed.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+	pid=$(cat "$LOCK/pid" 2>/dev/null || true)
+	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then die 6 "another eitri-seed-install (pid $pid) is running"; fi
+	rm -rf "$LOCK"
+	mkdir "$LOCK" || die 6 "cannot take the lock $LOCK"
+fi
+echo $$ >"$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT
+
+STATE="$DATA/eitri/state"
+MARK="$STATE/seed-installed.env"
+old_of() { echo "$(dirname "$1")/.$(basename "$1").seed-old"; }
+
+if [ "$MODE" = rollback ] || [ "$MODE" = finish ]; then
+	n=0
+	for c in $COMPONENTS; do
+		d=$DATA/$c
+		o=$(old_of "$d")
+		[ -e "$o" ] || continue
+		n=$((n + 1))
+		if [ "$MODE" = rollback ]; then
+			rm -rf "$d"
+			mv "$o" "$d"
+		else
+			rm -rf "$o"
+		fi
+	done
+	if [ "$MODE" = rollback ]; then
+		[ ! -f "$MARK.prev" ] || mv "$MARK.prev" "$MARK"
+		if [ -f "$STATE/seed-flavor.prev" ]; then
+			cat "$STATE/seed-flavor.prev" >"$DATA/eitri/flavor.new" && mv "$DATA/eitri/flavor.new" "$DATA/eitri/flavor"
+			rm -f "$STATE/seed-flavor.prev"
+		fi
+	else
+		rm -f "$MARK.prev" "$STATE/seed-flavor.prev"
+	fi
+	sync
+	say "$MODE: $n tree(s)"
+	exit 0
+fi
+
+# --- 1. integrity: nothing is extracted before the archive matches the pinned digest ------------------------------
+got=$(sha256sum "$ARCHIVE" | awk '{print $1}')
+[ "$got" = "$SHA" ] || die 3 "archive SHA-256 is $got, expected $SHA"
+base=${ARCHIVE##*/}
+case "$base" in
+data-seed-*-"$FLAVOR".tar.zst) ;;
+*) die 3 "archive name '$base' does not look like data-seed-<version>-$FLAVOR.tar.zst" ;;
+esac
+if [ -n "$MANIFEST" ]; then
+	command -v python3 >/dev/null 2>&1 || die 6 "--manifest needs python3"
+	python3 - "$MANIFEST" "$base" "$SHA" "$FLAVOR" <<'PY' || die 3 "manifest does not match the archive"
+import json, sys
+m = json.load(open(sys.argv[1]))
+ok = m["archive"]["name"] == sys.argv[2] and m["archive"]["sha256"] == sys.argv[3] and m["flavor"] == sys.argv[4] and m["kind"] == "eitri-data-seed"
+sys.exit(0 if ok else 1)
+PY
+fi
+
+# --- 2. policy: only the known layout, only files, directories and safe symlinks --------------------------------
+LIST=$(mktemp "${TMPDIR:-/tmp}/seed-list.XXXXXX") || die 6 "mktemp failed"
+trap 'rm -rf "$LOCK"; rm -f "$LIST" "$LIST.out"' EXIT
+zstd -dc "$ARCHIVE" | tar -tvf - >"$LIST" || die 3 "cannot read the archive"
+check_listing "$LIST" >"$LIST.out" || {
+	cat "$LIST.out" >&2
+	rm -f "$LIST.out"
+	die 3 "the archive contains members outside the seed contract; nothing was changed"
+}
+need_kib=$(( $(sed -n 's/^bytes //p' "$LIST.out") / 1024 + 1 ))
+rm -f "$LIST.out"
+
+# --- 3. flavor and mode checks ------------------------------------------------------------------------------------
+cur_flavor=""
+[ ! -f "$DATA/eitri/flavor" ] || cur_flavor=$(tr -d ' \t\r\n' <"$DATA/eitri/flavor")
+if [ -n "$cur_flavor" ] && [ "$cur_flavor" != "$FLAVOR" ]; then
+	if [ "$MODE" = update ] && [ "$SWITCH" -eq 1 ]; then
+		say "switching flavor $cur_flavor -> $FLAVOR"
+	else
+		die 4 "/data/eitri/flavor says '$cur_flavor' but this is a $FLAVOR seed (use --mode update --switch-flavor to change flavor)"
+	fi
+fi
+
+# Leftovers of an interrupted update: a ".seed-old" next to a missing tree is the tree itself.
+for c in $COMPONENTS; do
+	d=$DATA/$c
+	o=$(old_of "$d")
+	# A ".seed-old" next to a missing tree is that tree (interrupted swap). One next to a present tree is a
+	# kept copy (--keep-old): left alone until --mode finish or rollback.
+	if [ -e "$o" ] && [ ! -e "$d" ]; then
+		say "recovering $c from an interrupted update"
+		[ "$DRY" -eq 1 ] || mv "$o" "$d"
+	fi
+done
+
+# --- 4. space: the staging copy lives next to the target, on the same file system ---------------------------------
+free_kib=${EITRI_SEED_FAKE_FREE_KIB:-$(df -Pk "$DATA" | awk 'NR == 2 {print $4}')}
+want_kib=$(( need_kib + need_kib / 10 + 65536 ))
+[ "$free_kib" -ge "$want_kib" ] || die 5 "need about $((want_kib / 1024)) MiB free on $DATA, have $((free_kib / 1024)) MiB"
+if [ "$DRY" -eq 1 ]; then
+	say "dry run: archive verified ($base), $((need_kib / 1024)) MiB unpacked, mode $MODE; nothing changed"
+	exit 0
+fi
+
+# --- 5. extract into a staging directory, then place components with renames --------------------------------------
+STAGE="$DATA/.eitri-seed-staging"
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+cleanup() { rm -rf "$STAGE" "$LOCK"; rm -f "$LIST"; }
+trap cleanup EXIT
+# Never -m / --touch: the pre-built c_helper.so must stay newer than the sources it was built from.
+zstd -dc "$ARCHIVE" | tar -xf - -C "$STAGE" || die 6 "extracting the archive failed"
+INFO="$STAGE/eitri/seed/seed-info.env"
+[ -f "$INFO" ] || die 3 "the archive has no eitri/seed/seed-info.env"
+grep -Eqv '^(#.*|[A-Z_0-9]*=[A-Za-z0-9._+-]*)$' "$INFO" && die 3 "seed-info.env contains something other than KEY=value lines"
+SEED_KIND="" SEED_FLAVOR="" SEED_LAYOUT="" SEED_VERSION="" SEED_TREE_SHA256="" SEED_FIRMWARE_COMMIT="" SEED_MOONRAKER_COMMIT=""
+# shellcheck disable=SC1090
+. "$INFO"
+[ "$SEED_KIND" = eitri-data-seed ] && [ "$SEED_LAYOUT" = 1 ] || die 3 "unsupported seed (kind '$SEED_KIND', layout '$SEED_LAYOUT')"
+[ "$SEED_FLAVOR" = "$FLAVOR" ] || die 3 "the archive is a $SEED_FLAVOR seed, not $FLAVOR"
+[ "$(tr -d ' \t\r\n' <"$STAGE/eitri/flavor")" = "$FLAVOR" ] || die 3 "eitri/flavor inside the archive disagrees"
+for c in $COMPONENTS; do [ -d "$STAGE/$c" ] || die 3 "the archive lacks $c"; done
+
+fix_owner() { [ -z "$OWNER" ] || chown -R "$OWNER" "$1" 2>/dev/null || true; }
+
+ensure_parent() { # make the parent directory of $1 (a path below $DATA), owned like the data layer
+	p=$(dirname "$1")
+	if [ ! -d "$p" ]; then
+		mkdir -p "$p"
+		[ -z "$OWNER" ] || chown "$OWNER" "$p" 2>/dev/null || true
+	fi
+}
+
+is_empty_dir() { [ -d "$1" ] && [ ! -L "$1" ] && [ -z "$(ls -A "$1" 2>/dev/null)" ]; }
+
+installed_commit() { # installed_commit DIR -> HEAD commit, or nothing
+	if command -v git >/dev/null 2>&1; then git -c safe.directory='*' -C "$1" rev-parse HEAD 2>/dev/null || true; fi
+}
+
+recorded() { # recorded KEY -> value from the marker of the installed seed
+	[ -f "$MARK" ] || return 0
+	sed -n "s/^$1=//p" "$MARK" | head -n 1
+}
+
+PLACED="" KEPT="" SWAPPED=""
+
+place() { # place COMPONENT: move the staged tree to an absent target
+	mkdir -p "$DATA/eitri"
+	ensure_parent "$DATA/$1"
+	mv "$STAGE/$1" "$DATA/$1"
+	fix_owner "$DATA/$1"
+	PLACED="$PLACED $1"
+}
+
+rollback() {
+	for c in $SWAPPED; do
+		d=$DATA/$c
+		o=$(old_of "$d")
+		rm -rf "$d"
+		[ ! -e "$o" ] || mv "$o" "$d"
+	done
+}
+
+install_mode() {
+	for c in $COMPONENTS; do
+		d=$DATA/$c
+		if [ ! -e "$d" ] && [ ! -L "$d" ]; then
+			place "$c"
+		elif is_empty_dir "$d"; then
+			rmdir "$d"
+			place "$c"
+		elif [ "$(recorded SEED_TREE_SHA256)" = "$SEED_TREE_SHA256" ]; then
+			say "$c is already installed from this seed"
+		else
+			KEPT="$KEPT $c"
+			say "keeping existing $c (install mode never overwrites)"
+		fi
+	done
+}
+
+update_mode() {
+	# A moved-forward tree (upstream mode) is not ours to replace.
+	skip_klippy=0 skip_moonraker=0
+	if [ "$FORCE" -eq 0 ]; then
+		rec=$(recorded SEED_FIRMWARE_COMMIT)
+		have=$(installed_commit "$DATA/firmware/klipper")
+		if [ -n "$rec" ] && [ -n "$have" ] && [ "$have" != "$rec" ]; then skip_klippy=1; fi
+		rec=$(recorded SEED_MOONRAKER_COMMIT)
+		have=$(installed_commit "$DATA/firmware/moonraker")
+		if [ -n "$rec" ] && [ -n "$have" ] && [ "$have" != "$rec" ]; then skip_moonraker=1; fi
+	fi
+	for c in $COMPONENTS; do
+		d=$DATA/$c
+		case $c in
+		firmware/klipper | venv/klippy) [ "$skip_klippy" -eq 0 ] || { KEPT="$KEPT $c"; say "keeping $c: the Klipper/Kalico tree was moved forward (use --force)"; continue; } ;;
+		firmware/moonraker | venv/moonraker) [ "$skip_moonraker" -eq 0 ] || { KEPT="$KEPT $c"; say "keeping $c: the Moonraker tree was moved forward (use --force)"; continue; } ;;
+		esac
+		if [ ! -e "$d" ] && [ ! -L "$d" ]; then
+			place "$c"
+			continue
+		fi
+		o=$(old_of "$d")
+		rm -rf "$o"
+		if ! mv "$d" "$o"; then rollback; die 6 "could not move $c aside"; fi
+		SWAPPED="$SWAPPED $c"
+		if ! mv "$STAGE/$c" "$d"; then rollback; die 6 "could not put the new $c in place; rolled back"; fi
+		fix_owner "$d"
+		PLACED="$PLACED $c"
+	done
+}
+
+if [ "$MODE" = install ]; then install_mode; else update_mode; fi
+
+if [ "$MODE" = update ] && [ "$KEEP_OLD" -eq 1 ]; then
+	mkdir -p "$STATE"
+	[ ! -f "$MARK" ] || cp "$MARK" "$MARK.prev"
+	[ ! -f "$DATA/eitri/flavor" ] || cp "$DATA/eitri/flavor" "$STATE/seed-flavor.prev"
+fi
+
+# The flavor file: written when absent, otherwise it must already say the same (or a switch was asked for).
+if [ ! -f "$DATA/eitri/flavor" ]; then
+	mkdir -p "$DATA/eitri"
+	cat "$STAGE/eitri/flavor" >"$DATA/eitri/flavor.new" && mv "$DATA/eitri/flavor.new" "$DATA/eitri/flavor"
+	fix_owner "$DATA/eitri/flavor"
+elif [ "$cur_flavor" != "$FLAVOR" ]; then
+	cat "$STAGE/eitri/flavor" >"$DATA/eitri/flavor.new" && mv "$DATA/eitri/flavor.new" "$DATA/eitri/flavor"
+fi
+
+# --- 6. record what is installed (written last; its absence means "not finished, run again") ----------------------
+if [ -n "$PLACED" ] || [ ! -f "$MARK" ]; then
+	mkdir -p "$STATE"
+	{
+		echo "# Written by eitri-seed-install; see seed/SPEC.md."
+		echo "SEED_VERSION=$SEED_VERSION"
+		echo "SEED_FLAVOR=$SEED_FLAVOR"
+		echo "SEED_TREE_SHA256=$SEED_TREE_SHA256"
+		echo "SEED_ARCHIVE_SHA256=$SHA"
+		echo "SEED_FIRMWARE_COMMIT=$SEED_FIRMWARE_COMMIT"
+		echo "SEED_MOONRAKER_COMMIT=$SEED_MOONRAKER_COMMIT"
+		echo "SEED_MODE=$MODE"
+		echo "SEED_INSTALLED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+		echo "SEED_PLACED=$(echo $PLACED)"
+		echo "SEED_KEPT=$(echo $KEPT)"
+	} >"$MARK.new"
+	mv "$MARK.new" "$MARK"
+fi
+
+if [ "$MODE" = update ] && [ "$KEEP_OLD" -eq 0 ]; then
+	for c in $SWAPPED; do
+		rm -rf "$(old_of "$DATA/$c")"
+	done
+fi
+sync
+if [ -z "$PLACED" ]; then
+	say "nothing to do: every component is already present"
+else
+	say "installed seed $SEED_VERSION ($SEED_FLAVOR):$PLACED"
+fi
+[ -z "$KEPT" ] || say "left in place:$KEPT"
+exit 0

@@ -23,6 +23,8 @@ def image(tmp_path_factory):
     for d in (inputs, root, tmp, out):
         d.mkdir()
     # Stand-ins for the build outputs; only sizes and names matter here.
+    # post-image.sh builds data.ext4 (mkdata.sh); genimage takes it from the input path.
+    run([BOARD / "mkdata.sh", "--output", inputs / "data.ext4"], check=True)
     (inputs / "idbloader.img").write_bytes(b"\x01" * 120 * 1024)
     (inputs / "u-boot.itb").write_bytes(b"\x02" * 1024 * 1024)
     for name in ("eitri-boot.env", "README.txt"):
@@ -96,5 +98,13 @@ def test_image_is_reproducible(image, tmp_path_factory):
 
 def test_data_partition_stops_writing_on_a_filesystem_error():
     # The mount unit says errors=remount-ro too (test_generator); the superblock default must agree.
-    cfg = (BOARD / "genimage.cfg").read_text()
-    assert re.search(r'extraargs = "[^"]*-e remount-ro\b', cfg)
+    script = (BOARD / "mkdata.sh").read_text()
+    assert re.search(r"mke2fs [^\n]*-e remount-ro\b", script)
+
+
+def test_data_partition_comes_from_the_prebuilt_image(image):
+    rows = table(image)
+    start = rows["data"]["start"] * 512
+    data = image.read_bytes()
+    assert data[start + 1080 : start + 1082] == b"\x53\xef", "ext4 superblock magic in the data partition"
+    assert rows["data"]["size"] * 512 == 128 * 1024 * 1024

@@ -47,3 +47,21 @@ def test_status_and_confirm(tmp_path, capsys):
     code, out, _ = run_cli(rig, ["--json", "status"], capsys)
     data = json.loads(out.splitlines()[-1])["data"]
     assert data["installed"] == "2026.09.0" and data["booted_slot"] == "A" and data["flavor"] == "klipper"
+
+
+def test_the_help_labels_the_flash_once_image_as_bench_only(capsys):
+    import pytest
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "in-place conversion" in out and "bench boards, microSD cards and CI only" in out and "switch-flavor" in out
+    with pytest.raises(SystemExit):
+        cli.main(["switch-flavor", "--help"])
+    assert "{klipper,kalico}" in capsys.readouterr().out
+
+
+def test_bootctl_usage_labels_the_flash_once_image_as_bench_only(capsys):
+    from eitri_update import bootctl
+    assert bootctl.main([]) == 2
+    err = " ".join(capsys.readouterr().err.split())
+    assert "backend=inplace" in err and "bench boards, microSD cards and CI only" in err

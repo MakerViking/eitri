@@ -1,0 +1,7 @@
+# Klarity venv. Input to `uv pip compile` (see ../tools/lock.sh).
+# Mirrors [project].dependencies and the "camera" extra of ../../klarity/pyproject.toml; a test keeps them equal.
+# Klarity itself is built from the repository and installed with --no-deps.
+pyserial-asyncio-fast>=0.16
+websockets>=15
+PyYAML>=6.0
+pillow>=12

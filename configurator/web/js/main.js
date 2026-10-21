@@ -12,9 +12,10 @@ import * as options from './steps/options.js';
 import * as review from './steps/review.js';
 import * as flash from './steps/flash.js';
 import * as calibrate from './steps/calibrate.js';
+import * as remote from './steps/remote.js';
 import * as done from './steps/done.js';
 
-const STEPS = [welcome, network, detect, flavor, options, review, flash, calibrate, done];
+const STEPS = [welcome, network, detect, flavor, options, review, flash, calibrate, remote, done];
 const ids = STEPS.map((s) => s.meta.id);
 
 let current = null;       // { id, destroy }

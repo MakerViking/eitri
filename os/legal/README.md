@@ -33,8 +33,8 @@ GPL and LGPL programs. For each release we publish the **corresponding source al
    It is never deleted while the binaries are downloadable.
 2. **Build recipe.** `eitri-<version>-licenses.tar.xz` carries `buildroot.config` and the licence
    texts; `eitri-<version>-repo-source.tar.gz` is `git archive` of the Eitri tag: the defconfig, DTS,
-   kernel and U-Boot config fragments, the local packages (camera, configurator, mcuflash,
-   klipper-layer), and the scripts that control the build. Together with the Buildroot version in
+   kernel and U-Boot config fragments, the local packages (camera, configurator, mcuflash)
+   and the `klipper-layer/` and `seed/` directories (the layer is not in the image: it ships in the data seed), and the scripts that control the build. Together with the Buildroot version in
    `release.lock` these let anyone rebuild the image (`make -C os image`).
 3. **Written offer, as a fallback.** If a release is ever distributed in a form that cannot point to a
    download (a pre-flashed microSD, printers sold with the image), the box and the image carry a
@@ -81,7 +81,7 @@ less, nano, git, htop, chrony, dnsmasq, rsync, squashfs-tools, nftables, nftable
 libatomic_ops (gpl extension), libv4l (utilities), NetworkManager (GPL-2.0+ app), ca-certificates
 (script), libcap and zstd (dual, permissive option available), and Eitri's own GPL components:
 eitri-ustreamer (GPL-3.0+), eitri-katapult (GPL-3.0+), eitri-fluidd (GPL-3.0+), eitri-mainsail
-(GPL-3.0+), eitri-klipper-layer (extras GPL-3.0-or-later).
+(GPL-3.0+). Eitri's `qd_*` extras (GPL-3.0-or-later) are not in the image; they ship in the data seed.
 
 Weak copyleft (LGPL/MPL, source plus relinking rights; all are shared libraries so the user can
 replace them): avahi, libglib2, util-linux-libs, libxcrypt, libdaemon, libmnl, libusb, libnl,

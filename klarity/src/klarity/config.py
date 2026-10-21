@@ -63,6 +63,25 @@ class LearnConfig:
 
 
 @dataclass(slots=True)
+class UnlockConfig:
+    """The "Unlock setup" screen action (reopens the configurator's pairing, shows the code)."""
+
+    enabled: bool = True
+    # Privileged helper (narrow sudoers rule); run without a shell.
+    command: str = "/usr/bin/sudo -n /usr/bin/eitri-configurator unlock"
+    # The configurator exits after setup; this brings it back (polkit lets the eitri user do it).
+    start_command: str = "/usr/bin/systemctl --no-block start eitri-configurator.service"
+    # Written by the configurator: {"state": "pairing"|"locked", "code": "dddd-dddd"}.
+    pairing_file: str = "/data/eitri/configurator/pairing.json"
+    # Address shown to the user: empty = the printer's own IPv4 address (default route).
+    host: str = ""
+    port: int = 8099
+    # Seconds to wait for each command, and for the code to appear.
+    timeout: float = 10.0
+    wait: float = 15.0
+
+
+@dataclass(slots=True)
 class KlarityConfig:
     map: str = ""
     allow_todo: bool = False
@@ -74,6 +93,7 @@ class KlarityConfig:
     push: PushConfig = field(default_factory=PushConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
     learn: LearnConfig = field(default_factory=LearnConfig)
+    unlock: UnlockConfig = field(default_factory=UnlockConfig)
 
     @property
     def map_path(self) -> Path:
@@ -87,6 +107,7 @@ _SECTIONS: dict[str, str | None] = {
     "push": "push",
     "camera": "camera",
     "learn": "learn",
+    "unlock": "unlock",
 }
 
 
@@ -146,6 +167,10 @@ def parse_config(text: str) -> KlarityConfig:
         raise ConfigError("[screen] baud must be positive")
     if cfg.push.min_interval < 0.02 or cfg.push.max_commands_per_second <= 0:
         raise ConfigError("[push] min_interval must be >= 0.02 and max_commands_per_second > 0")
+    if not 1 <= cfg.unlock.port <= 65535:
+        raise ConfigError("[unlock] port must be 1..65535")
+    if cfg.unlock.timeout <= 0 or cfg.unlock.wait < 0:
+        raise ConfigError("[unlock] timeout must be > 0 and wait >= 0")
     return cfg
 
 

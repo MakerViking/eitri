@@ -11,6 +11,7 @@ import shlex
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 CONFIGURATOR_DIR = PACKAGE_DIR.parent
@@ -34,7 +35,12 @@ class Settings:
     mock: bool = False
     host: str = "0.0.0.0"
     port: int = 8099
-    retire_when_locked: bool = False     # exit at start-up when setup is complete and nobody opened maintenance
+    # Exit when setup is complete and nobody opened maintenance: at start-up, and again once the finishing
+    # browser's grace period is over (frees the configurator's memory; `eitri-configurator unlock` brings it back).
+    # The command line turns this on by default outside mock mode.
+    retire_when_locked: bool = False
+    retire_poll: float = 15.0            # seconds between retirement checks
+    retire_hook: Callable[[], None] | None = None     # what "exit" does; None = SIGTERM to ourselves (tests replace it)
 
     repo_root: Path = DEFAULT_REPO_ROOT
     web_dir: Path = field(default_factory=default_web_dir)
@@ -45,6 +51,11 @@ class Settings:
     mcuflash_cmd: list[str] = field(default_factory=lambda: ["eitri-mcuflash"])
     # Optional override for the klipper-layer directory (default: <repo_root>/klipper-layer, then /data/eitri/klipper-layer).
     layer_dir: Path | None = None
+
+    # argv prefix of the privileged remote-access helper (see access.py); the verb is appended.
+    access_cmd: list[str] = field(default_factory=lambda: ["sudo", "-n", "/usr/libexec/eitri/eitri-access"])
+
+    access_env: dict[str, str] = field(default_factory=dict)      # extra environment for the helper (tests only)
 
     # Mock-mode knobs (ignored otherwise).
     mock_speed: float = 1.0          # >1 faster, 0 = instant
@@ -74,12 +85,32 @@ class Settings:
         return self.configurator_dir / "state.json"
 
     @property
+    def hostname_file(self) -> Path:
+        """The name chosen in the wizard, remembered for the next run (the OS gets it through hostnamectl)."""
+        return self.configurator_dir / "hostname"
+
+    @property
+    def ui_dir(self) -> Path:
+        """/data/eitri/ui: a directory of the service user's, with `current` -> /usr/share/eitri/ui/<fluidd|mainsail> (nginx's root)."""
+        return self.eitri_dir / "ui"
+
+    @property
     def flavor_file(self) -> Path:
         return self.eitri_dir / "flavor"
 
     @property
     def release_lock(self) -> Path:
         return self.repo_root / "release.lock"
+
+    @property
+    def pairing_file(self) -> Path:
+        """Where the pairing code is published for Klarity: /data/eitri/configurator/pairing.json."""
+        return self.configurator_dir / "pairing.json"
+
+    @property
+    def camera_auth_file(self) -> Path:
+        # Written by camera/bin/eitri-go2rtc-auth on go2rtc's first start (mode 0600, readable by the eitri user).
+        return self.config_dir / "go2rtc-auth.env"
 
     @property
     def klarity_status_file(self) -> Path:
@@ -90,6 +121,7 @@ class Settings:
     def for_mock(cls, data_dir: Path, **kw) -> "Settings":
         s = cls(mock=True, data_dir=data_dir, **kw)
         s.mcuflash_cmd = [sys.executable, "-I", str(PACKAGE_DIR / "mock" / "mcuflash.py")]
+        s.access_cmd = [sys.executable, "-I", str(PACKAGE_DIR / "mock" / "eitri_access.py"), str(data_dir / "eitri" / "configurator" / "mock-access.json")]
         return s
 
 

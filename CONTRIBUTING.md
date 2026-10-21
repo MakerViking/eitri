@@ -36,12 +36,12 @@ These must hold in every build. A change that weakens any of them will not be me
 ### 3. Clean-room boundary
 
 - Do not include QIDI binaries, `.tft` or `.HMI` display assets, Cython `.so` modules, firmware dumps, or decompiler output, in any form, in any commit, issue, or attachment.
-- You may reference and adapt QIDI's **public GPL sources and configs**, with attribution in `NOTICE` and under the license of the source. Check the license of the specific repository first. See `release.lock` under `[attributed.*]`.
+- You may reference and adapt QIDI's **public GPL sources and configs**, with attribution in `NOTICE` and under the license of the source. Check the license of the specific repository first: `QIDITECH/QIDI_PLUS4` is treated as AGPL-3.0, so anything adapted from it into `klipper-layer/config/` is AGPL-3.0-or-later. See `release.lock` under `[attributed.*]` and the Licensing section of `README.md`.
 - Describe hardware behavior in terms of what you observed on hardware you own, not in terms of code you read in a closed binary.
 
 ### 4. No secrets and no personal data
 
-Do not commit API keys, Moonraker tokens, Wi-Fi passwords, serial numbers, MAC addresses, or the contents of a live printer configuration that holds any of these. `.gitignore` blocks the common cases, but the check is your responsibility.
+Do not commit API keys, Moonraker tokens, Wi-Fi passwords, serial numbers, MAC addresses, or the contents of a live printer configuration that holds any of these. `.gitignore` blocks the common cases, but the check is your responsibility. Release signing keys are never in the repository or in a build job; `docs/RELEASING.md` explains where they live.
 
 ## Development setup
 
@@ -71,7 +71,7 @@ Every commit must carry a `Signed-off-by:` line, which certifies the [Developer 
 
 ### Licensing of contributions
 
-Unless you say otherwise, your contribution is licensed under **Apache-2.0** when it lands in the repository root and its subdirectories, and under **GPL-3.0-or-later** when it lands in `klipper-layer/extras/`. You confirm that you have the right to contribute it under those terms and that it contains no proprietary or clean-room-excluded material.
+Unless you say otherwise, your contribution is licensed under **Apache-2.0** when it lands in the repository root and its subdirectories, under **GPL-3.0-or-later** when it lands in `klipper-layer/extras/`, and under **AGPL-3.0-or-later** when it adapts QIDI's configuration into `klipper-layer/config/` (a file there that you wrote from scratch is Apache-2.0; see `klipper-layer/config/LICENSE-NOTE.md`). Put the matching `SPDX-License-Identifier` line at the top of every new file in those two directories; `tools/check-repo.py` fails without it. You confirm that you have the right to contribute it under those terms and that it contains no proprietary or clean-room-excluded material.
 
 ## Reporting bugs
 

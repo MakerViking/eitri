@@ -40,7 +40,17 @@ class State:
         return value if value in ("eitri", "upstream") else "eitri"
 
     def set_text(self, name: str, value: str) -> None:
-        atomic_write(os.path.join(self.root, name), value + "\n")
+        """Replace a small file; keep its owner. eitri/flavor and eitri/channel belong to the service user (the
+        configurator rewrites them, and /data/eitri is root's so it cannot create them): a root-run client must
+        not turn them into root-owned files."""
+        path = os.path.join(self.root, name)
+        try:
+            st = os.stat(path)
+        except OSError:
+            st = None
+        atomic_write(path, value + "\n")
+        if st is not None and os.geteuid() == 0:
+            os.chown(path, st.st_uid, st.st_gid)
 
     # -- update.json -------------------------------------------------------------
     def load(self) -> Dict[str, Any]:

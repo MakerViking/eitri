@@ -1,13 +1,24 @@
 # The "eitri" account runs the unauthenticated configurator, Moonraker, Klipper, Klarity and the camera
-# programs, so a flaw in any of them must not hand out root. It gets exactly two things:
+# programs, so a flaw in any of them must not hand out root. It gets exactly these:
 #
 #   - the two on-device update tools, without a password (they do the boot-slot and RAUC work;
 #     unit control, reboot, host name and networking go through polkit, see
 #     usr/share/polkit-1/rules.d/50-eitri.rules);
+#   - optional shell access (decision 4): the configurator adds an SSH key or sets a password through
+#     eitri-access, one fixed command line per rule (sudo matches the arguments exactly, so there is no
+#     way to add others). The key or password is read from stdin and validated by the tool;
+#   - "unlock setup" (decision 8): Klarity's button runs `eitri-configurator unlock`. It runs the
+#     configurator's own copy in the read-only image, never code from /data, drops to the eitri user
+#     before it touches the maintenance flag under /data/eitri/configurator, and starts the service;
 #   - anything else only with the account's own password. The password is locked ("*") until
 #     its owner sets one, so on a fresh image there is no general root access at all.
 #
 # Do not add a NOPASSWD rule that allows ALL commands; os/tests/test_tree.py rejects it. Bench
 # images that need one ship it in a separate drop-in (sudoers.d/eitri-dev).
-eitri ALL=(root) NOPASSWD: /usr/bin/eitri-update, /usr/libexec/eitri/eitri-bootctl
+# sudo uses the LAST rule that matches a command, so the broad rule (password required) comes first
+# and the specific passwordless rules after it; in the other order they would never apply.
 eitri ALL=(ALL) ALL
+eitri ALL=(root) NOPASSWD: /usr/bin/eitri-update, /usr/libexec/eitri/eitri-bootctl
+eitri ALL=(root) NOPASSWD: /usr/libexec/eitri/eitri-access set-key, /usr/libexec/eitri/eitri-access disable, /usr/libexec/eitri/eitri-access status
+eitri ALL=(root) NOPASSWD: /usr/libexec/eitri/eitri-access set-password, /usr/libexec/eitri/eitri-access set-password --ssh-login
+eitri ALL=(root) NOPASSWD: /usr/bin/eitri-configurator unlock

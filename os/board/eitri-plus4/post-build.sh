@@ -97,6 +97,27 @@ if [ -x "$REPO_ROOT/installer/tools/install-into-rootfs.sh" ]; then
 	log "installed eitri-update and eitri-bootctl"
 fi
 
+# The data seed installer (seed/SPEC.md, "Installing a seed"): used by eitri-seed.service for images that
+# carry a seed archive, by eitri-update's data bundles and for flavor switches. The seed itself is not in the
+# image: the flash-once image's /data is populated at build time (mkdata.sh) and the in-place installer
+# unpacks it in stage 2. Nothing of the Klipper layer (extras, config templates) is installed here any more:
+# /data/eitri/extras and /data/eitri/klipper-layer come from the seed and follow Klipper (decision 2).
+[ -f "$REPO_ROOT/seed/bin/eitri-seed-install" ] || fail "seed/bin/eitri-seed-install is missing"
+install -D -m 0755 "$REPO_ROOT/seed/bin/eitri-seed-install" "$TARGET_DIR/usr/libexec/eitri/eitri-seed-install"
+install -D -m 0644 "$REPO_ROOT/seed/SPEC.md" "$TARGET_DIR/usr/share/doc/eitri/seed/SPEC.md"
+# The image used to carry the layer (package eitri-klipper-layer, removed). Buildroot does not delete the files
+# of a package that left the configuration from an existing target tree, so make sure none is shipped.
+if [ -e "$TARGET_DIR/usr/lib/eitri/klipper-layer" ]; then
+	warn "removing a stale /usr/lib/eitri/klipper-layer from the target tree (the layer lives on /data now)"
+	rm -rf "$TARGET_DIR/usr/lib/eitri/klipper-layer"
+fi
+
+# Root helpers behind the sudo rules, and the tools that must not be writable by anyone else.
+for tool in usr/libexec/eitri/eitri-access usr/libexec/eitri/seed-first-boot usr/bin/eitri-configurator; do
+	[ -f "$TARGET_DIR/$tool" ] || fail "$tool is missing from the rootfs overlay"
+	chmod 0755 "$TARGET_DIR/$tool"
+done
+
 # The configurator runs from a read-only tree, so Python cannot write byte
 # code next to it. Precompile it with the same interpreter version, unchecked
 # so the files stay valid whatever their timestamps are.

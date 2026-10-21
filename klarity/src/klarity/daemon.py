@@ -30,6 +30,7 @@ from .screen import Screen, ScreenError
 from .screenmap import ScreenMap
 from .state import PrinterState
 from .transport import SerialTransport, Transport
+from .unlock import SetupUnlocker
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class Klarity:
         transport: Transport | None = None,
         learn: bool | None = None,
         dry_run: bool = False,
+        unlocker: SetupUnlocker | None = None,
     ) -> None:
         self.cfg = cfg
         self.smap = smap or ScreenMap.load(cfg.map_path, allow_todo=cfg.allow_todo)
@@ -72,7 +74,12 @@ class Klarity:
             backoff_max=cfg.moonraker.backoff_max,
         )
         self.runner = ActionRunner(
-            self.screen, self.moonraker, self.state, self.smap, dry_run=dry_run
+            self.screen,
+            self.moonraker,
+            self.state,
+            self.smap,
+            dry_run=dry_run,
+            unlocker=unlocker or SetupUnlocker(cfg.unlock),
         )
         self.pusher = Pusher(
             self.screen,

@@ -36,13 +36,15 @@
 #                   Bindings are only pushed while their page is showing, and only on change.
 #  action           exactly one verb:  gcode: "..."   print: pause|resume|cancel|start|...
 #                                      page: <page key>   beep: <ms>   log: "..."
-#                                      set: {obj, attr, value}
+#                                      set: {obj, attr, value}   unlock: setup
 #                   optional modifiers: guard: {source, <test>}   cooldown: <s>
 #                                       read: {var: "obj.attr"}  (ask the panel, use as {var})
 #                                       else_beep: <ms>  (when the guard blocks)
 #                   print verbs other than emergency_stop REQUIRE a guard; emergency_stop needs
 #                   either a guard or `unguarded: true`.  A todo widget with an emergency_stop
 #                   stays inert even with allow_todo until `todo` is removed.
+#                   `unlock: setup` (REQUIRES a guard) reopens the configurator's pairing and sets
+#                   {code} {host} {url} {message} for the actions after it in the same list.
 #                   Placeholders {value} / {text} / {page} / {widget} and read-vars are
 #                   substituted into gcode; text from the panel is restricted to [\w .+-/].
 #  derived.*        state, progress, elapsed, remaining, filename, layer, total_layers,
@@ -1961,7 +1963,7 @@ pages:
         on_release:
         - page: settings_more
   # ----------------------------------------------------------------------
-  # page 0x3e: Settings > Network (ethernet/wifi toggles; IP in t7)
+  # page 0x3e: Settings > Network (ethernet/wifi toggles; IP in t7; button 9 = Eitri "Unlock setup")
   network:
     id: 62
     name: network
@@ -2005,11 +2007,32 @@ pages:
         id: 8
         on_release:
         - page: wifi_list
-      accounts:
+      # Eitri repurposes the stock "accounts" button (widget 9, unconfirmed and inert; the stock host
+      # only logged an account list for it, and Eitri has no accounts) as "Unlock setup" (Decision 8).  The .tft cannot get a new
+      # widget, so the button keeps its stock label; the result goes into the page's one known text
+      # field t7 (where the stock host showed the IP address): "Code 1234-5678 at 192.168.0.5:8099".
+      # Runs `sudo -n eitri-configurator unlock`, starts the configurator and reads its pairing code;
+      # refused while printing/paused (guard here, and again in the runner).  The text is replaced by
+      # the stock page's own content the next time the page is entered.
+      unlock_setup:
         id: 9
-        todo: true
         on_release:
-        - log: account list
+        - unlock: setup
+          guard:
+            source: derived.state
+            not_in:
+            - printing
+            - paused
+          else_beep: 80
+        - set:  # same guard: a blocked unlock defines no {message}
+            obj: t7
+            attr: txt
+            value: '{message}'
+          guard:
+            source: derived.state
+            not_in:
+            - printing
+            - paused
       nav_main:
         id: 33
         on_release:

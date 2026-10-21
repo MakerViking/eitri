@@ -13,6 +13,18 @@ Generate a key pair for a release channel:
 
     minisign -G -p eitri-release.pub -s eitri-release.key
 
+## Who holds the keys, and what CI does
+
+The private minisign key and the RAUC CA key are held offline by the maintainer and are never committed or stored as
+ordinary repository secrets. CI builds every artifact (root image, stage-2 initramfs, MCU firmware, the per-flavor **data
+seeds** and their manifests) and prepares *unsigned* `install.json` and `manifest.json` that carry all their SHA-256 values and
+sizes. Signing happens only in a separate job bound to the protected GitHub `release` environment with the maintainer as
+required reviewer (deferred signing): the reviewer compares the digest list in the job summary with the build, approves, and
+only then does the job produce `install.json.minisig` / `manifest.json.minisig`. The seed workflow (`.github/workflows/data-seed.yml`)
+has no secrets and signs nothing. Nothing in `install.sh`, `eitri-update` or `eitri-seed-install` changes with this: the
+clients only know the public key, and every other file is trusted exclusively through the digest in a signed document (the
+seed's own manifest is an extra consistency check, never a source of trust).
+
 ## What is trusted, and how that can change
 
 * **The trust root is the OS image.** `eitri-update` trusts only `/usr/share/eitri/keys/` (read-only, part of the

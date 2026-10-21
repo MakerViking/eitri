@@ -211,6 +211,8 @@ async def walk(session, chrome_port, server_port, data_dir, vp_name, theme, fold
         await ex.shot("05b-options-chamber", settle=0.6)
         await cdp.js("document.querySelector('[data-id=chamber_heater] input').click()")
         await asyncio.sleep(0.5)
+    await cdp.js("document.querySelector('[data-id=go2rtc] input').click()")      # the RTSP gateway, so Done links to the camera sign-in
+    await asyncio.sleep(0.4)
     await s.next()
 
     await s.wait("document.querySelector('.file')")
@@ -252,14 +254,40 @@ async def walk(session, chrome_port, server_port, data_dir, vp_name, theme, fold
     await s.shot("08d-calibrate-mesh", settle=2.2)
     await s.next()
 
+    await s.wait("document.querySelector('[data-step=remote].current') && document.querySelector('.keybox')")
+    await s.shot("09-remote", settle=1.6)
+    if theme == "dark":
+        # An example public key (not a real one): paste, add, then the password disclosure.
+        key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPq3x9d0uVn7mYw2sJf8TgH1cKz5RbLaE4oXvNiQ6DuW thomas@workshop"
+        await cdp.js(f"(() => {{ const a = document.querySelector('.keybox'); a.value = {json.dumps(key)}; a.dispatchEvent(new Event('input', {{bubbles: true}})); }})()")
+        await ex.shot("09b-remote-key-pasted", settle=0.5)
+        await ex.click("Add this key")
+        await s.wait("document.querySelector('.bolt.open') && !document.querySelector('.key-done').hidden")
+        await ex.shot("09c-remote-key-added", settle=1.0)
+        await cdp.js("document.querySelector('.pw-details').open = true")
+        await cdp.js("(() => { const set = (id, v) => { const i = document.getElementById(id); i.value = v; i.dispatchEvent(new Event('input', {bubbles: true})); }; set('rm-pw', 'short'); set('rm-pw2', 'short'); })()")
+        await ex.click("Set password")
+        await s.wait("document.querySelector('.pw-body .field-error').textContent.length > 0")
+        await ex.shot("09d-remote-password-refused", settle=0.6)
+        await cdp.js("document.querySelector('.pw-details').open = false")
+        await ex.click("Remove all remote access")
+        await s.wait("!document.querySelector('.bolt.open')")
+    await s.next()
+
     await s.wait("document.querySelector('[data-step=done].current') && document.querySelector('.klarity-card')")
-    await s.shot("09-done", settle=2.6)
+    await s.shot("10-done", settle=2.6)
+    # The camera password lives on a page of its own (still inside the finishing browser's grace period).
+    await cdp.call("Page.navigate", url=f"{base}/camera.html")
+    await s.wait("document.querySelector('.plate.cred')")
+    await s.shot("11-camera-signin", settle=1.2)
+    if theme == "dark":
+        await ex.click("Show password")
+        await ex.shot("11b-camera-signin-revealed", settle=0.5)
     if theme == "dark":
         # Finishing locked the configurator: a browser that is not paired now meets the locked door.
         await cdp.call("Network.enable")
         await cdp.call("Network.clearBrowserCookies")
-        await cdp.call("Page.navigate", url=f"{base}/#/welcome")
-        await cdp.call("Page.reload")
+        await cdp.call("Page.navigate", url=f"{base}/")
         await ex.wait("document.querySelector('.gate-steps')")
         await ex.shot("09b-locked", settle=1.2)
 

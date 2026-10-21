@@ -2,15 +2,26 @@
 #
 # The "eitri" account has no password until one is set, so login is by public
 # key. Keys are added by dropping an authorized_keys file on the boot partition
-# (see /boot/firmware/README.txt) or through the configurator. Host keys are
-# generated on the first boot and live in the persistent /etc overlay.
+# (see /boot/firmware/README.txt) or through the configurator (eitri-access,
+# decision 4). Host keys are generated on the first boot and live in the
+# persistent /etc overlay.
+
+# What the owner chose in the configurator. sshd uses the FIRST value it sees for
+# a keyword, so this Include has to stay above PasswordAuthentication: the file
+# is empty (password login off) unless the owner asked for password login over
+# SSH. It is written by /usr/libexec/eitri/eitri-access, never by hand. A missing
+# file is fine.
+Include /data/eitri/state/access/sshd.conf
+
 Port 22
 AddressFamily any
 
 PermitRootLogin no
 AllowUsers eitri
 PubkeyAuthentication yes
-AuthorizedKeysFile .ssh/authorized_keys
+# The second file holds the keys added through the configurator: root-owned (so the
+# web-facing programs cannot edit it), and removable without touching the first.
+AuthorizedKeysFile .ssh/authorized_keys /data/eitri/state/access/authorized_keys
 PasswordAuthentication no
 MaxAuthTries 3
 PermitEmptyPasswords no

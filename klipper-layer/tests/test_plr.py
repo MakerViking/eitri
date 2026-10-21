@@ -502,7 +502,12 @@ def test_resume_does_not_overwrite_a_homed_z_with_the_recorded_one(tmp_path):
     obj.cmd_QD_PLR_RESUME(gcmd)
     head = resume_text(tmp_path)
     assert "SET_KINEMATIC_POSITION" not in head
+    assert "SET_HOMED" not in head
     assert any("already homed" in m for m in gcmd.info)
+    # the head leaves the part by a RELATIVE lift from wherever it really is
+    assert head.index("G91") < head.index("G1 Z10 F600") < head.index("G28 X Y")
+    # decision: the lift is checked against the live Z (40), not the recorded one
+    assert any("live Z" in m for m in gcmd.info)
 
 
 def test_resume_forces_the_recorded_z_only_while_z_is_unhomed(tmp_path):

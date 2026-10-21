@@ -223,3 +223,132 @@ def test_a_symlink_to_an_unrelated_place_is_foreign(clone, tmp_path):
     res = install(clone, pd, check=False)
     assert res.returncode == 3, res.stdout + res.stderr
     assert os.readlink(foreign) == "/opt/somebody/qd_plr.py"
+
+
+# --- /data is the source of truth (the image copy is a first-boot fallback) ----
+
+def make_data_layer(root, baud=None):
+    """Lay out <root> like the data seed: extras/ and klipper-layer/ side by
+    side, with klipper-layer/extras -> ../extras."""
+    import shutil
+    (root / "klipper-layer").mkdir(parents=True)
+    shutil.copytree(EXTRAS, root / "extras",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(CONFIG, root / "klipper-layer" / "config")
+    shutil.copytree(SCRIPTS, root / "klipper-layer" / "scripts",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    (root / "klipper-layer" / "extras").symlink_to("../extras")
+    if baud:
+        var = root / "klipper-layer" / "config" / "eitri-variables.toml"
+        old = var.read_text()
+        var.write_text(old.replace("mcu_baud = 500000", f"mcu_baud = {baud}"))
+        assert var.read_text() != old
+    return root
+
+
+def run_script(script, clone, pd, *extra, data=None, image=None):
+    env = {**os.environ, "EITRI_PYTHON": PYTHON}
+    if data is not None:
+        env["EITRI_DATA_ROOT"] = str(data)
+    if image is not None:
+        env["EITRI_IMAGE_LAYER_DIR"] = str(image)
+    return subprocess.run(
+        ["bash", str(script), "--klipper-dir", str(clone),
+         "--printer-data", str(pd),
+         "--flavor-file", str(pd / "no-such-flavor-file"), *extra],
+        capture_output=True, text=True, env=env)
+
+
+def extras_targets(clone):
+    d = clone / "klippy" / "extras"
+    return {p.name: os.readlink(p) for p in d.iterdir()
+            if p.is_symlink() and "/extras/" in os.readlink(p)}
+
+
+def test_run_from_the_data_layer_links_into_data_extras(clone, tmp_path):
+    """The seed layout: /data/eitri/klipper-layer/scripts/overlay-install.sh
+    with extras -> ../extras. The clone's links must name /data/eitri/extras
+    (the real directory), not a path through klipper-layer."""
+    data = make_data_layer(tmp_path / "eitri")
+    pd = tmp_path / "pd"
+    res = run_script(data / "klipper-layer" / "scripts" / "overlay-install.sh",
+                     clone, pd, "--init-config")
+    assert res.returncode == 0, res.stdout + res.stderr
+    targets = extras_targets(clone)
+    assert targets
+    real = (data / "extras").resolve()
+    for name, target in targets.items():
+        assert target == str(real / name), (name, target)
+    assert os.readlink(pd / "config" / "eitri") \
+        == str((data / "klipper-layer" / "config").resolve())
+    assert status(clone) == ""
+    assert (pd / "config" / "printer.cfg").is_file()
+
+
+def test_image_copy_defers_to_the_data_layer(clone, tmp_path):
+    """Run from the OS image's fallback copy while the /data layer exists:
+    everything is linked from /data, init-config renders the DATA template,
+    and links an earlier fallback run made are re-pointed."""
+    import shutil
+    image = tmp_path / "usr" / "lib" / "eitri" / "klipper-layer"
+    shutil.copytree(CONFIG.parent, image,
+                    ignore=shutil.ignore_patterns("__pycache__", "tests",
+                                                  ".pytest_cache"))
+    data = tmp_path / "eitri"
+    pd = tmp_path / "pd"
+    script = image / "scripts" / "overlay-install.sh"
+
+    # 1. first boot: no /data layer yet -> install from the image, with a warning
+    first = run_script(script, clone, pd, data=data, image=image)
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert "fallback copy" in first.stderr
+    assert all(t.startswith(str(image.resolve()))
+               for t in extras_targets(clone).values())
+
+    # 2. the seed arrives: the same script now links from /data
+    make_data_layer(data, baud=115200)
+    second = run_script(script, clone, pd, "--init-config", data=data,
+                        image=image)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert "using the layer on" in second.stdout
+    assert "fallback copy" not in second.stderr
+    targets = extras_targets(clone)
+    assert targets and all(t.startswith(str((data / "extras").resolve()))
+                           for t in targets.values()), targets
+    assert os.readlink(pd / "config" / "eitri") \
+        == str((data / "klipper-layer" / "config").resolve())
+    assert "baud: 115200" in (pd / "config" / "printer.cfg").read_text()
+    assert status(clone) == ""
+
+    # 3. uninstall removes the links that point at /data too
+    res = run_script(script, clone, pd, "--uninstall", data=data, image=image)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert extras_targets(clone) == {}
+
+
+def test_explicit_dirs_are_never_overridden_by_the_data_layer(clone, tmp_path):
+    import shutil
+    image = tmp_path / "image" / "klipper-layer"
+    shutil.copytree(CONFIG.parent, image,
+                    ignore=shutil.ignore_patterns("__pycache__", "tests",
+                                                  ".pytest_cache"))
+    data = make_data_layer(tmp_path / "eitri")
+    pd = tmp_path / "pd"
+    res = run_script(image / "scripts" / "overlay-install.sh", clone, pd,
+                     "--extras-dir", str(image / "extras"), data=data,
+                     image=image)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert all(t.startswith(str((image / "extras").resolve()))
+               for t in extras_targets(clone).values())
+
+
+def test_a_repo_checkout_is_not_redirected(clone, tmp_path):
+    """Only the image fallback defers to /data; the source tree installs
+    itself (developers, tests)."""
+    data = make_data_layer(tmp_path / "eitri")
+    pd = tmp_path / "pd"
+    res = run_script(INSTALL, clone, pd, data=data,
+                     image=tmp_path / "somewhere-else")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert all(t.startswith(str(EXTRAS.resolve()))
+               for t in extras_targets(clone).values())

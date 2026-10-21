@@ -21,6 +21,15 @@ read_stock_boot() {
   if [[ -z "$STOCK_FS_UUID" ]]; then STOCK_FS_UUID="$(blkid -s UUID -o value "$(part_dev 2)" 2>/dev/null || true)"; fi
 }
 
+# Where eitri-seed-install lives: next to this script (a release tarball), or in a repository checkout.
+seed_tool() {
+  local c
+  for c in "${EITRI_SEED_INSTALL:-}" "$INSTALLER_DIR/bin/eitri-seed-install" "$INSTALLER_DIR/../seed/bin/eitri-seed-install"; do
+    if [[ -n "$c" && -x "$c" ]]; then printf '%s' "$c"; return 0; fi
+  done
+  return 1
+}
+
 collect_modules() {
   # Modules of the RUNNING stock kernel that stage 2 needs to read vfat / USB sticks; ordered for insmod.
   local m out
@@ -43,6 +52,9 @@ build_stage2_initramfs() {
          --file "usr/lib/eitri/eitri-common.sh=$INSTALLER_DIR/lib/eitri-common.sh:0644"
          --file "usr/lib/eitri/layout.sh=$INSTALLER_DIR/lib/layout.sh:0644"
          --file "usr/lib/eitri/www/index.html=$INSTALLER_DIR/stage2/www/index.html:0644")
+  # The data seed installer (convert only; a restore does not need it): stage 2 unpacks /data with it.
+  local seedtool; seedtool="$(seed_tool || true)"
+  if [[ -n "$seedtool" ]]; then args+=(--file "usr/libexec/eitri/eitri-seed-install=$seedtool:0755"); fi
   if [[ "$with_modules" == 1 ]]; then
     collect_modules
     args+=(--file "etc/eitri/modules.list=$STATE_DIR/modules.list:0644")

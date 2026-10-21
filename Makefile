@@ -5,6 +5,8 @@
 #   make test            every component's tests (about 5 minutes, most of it klippy)
 #   make test-fast       the same without the klippy integration tests
 #   make lint            syntax gate over every script, module and data file
+#   make seed            build both data seeds (klipper, kalico) and verify them under qemu-aarch64 (network, uv, zstd)
+#   make test-seed       the data seed's own tests (offline; they skip what needs built seeds)
 #   make os-defconfig    configure Buildroot for the OS image (does not build it)
 #   make configurator-dev  run the setup wizard against fake MCUs and a fake Moonraker
 #
@@ -31,7 +33,7 @@ OS_HOST_BIN   ?= $(BUILD)/br-out/host/bin
 PORT          ?= 8099
 
 .PHONY: help test test-fast test-repo test-klarity test-configurator test-camera test-installer \
-	test-os test-klipper-layer test-klipper-layer-fast lint check-repo os-defconfig os-check \
+	test-os test-klipper-layer test-klipper-layer-fast test-seed test-tools seed lint check-repo os-defconfig os-check \
 	configurator-dev clean
 
 help:
@@ -39,18 +41,26 @@ help:
 	@echo
 	@echo "  per component: test-repo test-klarity test-configurator test-camera test-installer"
 	@echo "                 test-os test-klipper-layer (test-klipper-layer-fast skips klippy)"
+	@echo "                 test-seed (the data seed's tests) test-tools (release tooling)"
+	@echo "  seed           build and verify the data seeds into $(BUILD)/seed/out (needs network)"
 	@echo "  os-check       pins, defconfig and unit tests of the OS tree (needs the Buildroot checkout)"
 	@echo "  clean          remove byte-code and test caches"
 
 # --- tests ------------------------------------------------------------------------------------------
-test: test-repo test-klarity test-configurator test-camera test-installer test-os test-klipper-layer
+test: test-repo test-tools test-klarity test-configurator test-camera test-installer test-seed test-os test-klipper-layer
 	@echo; echo "make test: all component suites passed"
 
-test-fast: test-repo test-klarity test-configurator test-camera test-installer test-os test-klipper-layer-fast
+test-fast: test-repo test-tools test-klarity test-configurator test-camera test-installer test-seed test-os test-klipper-layer-fast
 	@echo; echo "make test-fast: all component suites passed (klippy integration tests skipped)"
 
 test-repo: lint
 	$(PY) -I $(ROOT)/tools/check-repo.py
+
+test-tools:
+	$(PY) -m pytest $(ROOT)/tools/tests -q -p no:cacheprovider
+
+test-seed:
+	$(MAKE) -C $(ROOT)/seed seed BUILD_ROOT=$(BUILD)
 
 test-klarity:
 	cd $(ROOT)/klarity && $(KLARITY_PY) -W error -m pytest tests -q -p no:cacheprovider
@@ -78,6 +88,10 @@ test-klipper-layer:
 
 test-klipper-layer-fast:
 	cd $(ROOT)/klipper-layer && $(KLIPPER_PY) -B -m pytest -q --ignore=tests/test_klippy_batch.py
+
+# Builds and verifies both data seeds (build/seed/out); `make test` only runs the seed's offline tests.
+seed:
+	$(MAKE) -C $(ROOT)/seed build verify BUILD_ROOT=$(BUILD)
 
 # --- static checks ----------------------------------------------------------------------------------
 lint:

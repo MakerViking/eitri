@@ -35,12 +35,17 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends nodejs
+          sudo apt-get install -y --no-install-recommends nodejs minisign zstd openssl
           python -m pip install --quiet pytest ruff aiohttp pyyaml websockets pyserial-asyncio-fast pillow
           python -m pip install --quiet -e klarity
 
       - name: Syntax gate and repository checks
         run: make test-repo
+
+      # The signing step of the release workflow, tested with real minisign and a stand-in for rauc (the pinned rauc is
+      # only built in the release job; the real-rauc tests skip here).
+      - name: Release tooling
+        run: python -m pytest tools/tests -q -p no:cacheprovider
 
       - name: Klarity
         run: |

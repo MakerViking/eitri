@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch for requests to change the optional shell access
+Documentation=file:///usr/share/doc/eitri/os/README.md
+RequiresMountsFor=/data
+
+[Path]
+# eitri-access rewrites this file in place (it is closed after writing) for every request.
+PathChanged=/data/eitri/state/access/generation
+Unit=eitri-access.service
+
+[Install]
+WantedBy=multi-user.target

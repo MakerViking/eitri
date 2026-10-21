@@ -69,7 +69,7 @@ export function showGate(auth) {
       h('h1', { class: 'display' }, 'Setup is ', h('em', null, 'complete'), '.'),
       h('p', { class: 'lead' }, 'The configurator is locked so nothing on your network can change this printer. To change settings, unlock it from the printer itself.'),
       h('ol', { class: 'howto gate-steps' },
-        h('li', null, 'Connect to the printer over SSH and run ', CMD('eitri-configurator unlock')),
+        h('li', null, 'On the printer’s touchscreen choose ', h('b', null, 'Unlock setup'), ', or connect over SSH and run ', CMD('eitri-configurator unlock')),
         h('li', null, 'Come back here and check again. The printer screen will show a pairing code.')),
       h('div', { class: 'gate-actions' }, button({ label: 'Check again', kind: 'primary', icon: 'refresh', onClick: () => location.reload() })),
     ]

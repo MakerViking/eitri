@@ -15,6 +15,7 @@ from .protocol import Cmd, ProtocolError
 from .screen import Screen, ScreenError
 from .screenmap import Action, ScreenMap
 from .state import PrinterState
+from .unlock import SetupUnlocker, UnlockError
 
 log = logging.getLogger(__name__)
 
@@ -26,11 +27,17 @@ ERROR_BEEP_MS = 300
 #: instead of queueing behind a busy or wedged Klipper.
 MAX_CONCURRENT_RUNS = 8
 #: Verbs that talk to Moonraker.  The same action instance never runs twice at the same time.
-_HOST_VERBS = frozenset({"gcode", "print"})
+_HOST_VERBS = frozenset({"gcode", "print", "unlock"})
+#: Print states in which the setup is never unlocked from the panel, whatever the map says.
+_BUSY_STATES = frozenset({"printing", "paused"})
 
 
 class ActionError(Exception):
     """An action could not be carried out; the message is safe to log."""
+
+
+class _Trusted(str):
+    """Text made by Klarity itself (pairing code, URL); exempt from the panel-text filter."""
 
 
 class _SafeFormatter(string.Formatter):
@@ -40,7 +47,11 @@ class _SafeFormatter(string.Formatter):
         if key not in kwargs:
             raise ActionError(f"unknown placeholder {{{key}}}")
         value = kwargs[key]
-        if isinstance(value, str) and not _SAFE_TEXT.match(value):
+        if (
+            isinstance(value, str)
+            and not isinstance(value, _Trusted)
+            and not _SAFE_TEXT.match(value)
+        ):
             raise ActionError(f"refusing unsafe text for {{{key}}}: {value!r}")
         return value
 
@@ -62,7 +73,9 @@ class ActionRunner:
         smap: ScreenMap,
         *,
         dry_run: bool = False,
+        unlocker: SetupUnlocker | None = None,
     ) -> None:
+        self.unlocker = unlocker
         self.screen = screen
         self.moonraker = moonraker
         self.state = state
@@ -149,6 +162,32 @@ class ActionRunner:
             await self.screen.send(Cmd.set_attr(arg["obj"], arg["attr"], value))
         elif verb == "log":
             log.info("map: %s", _fmt.vformat(arg, (), ctx))
+        elif verb == "unlock":
+            await self._unlock_setup(ctx)
+
+    async def _unlock_setup(self, ctx: dict[str, Any]) -> None:
+        """Reopen the configurator's pairing and expose ``{code}``, ``{host}``, ``{url}`` and
+        ``{message}`` to the actions that follow (the map writes them into existing text fields).
+
+        Failure does not abort the list: ``{message}`` then says so, so the panel shows it.
+        """
+        if self.state.resolve("derived.state") in _BUSY_STATES:
+            raise ActionError("setup is not unlocked during a print")
+        try:
+            if self.unlocker is None:
+                raise UnlockError("unlocking from the screen is not available")
+            # --dry-run must not change the system: it only shows an already open pairing.
+            result = self.unlocker.show() if self.dry_run else await self.unlocker.unlock()
+        except UnlockError as exc:
+            log.warning("unlock setup failed: %s", exc)
+            ctx["message"] = _Trusted("Unlock failed - see the log")
+            ctx["code"] = ctx["host"] = ctx["url"] = _Trusted("")
+            await self._beep(ERROR_BEEP_MS)
+            return
+        ctx["code"] = _Trusted(result.code)
+        ctx["host"] = _Trusted(result.host)
+        ctx["url"] = _Trusted(result.url)
+        ctx["message"] = _Trusted(f"Code {result.code} at {result.host}")
 
     async def _print(self, verb: str, action: Action, ctx: dict[str, Any]) -> None:
         mr = self.moonraker

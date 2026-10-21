@@ -100,13 +100,9 @@ class Printer:
         os.chmod(os.path.join(base, "init"), 0o755)
         sh("python3", os.path.join(INSTALLER, "tools", "mkcpio.py"), os.path.join(b, "stage2-initramfs.cpio.gz"),
            "--file", "init=%s:0755" % os.path.join(base, "init"))
-        seed = io.BytesIO()
-        with tarfile.open(fileobj=seed, mode="w") as tf:
-            info = tarfile.TarInfo("eitri/VERSION")
-            data = b"2026.10.0\n"
-            info.size = len(data)
-            tf.addfile(info, io.BytesIO(data))
-        sh("zstd", "-q", "-o", os.path.join(b, "data-seed.tar.zst"), "-", input=seed.getvalue())
+        # one data seed per flavor (the layout of seed/SPEC.md, a few bytes each) with its manifest
+        import seedpack
+        self.seeds = {fl: seedpack.make_seed(b, "2026.10.0", fl) for fl in ("klipper", "kalico")}
         # MCU firmware tree in the format eitri-mcuflash reads
         mcu = os.path.join(self.tmp, "mcu-src")
         from helpers_mcu import write_release
@@ -129,12 +125,12 @@ class Printer:
             "stock": {"soc": ["1.7.1"]},
             "layout": {"root_mib": 2048, "data_min_mib": 4096},
             "kernel_cmdline": "console=tty1 loglevel=4 panic=10 net.ifnames=0",
-            "flavors": {"klipper": {"describe": "v0.13.0-813-ga08fc79fc", "commit": "a08fc79f"},
-                        "kalico": {"describe": "v2026.10.00", "commit": "3526de3b"}},
+            "flavors": seedpack.release_flavors("2026.10.0"),
             "files": {
                 "rootfs": entry("rootfs.img.zst", raw_size=len(rootfs_raw), raw_sha256=sha256(rootfs_raw)),
                 "stage2_initramfs": entry("stage2-initramfs.cpio.gz"),
-                "data_seed": {"klipper": entry("data-seed.tar.zst"), "kalico": entry("data-seed.tar.zst")},
+                "data_seed": {fl: dict(entry(info["name"]), manifest=entry(os.path.basename(info["manifest_path"])))
+                              for fl, info in self.seeds.items()},
                 "mcu_firmware": {"klipper": entry("mcu-firmware.tar.zst"), "kalico": entry("mcu-firmware.tar.zst")},
             },
         }

@@ -39,7 +39,7 @@ def require_layer(settings: Settings) -> Path:
     if layer is None:
         raise LayerError(
             "The Eitri klipper-layer was not found (looked in /data/eitri/klipper-layer and next to the "
-            "configurator, e.g. /usr/lib/eitri/klipper-layer), so printer.cfg cannot be generated."
+            "configurator), so printer.cfg cannot be generated."
         )
     return layer
 

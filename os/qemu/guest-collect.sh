@@ -7,7 +7,10 @@
 #   ...text...
 #   @@END <name> rc=<exit status>
 #
-# blocks. Usage: guest-collect.sh [full|brief]   (brief = timing, memory and failures only)
+# blocks. Usage: guest-collect.sh [full|brief|running]
+#   brief   timing, memory and failures only
+#   running brief + what the application layer did (Klipper, Moonraker, Klarity, the qd_* extras)
+#   full    everything, including the application layer
 mode=${1:-full}
 UNITS="eitri-grow-data eitri-data-init eitri-etc eitri-zram eitri-mark-good klipper moonraker klarity eitri-configurator eitri-camera go2rtc nginx NetworkManager sshd avahi-daemon chrony rauc dbus polkit systemd-journald systemd-logind systemd-udevd"
 
@@ -131,5 +134,16 @@ if [ "$mode" = full ]; then
 	sh_sec rauc 'systemctl status rauc.service --no-pager -n 5 2>&1 | head -12; rauc status 2>&1 | head -20'
 	sh_sec time_sync 'chronyc tracking 2>&1 | head -5; timedatectl 2>&1 | head -8'
 	sh_sec network 'ip -br addr; nmcli -t -f DEVICE,STATE,TYPE device 2>&1; nmcli general status 2>&1'
+fi
+
+# --- the application layer (data seed + configurator output) ------------------------------------
+if [ "$mode" = full ] || [ "$mode" = running ]; then
+	sh_sec app_units 'for u in klipper moonraker klarity eitri-configurator nginx; do printf "%-22s" $u; systemctl show -p ActiveState,SubState,Result,NRestarts,ExecMainPID,ExecMainStatus,MemoryCurrent $u.service | tr "\n" " "; echo; done; for u in eitri-configurator klarity klipper moonraker; do pid=$(systemctl show -p MainPID --value $u.service); if [ -n "$pid" ] && [ "$pid" != 0 ]; then printf "%s NoNewPrivs=%s\n" $u "$(awk "/^NoNewPrivs/ {print \$2}" /proc/$pid/status)"; fi; done'
+	sh_sec seed_record 'cat /data/eitri/state/seed-installed.env 2>&1; echo; cat /data/eitri/flavor; echo; g="sudo -u eitri env HOME=/data/eitri/home GIT_PAGER=cat git --no-pager"; $g -C /data/firmware/klipper log -1 --format="klipper %H %s" 2>&1; $g -C /data/firmware/moonraker log -1 --format="moonraker %H %s" 2>&1; $g -C /data/firmware/klipper describe --tags 2>&1; $g -C /data/firmware/klipper status --short 2>&1 | head -5; echo "git status rc=${PIPESTATUS[0]}"'
+	sh_sec extras_links 'for f in /data/firmware/klipper/klippy/extras/qd_*.py /data/firmware/klipper/klippy/extras/gcode_shell_command.py; do [ -L "$f" ] && printf "%s -> %s\n" "$f" "$(readlink "$f")" || echo "NOT A LINK: $f"; done 2>&1 | head -40; ls /data/eitri/extras | wc -l; ls -la /data/printer_data/config/ | head -30'
+	sh_sec klippy_log 'f=/data/printer_data/logs/klippy.log; ls -la $f 2>&1; echo "--- qd_ sections in printer.cfg:"; grep -c "^\[qd_" /data/printer_data/config/printer.cfg; echo "--- errors:"; grep -nE "Config error|Internal error|Unknown config object|Option .* is not valid|No module named|ModuleNotFoundError|ImportError|Unhandled exception" $f | head -20; echo "--- tail:"; tail -n 25 $f; echo "--- start of the log:"; grep -nE "Start printer|Git version|CPU:|Python:|Loaded MCU|Unable to open|mcu .*:" $f | head -15'
+	sh_sec moonraker_probes 'for url in http://127.0.0.1:7125/server/info http://127.0.0.1:7125/printer/info http://127.0.0.1/server/info http://127.0.0.1/printer/info http://127.0.0.1/; do printf "== %s\n" $url; curl -s -m 10 -w "\nHTTP %{http_code}\n" $url | head -c 1200; echo; done; echo "--- from outside loopback (must be refused: Moonraker listens on 127.0.0.1 only):"; ip=$(ip -4 -o addr show scope global | awk "{print \$4}" | cut -d/ -f1 | head -1); echo "ip=$ip"; [ -n "$ip" ] && curl -s -m 5 -o /dev/null -w "7125 on $ip: HTTP %{http_code}\n" http://$ip:7125/server/info; ss -ltn | grep -E ":(7125|80|8099) "'
+	sh_sec klarity_map 'k=/data/eitri/klarity/venv; sudo -u eitri env HOME=/data/eitri/home $k/bin/klarity --check-map 2>&1 | tail -3; ls $k/lib/python3.*/site-packages/klarity/unlock.py; grep -c "unlock_setup" $k/lib/python3.*/site-packages/klarity/maps/default.yaml'
+	sh_sec app_journals 'for u in moonraker klarity klipper; do echo "=== $u"; journalctl -b -u $u --no-pager -o short-monotonic -n 25 | cut -c1-240; done'
 fi
 echo "@@DONE"

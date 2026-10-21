@@ -6,12 +6,19 @@
 # On the first boot it builds the whole tree. It never deletes anything.
 #
 #   /data
-#     firmware/{klipper,moonraker}   cloned by the installer; owned by eitri
-#     venv/{klippy,moonraker}        uv virtual environments
+#     firmware/{klipper,moonraker}   pinned clones from the data seed; owned by eitri
+#     venv/{klippy,moonraker}        virtual environments from the data seed
 #     printer_data/{config,logs,gcodes,database,comms}
 #     eitri/{extras,klarity,toolchain,configurator,home}
-#     eitri/state/                   OS state, root only (etc overlay, RAUC)
+#     eitri/{klipper-layer,seed,flavor}   from the data seed (seed/SPEC.md section 3)
+#     eitri/state/                   OS state, root only (etc overlay, RAUC, seed-installed.env)
 #     eitri/logs/                    eitri-update event log (update.jsonl), root only
+#
+# The data seed itself is not unpacked here. It arrives before the first boot (the flash-once image's
+# /data is populated by mkdata.sh at build time; the in-place installer's stage 2 installs it), or
+# eitri-seed.service unpacks an archive that the image carries. This script has to cope with all of
+# these: it adopts a tree that already exists, never replaces or merges into it, and only repairs
+# the ownership of the parent directories that a root-run installer may have created.
 #
 # Environment overrides, used by the tests: EITRI_DATA, EITRI_FACTORY,
 # EITRI_BOOTFS, EITRI_OWNER, EITRI_RUN, EITRI_NO_RESIZE, EITRI_PYTHON,
@@ -59,8 +66,10 @@ seed() {
 	fi
 }
 
+# The layout-version file is written last, so a /data that was pre-populated with the data seed (which
+# already has eitri/state/seed-installed.env) or interrupted halfway still counts as a first boot.
 first_boot=0
-[ -d "$DATA/eitri/state" ] || first_boot=1
+[ -e "$DATA/eitri/state/layout-version" ] || first_boot=1
 
 # Root-only OS state. The etc overlay directories must exist before eitri-etc
 # mounts the overlay.
@@ -77,6 +86,15 @@ dir "$OWNER" 0755 \
 	"$DATA/eitri/extras" "$DATA/eitri/klarity" "$DATA/eitri/toolchain" \
 	"$DATA/eitri/configurator" "$DATA/eitri/home"
 chmod 0750 "$DATA/eitri/home"
+
+# Parent directories of the seed's components belong to the service user (eitri-update's upstream mode
+# and the configurator write below them). A root-run installer (mkdir -p) creates them as root; fix only
+# those, only when they are root-owned, and never recurse.
+for parent in "$DATA/firmware" "$DATA/venv" "$DATA/eitri/klarity"; do
+	if [ -d "$parent" ] && [ "$(stat -c %u "$parent")" = 0 ]; then
+		chown "$OWNER" "$parent" 2>/dev/null || log "could not chown $parent"
+	fi
+done
 
 seed "$FACTORY/moonraker.asvc" "$DATA/printer_data/moonraker.asvc"
 seed "$FACTORY/camera/go2rtc.yaml" "$DATA/printer_data/config/go2rtc.yaml"
@@ -102,9 +120,30 @@ if [ ! -x "$venv/bin/python" ] && [ -d "$CONFIGURATOR_SRC" ]; then
 	fi
 fi
 
-# Web UI served by nginx. A symlink, so the configurator can switch UIs.
-if [ ! -e "$DATA/eitri/ui" ] && [ ! -L "$DATA/eitri/ui" ]; then
-	ln -s /usr/share/eitri/ui/fluidd "$DATA/eitri/ui"
+# Web UI served by nginx (root /data/eitri/ui/current). /data/eitri is root's, so the service user's configurator
+# cannot create or replace entries in it: eitri/ui is a directory of its own, and `current` inside it is the symlink
+# the configurator switches between the two UIs. An older layout had eitri/ui itself as the symlink; keep its choice.
+if [ -L "$DATA/eitri/ui" ]; then
+	old=$(readlink "$DATA/eitri/ui")
+	rm -f "$DATA/eitri/ui"
+	dir "$OWNER" 0755 "$DATA/eitri/ui"
+	ln -s "$old" "$DATA/eitri/ui/current"
+	chown -h "$OWNER" "$DATA/eitri/ui/current"
+	log "converted the eitri/ui link into a directory (still $old)"
+fi
+dir "$OWNER" 0755 "$DATA/eitri/ui"
+if [ ! -e "$DATA/eitri/ui/current" ] && [ ! -L "$DATA/eitri/ui/current" ]; then
+	ln -s /usr/share/eitri/ui/fluidd "$DATA/eitri/ui/current"
+	chown -h "$OWNER" "$DATA/eitri/ui/current"
+fi
+
+# Small files that the configurator (service user) and root tools both write. They are files of the service user's
+# because it cannot create files in root's eitri/. eitri/flavor comes from the data seed (never made up here: a
+# placeholder would disagree with a kalico seed installed later); eitri/channel is made here. Whoever replaces them
+# as root must keep the owner (eitri-update does).
+if [ ! -e "$DATA/eitri/channel" ]; then
+	echo eitri >"$DATA/eitri/channel"
+	chown "$OWNER" "$DATA/eitri/channel"
 fi
 
 # SSH keys dropped on the boot partition by a PC. Only well-formed key lines

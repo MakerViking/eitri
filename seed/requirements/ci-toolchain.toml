@@ -1,0 +1,12 @@
+# What the CI workflow (and anyone without a Buildroot build tree) uses instead of the image's own Python and
+# toolchain. Only the Python headers, its sysconfig data (for cross-compiling extension modules) and an aarch64
+# CPython for the qemu-user smoke test come from here; the compiler is the distribution's gcc-aarch64-linux-gnu
+# and the C library for qemu is libc6-arm64-cross. The ABI of CPython 3.14.x is stable across patch releases, so
+# these headers build modules that the image's 3.14.5 loads (the qemu test proves it).
+schema = 1
+
+[python-build-standalone]
+release = "20261020"
+version = "3.14.8"
+url     = "https://github.com/astral-sh/python-build-standalone/releases/download/20261020/cpython-3.14.8%2B20261020-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"
+sha256  = "6519109a1bed8cff79aad3a6df880c95dde153e2c4c9713846476fa344d94049"

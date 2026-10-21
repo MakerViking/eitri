@@ -1,0 +1,530 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: Apache-2.0
+"""eitri-access: optional shell access to the printer (decision 4), for the configurator.
+
+Off by default: a fresh image has no way to log in except the SSH keys the owner dropped on the boot
+partition. The configurator offers two optional steps, and this is the privileged half of both. It runs
+as root through narrow sudo rules (etc/sudoers.d/eitri), one fixed command line each, so the account
+that runs the web-facing programs never gets a general root shell from it:
+
+    sudo -n /usr/libexec/eitri/eitri-access set-key                 one OpenSSH public key on stdin
+    sudo -n /usr/libexec/eitri/eitri-access set-password            the password on stdin
+    sudo -n /usr/libexec/eitri/eitri-access set-password --ssh-login   ... and let sshd accept it
+    sudo -n /usr/libexec/eitri/eitri-access disable                 remove everything added here
+    sudo -n /usr/libexec/eitri/eitri-access status                  JSON; needs no privileges
+
+set-key
+    Adds the key to the keys of the "eitri" user (up to 8; the same key twice is a no-op). The line is
+    parsed, not copied: only a bare key of a known type with a well-formed blob and an optional comment
+    is accepted, so no authorized_keys options (command=, from=, ...) can be smuggled in. The keys
+    are kept in /data/eitri/state/access/authorized_keys, a root-owned file that sshd reads next to
+    ~/.ssh/authorized_keys (etc/ssh/sshd_config), so "disable" removes exactly what was added here and
+    never the keys from the boot partition.
+
+set-password
+    Sets the account's password (8 to 128 characters; yescrypt, or SHA-512 where that is not available).
+    A password gives general sudo (the account's own password is what the broad sudo rule asks for) and a
+    console login. sshd keeps refusing passwords unless --ssh-login is given: password login over the
+    network is a separate, explicit choice. Calling set-password again replaces both settings.
+
+disable
+    Deletes the keys and the password and turns password login off again.
+
+What changes /etc (the password hash in /etc/shadow, and telling sshd to re-read its configuration) is
+done by "apply", which only systemd runs, from the unit eitri-access.service: the callers of this tool
+(configurator, Klarity) run in a sandbox with a read-only /etc, which a sudo child inherits. The tool
+therefore records the wanted state under /data/eitri/state/access/, which is writable from there,
+bumps `generation`, and waits for eitri-access.path to run the unit and publish `applied`. The unit
+also runs at every boot before sshd, so the state is the single source of truth. Input is validated
+strictly and never reaches a shell; the password and the hash are never printed or logged.
+
+Exit status: 0 done; 2 usage; 3 invalid input; 4 saved, but applying did not finish in time (it will
+finish by itself; `status` shows `pending`); 1 any other failure. stdout is always one JSON object.
+"""
+
+from __future__ import annotations
+
+import base64
+import ctypes
+import ctypes.util
+import fcntl
+import hashlib
+import json
+import os
+import re
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+import unicodedata
+from pathlib import Path
+
+USER = "eitri"
+MAX_KEYS = 8
+MAX_KEY_INPUT = 8192
+MAX_PASSWORD_INPUT = 1024
+PASSWORD_MIN, PASSWORD_MAX = 8, 128
+WAIT_SECONDS = 20.0
+
+# Test hooks. They are honoured only when this runs unprivileged: the sudo rules start the tool as root
+# with a clean environment, so they cannot be used to redirect it there.
+_TESTING = os.geteuid() != 0
+ROOT = Path(os.environ["EITRI_ACCESS_ROOT"]) if _TESTING and os.environ.get("EITRI_ACCESS_ROOT") else Path("/")
+APPLY_INLINE = _TESTING and os.environ.get("EITRI_ACCESS_APPLY") == "inline"
+SYSTEMCTL = os.environ["EITRI_ACCESS_SYSTEMCTL"] if _TESTING and os.environ.get("EITRI_ACCESS_SYSTEMCTL") else "systemctl"
+FORCE_PREFIX = os.environ.get("EITRI_ACCESS_HASH_PREFIX", "") if _TESTING else ""
+WAIT = float(os.environ["EITRI_ACCESS_WAIT"]) if _TESTING and os.environ.get("EITRI_ACCESS_WAIT") else WAIT_SECONDS
+
+STATE = ROOT / "data/eitri/state/access"
+SHADOW = ROOT / "etc/shadow"
+F_KEYS = STATE / "authorized_keys"
+F_HASH = STATE / "password.hash"
+F_SSH = STATE / "ssh-login"
+F_SSHD = STATE / "sshd.conf"
+F_MANAGED = STATE / "shadow-managed"
+F_GEN = STATE / "generation"
+F_APPLIED = STATE / "applied"
+F_LOCK = STATE / "lock"
+
+KEY_TYPES = {
+    # type: number of length-prefixed fields in the blob, the first being the type itself
+    "ssh-ed25519": 2,
+    "ssh-rsa": 3,
+    "ecdsa-sha2-nistp256": 3,
+    "ecdsa-sha2-nistp384": 3,
+    "ecdsa-sha2-nistp521": 3,
+    "sk-ssh-ed25519@openssh.com": 3,
+    "sk-ecdsa-sha2-nistp256@openssh.com": 4,
+}
+KEY_LINE = re.compile(r"^([A-Za-z0-9@.-]{1,64}) ([A-Za-z0-9+/]{16,4096}={0,2})(?: ([\x20-\x7e]{1,100}))?$")
+
+
+HASH_RE = re.compile(r"\$[0-9a-z]{1,2}\$[A-Za-z0-9./$,=+-]{8,300}")
+
+
+class Invalid(Exception):
+    """The caller's input was rejected; the message is safe to show (it never echoes the input)."""
+
+
+class Failed(Exception):
+    pass
+
+
+def emit(obj: dict) -> None:
+    print(json.dumps(obj, sort_keys=True))
+
+
+# --- parsing and validation -------------------------------------------------------------------------
+
+def read_stdin(limit: int) -> str:
+    raw = sys.stdin.buffer.read(limit + 1)
+    if len(raw) > limit:
+        raise Invalid("input is too long")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise Invalid("input is not valid UTF-8") from None
+    if "\0" in text:
+        raise Invalid("input contains a NUL character")
+    if text.endswith("\r\n"):
+        return text[:-2]
+    if text.endswith("\n"):
+        return text[:-1]
+    return text
+
+
+def split_blob(blob: bytes) -> list[bytes]:
+    fields, pos = [], 0
+    while pos < len(blob):
+        if pos + 4 > len(blob):
+            raise Invalid("the key is truncated")
+        (n,) = struct.unpack(">I", blob[pos : pos + 4])
+        pos += 4
+        if n > len(blob) - pos:
+            raise Invalid("the key is truncated")
+        fields.append(blob[pos : pos + n])
+        pos += n
+    return fields
+
+
+def parse_key(text: str) -> tuple[str, str, str]:
+    """Return (type, base64 blob, comment) of one bare OpenSSH public key, or raise Invalid."""
+    if "\n" in text or "\r" in text:
+        raise Invalid("exactly one key, on one line, is expected")
+    text = text.strip(" \t")
+    m = KEY_LINE.match(text)
+    if not m:
+        raise Invalid("this is not a bare OpenSSH public key line (type, base64 key, optional comment)")
+    ktype, b64, comment = m.group(1), m.group(2), (m.group(3) or "").strip()
+    if ktype not in KEY_TYPES:
+        raise Invalid(f"key type {ktype!r} is not accepted (ed25519, ECDSA, RSA of 2048+ bits and the FIDO types are)")
+    try:
+        blob = base64.b64decode(b64, validate=True)
+    except ValueError:
+        raise Invalid("the key is not valid base64") from None
+    if base64.b64encode(blob).decode() != b64:
+        raise Invalid("the key's base64 is not canonical")
+    fields = split_blob(blob)
+    if len(fields) != KEY_TYPES[ktype] or fields[0] != ktype.encode():
+        raise Invalid("the key blob does not match its type")
+    if ktype == "ssh-ed25519" and len(fields[1]) != 32:
+        raise Invalid("the ed25519 key has the wrong length")
+    if ktype == "ssh-rsa":
+        bits = int.from_bytes(fields[2], "big").bit_length()
+        if bits < 2048 or bits > 16384:
+            raise Invalid("RSA keys must have between 2048 and 16384 bits")
+    return ktype, b64, comment
+
+
+def fingerprint(b64: str) -> str:
+    digest = hashlib.sha256(base64.b64decode(b64)).digest()
+    return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+
+
+def read_keys() -> list[tuple[str, str, str]]:
+    keys = []
+    try:
+        lines = F_KEYS.read_text().splitlines()
+    except FileNotFoundError:
+        return keys
+    for line in lines:
+        if line.strip() and not line.startswith("#"):
+            keys.append(parse_key(line))
+    return keys
+
+
+def check_password(text: str) -> str:
+    if not text.strip():
+        raise Invalid("the password must not be blank")
+    if not PASSWORD_MIN <= len(text) <= PASSWORD_MAX:
+        raise Invalid(f"the password must have {PASSWORD_MIN} to {PASSWORD_MAX} characters")
+    if any(unicodedata.category(c) in ("Cc", "Cs", "Cn") for c in text):
+        raise Invalid("the password must not contain control characters")
+    if len(text.encode()) > 256:
+        raise Invalid("the password is too long")
+    return text
+
+
+# --- password hashing (libxcrypt through ctypes; Python 3.13 removed the crypt module) --------------
+
+def _libcrypt():
+    names = ["libcrypt.so.2", "libcrypt.so.1", ctypes.util.find_library("crypt")]
+    for name in names:
+        if not name:
+            continue
+        try:
+            lib = ctypes.CDLL(name)
+            lib.crypt_rn.restype = ctypes.c_void_p
+            lib.crypt_rn.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_int]
+            lib.crypt_gensalt_rn.restype = ctypes.c_void_p
+            lib.crypt_gensalt_rn.argtypes = [ctypes.c_char_p, ctypes.c_ulong, ctypes.c_char_p, ctypes.c_int,
+                                             ctypes.c_char_p, ctypes.c_int]
+            return lib
+        except (OSError, AttributeError):
+            continue
+    raise Failed("libxcrypt (libcrypt.so.2) is not available")
+
+
+def _crypt(lib, password: bytes, setting: bytes) -> bytes | None:
+    data = ctypes.create_string_buffer(32768)  # struct crypt_data, zero-initialised
+    out = lib.crypt_rn(password, setting, data, len(data))
+    if not out:
+        return None
+    result = ctypes.string_at(out)
+    return None if result.startswith(b"*") else result
+
+
+def make_hash(password: str) -> str:
+    lib = _libcrypt()
+    prefixes = [FORCE_PREFIX.encode()] if FORCE_PREFIX else [b"$y$", b"$6$"]
+    raw = password.encode()
+    for prefix in prefixes:
+        setting = ctypes.create_string_buffer(192)
+        if not lib.crypt_gensalt_rn(prefix, 0, os.urandom(32), 32, setting, len(setting)):
+            continue
+        hashed = _crypt(lib, raw, setting.value)
+        if hashed and _crypt(lib, raw, hashed) == hashed:  # the hash has to verify before it is stored
+            text = hashed.decode("ascii")
+            if HASH_RE.fullmatch(text):
+                return text
+    raise Failed("could not hash the password")
+
+
+# --- state files ----------------------------------------------------------------------------------------
+
+def write_atomic(path: Path, data: str, mode: int) -> None:
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, mode)
+        if os.geteuid() == 0:
+            os.chown(tmp, 0, 0)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+class Locked:
+    """An exclusive lock on the state directory, which is created on first use (root, 0755: sshd's
+    StrictModes needs the directories above the key file to be root's and not writable by others)."""
+
+    def __enter__(self):
+        STATE.mkdir(parents=True, exist_ok=True)
+        os.chmod(STATE, 0o755)
+        self.fd = os.open(F_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        os.close(self.fd)
+
+
+def read_int(path: Path) -> int:
+    try:
+        return int(path.read_text().strip() or "0")
+    except (FileNotFoundError, ValueError):
+        return 0
+
+
+def sshd_conf_text(ssh_login: bool) -> str:
+    head = ("# Written by eitri-access; do not edit. Included first by /etc/ssh/sshd_config.\n"
+            "# sshd takes the first value it sees, so this file decides.\n")
+    return head + ("PasswordAuthentication yes\n" if ssh_login else "")
+
+
+def touch_generation() -> int:
+    gen = read_int(F_GEN) + 1
+    # In place, not by rename: the path unit watches for a file that was closed after writing.
+    with open(F_GEN, "w") as fh:
+        fh.write(f"{gen}\n")
+    return gen
+
+
+def wait_applied(gen: int) -> bool:
+    if APPLY_INLINE:
+        apply_state()
+        return read_int(F_APPLIED) >= gen
+    deadline = time.monotonic() + WAIT
+    started = time.monotonic()
+    pokes = 0
+    while time.monotonic() < deadline:
+        if read_int(F_APPLIED) >= gen:
+            return True
+        # A change that arrives while the unit is still finishing its previous run can be missed by the
+        # path unit; writing the counter again later re-triggers it.
+        elapsed = time.monotonic() - started
+        if pokes < 2 and elapsed > max(0.1, WAIT * 0.3) * (pokes + 1):
+            pokes += 1
+            with Locked():
+                current = read_int(F_GEN)       # read BEFORE open(): "w" truncates the file (this once wrote 0 back)
+                with open(F_GEN, "w") as fh:
+                    fh.write(f"{current}\n")
+        time.sleep(0.2)
+    return read_int(F_APPLIED) >= gen
+
+
+# --- commands -------------------------------------------------------------------------------------------
+
+def status() -> dict:
+    keys = []
+    try:
+        for ktype, b64, comment in read_keys():
+            keys.append({"type": ktype, "fingerprint": fingerprint(b64), "comment": comment})
+    except Invalid:
+        pass  # a damaged file shows as no keys; set-key / disable rewrite it
+    gen, done = read_int(F_GEN), read_int(F_APPLIED)
+    return {
+        "ok": True,
+        "schema": 1,
+        "keys": keys,
+        "password": {"set": F_HASH.exists(), "ssh_login": F_SSH.exists()},
+        "generation": gen,
+        "applied": done,
+        "pending": done < gen,
+    }
+
+
+def cmd_set_key(args: list[str]) -> int:
+    if args:
+        raise Invalid("set-key takes no arguments; the key is read from stdin")
+    ktype, b64, comment = parse_key(read_stdin(MAX_KEY_INPUT))
+    with Locked():
+        keys = read_keys()
+        if any(b == b64 and t == ktype for t, b, _ in keys):
+            emit(status() | {"changed": False})
+            return 0
+        if len(keys) >= MAX_KEYS:
+            raise Invalid(f"at most {MAX_KEYS} keys can be added; run disable first")
+        keys.append((ktype, b64, comment))
+        write_atomic(F_KEYS, "".join(f"{t} {b}{' ' + c if c else ''}\n" for t, b, c in keys), 0o644)
+    emit(status() | {"changed": True})
+    return 0
+
+
+def cmd_set_password(args: list[str]) -> int:
+    ssh_login = False
+    for arg in args:
+        if arg == "--ssh-login":
+            ssh_login = True
+        else:
+            raise Invalid("usage: set-password [--ssh-login]  (the password is read from stdin)")
+    password = check_password(read_stdin(MAX_PASSWORD_INPUT))
+    hashed = make_hash(password)
+    with Locked():
+        write_atomic(F_HASH, hashed + "\n", 0o600)
+        write_atomic(F_SSHD, sshd_conf_text(ssh_login), 0o644)
+        if ssh_login:
+            F_SSH.touch(mode=0o644)
+        else:
+            F_SSH.unlink(missing_ok=True)
+        gen = touch_generation()
+    return finish(gen)
+
+
+def cmd_disable(args: list[str]) -> int:
+    if args:
+        raise Invalid("disable takes no arguments")
+    with Locked():
+        for path in (F_KEYS, F_HASH, F_SSH):
+            path.unlink(missing_ok=True)
+        write_atomic(F_SSHD, sshd_conf_text(False), 0o644)
+        gen = touch_generation()
+    return finish(gen)
+
+
+def finish(gen: int) -> int:
+    if wait_applied(gen):
+        emit(status() | {"changed": True})
+        return 0
+    result = status() | {"changed": True, "ok": False,
+                         "error": "saved, but not applied yet; it is applied automatically (eitri-access.service)"}
+    emit(result)
+    print(f"eitri-access: {result['error']}", file=sys.stderr)
+    return 4
+
+
+# --- apply: the part that changes /etc, run by systemd ----------------------------------------------
+
+def shadow_days() -> int:
+    return int(time.time() // 86400)
+
+
+def update_shadow(wanted: str | None) -> bool:
+    """Make the password field of USER equal to the wanted hash; "*" (locked, key login only) when none
+    is wanted and we were the ones who set it. Returns True when /etc/shadow was rewritten."""
+    if wanted is None and not F_MANAGED.exists():
+        return False
+    lines = SHADOW.read_text().splitlines(keepends=True)
+    index = [i for i, ln in enumerate(lines) if ln.split(":", 1)[0] == USER]
+    if len(index) != 1:
+        raise Failed(f"/etc/shadow has {len(index)} entries for {USER}")
+    fields = lines[index[0]].rstrip("\n").split(":")
+    if len(fields) < 9:
+        raise Failed("/etc/shadow entry is malformed")
+    new = wanted if wanted is not None else "*"
+    if fields[1] != new:
+        fields[1] = new
+        fields[2] = str(shadow_days())
+        lines[index[0]] = ":".join(fields) + "\n"
+        st = SHADOW.stat()
+        fd, tmp = tempfile.mkstemp(dir=SHADOW.parent, prefix=".shadow.")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.writelines(lines)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp, st.st_mode & 0o7777)
+            if os.geteuid() == 0:
+                os.chown(tmp, st.st_uid, st.st_gid)
+            os.replace(tmp, SHADOW)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+        changed = True
+    else:
+        changed = False
+    if wanted is not None:
+        F_MANAGED.touch(mode=0o600)
+    else:
+        F_MANAGED.unlink(missing_ok=True)
+    return changed
+
+
+def reload_sshd() -> None:
+    try:
+        active = subprocess.run([SYSTEMCTL, "is-active", "--quiet", "sshd.service"], timeout=20).returncode == 0
+        if active:
+            # --no-block: this runs inside eitri-access.service, which is ordered Before=sshd.service; a blocking reload
+            # would wait for this very unit to finish (measured: the 30 s timeout expired every time).
+            subprocess.run([SYSTEMCTL, "reload", "--no-block", "sshd.service"], timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"eitri-access: cannot reload sshd: {exc}", file=sys.stderr)
+
+
+def apply_state() -> int:
+    """Bring /etc/shadow and sshd in line with the state directory. Idempotent, and also run at every
+    boot (before sshd), so a volatile or rolled-back /etc cannot leave the account without its password."""
+    if not F_GEN.exists():
+        return 0  # nothing was ever asked for
+    while True:
+        with Locked():
+            gen = read_int(F_GEN)
+            wanted = None
+            if F_HASH.exists():
+                wanted = F_HASH.read_text().strip()
+                if not HASH_RE.fullmatch(wanted):
+                    raise Failed("the stored password hash is malformed")
+            update_shadow(wanted)
+            if read_int(F_APPLIED) < gen:
+                reload_sshd()  # only a new request changes what sshd must re-read
+            write_atomic(F_APPLIED, f"{gen}\n", 0o644)
+        # A request that arrived while this ran may have found the unit busy; look again.
+        if read_int(F_GEN) == gen:
+            return 0
+
+
+COMMANDS = {
+    "set-key": cmd_set_key,
+    "set-password": cmd_set_password,
+    "disable": cmd_disable,
+}
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] not in (*COMMANDS, "status", "apply"):
+        print(__doc__.split("\n\n")[0] + "\nusage: eitri-access set-key | set-password [--ssh-login] | disable | status",
+              file=sys.stderr)
+        return 2
+    cmd, args = argv[0], argv[1:]
+    try:
+        if cmd == "status":
+            if args:
+                raise Invalid("status takes no arguments")
+            emit(status())
+            return 0
+        if os.geteuid() != 0 and ROOT == Path("/"):
+            raise Failed("must run as root (through sudo)")
+        if cmd == "apply":
+            if args:
+                raise Invalid("apply takes no arguments")
+            return apply_state()
+        return COMMANDS[cmd](args)
+    except Invalid as exc:
+        emit({"ok": False, "error": str(exc), "kind": "invalid"})
+        print(f"eitri-access: {exc}", file=sys.stderr)
+        return 3
+    except (Failed, OSError) as exc:
+        message = str(exc) if isinstance(exc, Failed) else f"{type(exc).__name__}: {exc.strerror or exc}"
+        emit({"ok": False, "error": message, "kind": "failed"})
+        print(f"eitri-access: {message}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    os.umask(0o022)
+    sys.exit(main(sys.argv[1:]))

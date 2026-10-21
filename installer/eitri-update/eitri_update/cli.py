@@ -3,7 +3,11 @@
 
     eitri-update check                      is a newer release published? (signed manifest)
     eitri-update status                     installed release, flavor, channel mode, slots
-    eitri-update upgrade [--dry-run --yes]  download, verify, install via RAUC, reboot
+    eitri-update upgrade [--dry-run --yes]  download, verify, install via RAUC, reboot; the release's data seed and
+                                            MCU firmware follow after the reboot (before Klipper starts)
+    eitri-update switch-flavor klipper|kalico [--dry-run --yes]
+                                            run the other firmware flavor: its data seed + MCU firmware from the installed
+                                            release, both MCUs re-flashed, no reboot; rolled back if it does not come up
     eitri-update post-boot [--stage prepare|verify]
                                             (systemd, every boot) finish an update, verify health, commit or roll back
     eitri-update rollback                   boot the previous system on next start
@@ -12,6 +16,10 @@
                                             follow upstream Klipper/Kalico with on-device builds
 
 Exit codes: 0 ok, 1 failed, 2 usage, 3 nothing to do / refused by policy.
+
+Two disk layouts are handled behind one interface (bootenv.py).  The in-place conversion of a stock printer
+(installer/install.sh, boot state in /boot/eitri/boot.env) is the one users get.  The flash-once GPT image built by os/
+(U-Boot state in a raw sector, via rauc-bootloader) exists for bench boards, microSD cards and CI only.
 """
 from __future__ import annotations
 
@@ -30,7 +38,10 @@ from .upstream import UpstreamMode, UpstreamPaths
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="eitri-update", description="Eitri release channel client.")
+    p = argparse.ArgumentParser(
+        prog="eitri-update", description="Eitri release channel client.",
+        epilog="Disk layouts: the in-place conversion of a stock printer (installer/install.sh, boot state in /boot/eitri/boot.env) is "
+               "the one users get. The flash-once GPT disk image (raw U-Boot state sector) is for bench boards, microSD cards and CI only.")
     p.add_argument("--version", action="version", version="eitri-update " + __version__)
     p.add_argument("--json", action="store_true", help="JSON-lines events on stdout")
     p.add_argument("--events-file")
@@ -51,6 +62,10 @@ def build_parser() -> argparse.ArgumentParser:
     pb = sub.add_parser("post-boot", help="after a reboot: finish an update, verify health, commit or roll back")
     pb.add_argument("--stage", choices=("all", "prepare", "verify"), default="all",
                     help="prepare runs before klipper.service, verify after it (the systemd units); all does both")
+    sw = sub.add_parser("switch-flavor", help="run the other firmware flavor (klipper <-> kalico): data seed + MCU firmware")
+    sw.add_argument("flavor", choices=("klipper", "kalico"))
+    sw.add_argument("--dry-run", action="store_true", help="show the plan; downloads and changes nothing")
+    sw.add_argument("--yes", action="store_true", help="do not ask (required without a terminal)")
     sub.add_parser("rollback")
     sub.add_parser("confirm", help="mark the running system good")
     sub.add_parser("mcu-sync")
@@ -100,6 +115,8 @@ def main(argv: Optional[List[str]] = None, *, runner: Runner = run, opener=fetch
             else:
                 updater.post_boot()
             return 0
+        if args.cmd == "switch-flavor":
+            return _switch_flavor(updater, args)
         if args.cmd == "rollback":
             res = updater.rollback()
             events.result(True, data=res, msg="reboot to switch to slot %s" % res["to_slot"])
@@ -118,7 +135,7 @@ def main(argv: Optional[List[str]] = None, *, runner: Runner = run, opener=fetch
     except FlashError as exc:
         events.error(str(exc))
         events.result(False, msg=exc.message, data=exc.to_dict())
-        return 3 if exc.code in ("up_to_date", "downgrade", "upstream_mode") else 1
+        return 3 if exc.code in ("up_to_date", "downgrade", "upstream_mode", "printing") else 1
     finally:
         events.close()
     return 2
@@ -134,7 +151,7 @@ def _status(updater: Updater, args) -> int:
     except FlashError:
         slots, booted = [], None
     info = {"installed": st.installed_version, "flavor": st.flavor, "channel_mode": st.channel, "booted_slot": booted, "slots": slots,
-            "pending": doc.get("pending"), "last_check": doc.get("last_check"), "latest_seen": doc.get("latest_seen")}
+            "pending": doc.get("pending"), "switch": doc.get("switch"), "last_check": doc.get("last_check"), "latest_seen": doc.get("latest_seen")}
     updater.events.result(True, data=info)
     if not args.json:
         print(json.dumps(info, indent=2))
@@ -152,6 +169,19 @@ def _upgrade(updater: Updater, args) -> int:
         if sys.stdin.readline().strip().lower() not in ("y", "yes"):
             return 3
     updater.upgrade(target=args.target, dry_run=args.dry_run, allow_downgrade=args.allow_downgrade, reboot=not args.no_reboot)
+    return 0
+
+
+def _switch_flavor(updater: Updater, args) -> int:
+    if not args.dry_run and not args.yes:
+        if args.json or not sys.stdin.isatty():
+            sys.stderr.write("error: switch-flavor needs --yes when not run from a terminal (or use --dry-run)\n")
+            return 2
+        sys.stderr.write("Klipper restarts, both MCUs are re-flashed (a few minutes) and %s becomes the firmware flavor. Continue? [y/N] " % args.flavor)
+        sys.stderr.flush()
+        if sys.stdin.readline().strip().lower() not in ("y", "yes"):
+            return 3
+    updater.switch_flavor(args.flavor, dry_run=args.dry_run)
     return 0
 
 

@@ -20,6 +20,7 @@ const ROADMAP = [
   ['Choose', 'Klipper or Kalico, and your hardware', '2 min'],
   ['Flash', 'Update the mainboard and toolhead MCUs', '5 min'],
   ['Calibrate', 'Z-offset, input shaper, bed mesh', 'optional'],
+  ['Remote access', 'An SSH key or password, only if you want one', 'optional'],
 ];
 
 export function enter(ctx) {

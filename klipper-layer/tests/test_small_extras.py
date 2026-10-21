@@ -270,9 +270,10 @@ def test_runtime_patches_fails_loudly_when_constant_is_gone(monkeypatch):
                                             "qd_runtime_patches", FakePrinter()))
 
 
-# --- gcode_shell_command PARAMS restriction ---------------------------------
+# --- gcode_shell_command PARAMS policy (deny by default) ---------------------
 
 def make_shell(**opts):
+    fakes.load_extra("qd_shell_guard")
     mod = fakes.load_extra("gcode_shell_command")
     printer = FakePrinter()
     values = {"command": "/bin/echo"}
@@ -281,22 +282,176 @@ def make_shell(**opts):
                                        printer)), printer
 
 
+def refused(obj, params, match):
+    with pytest.raises(fakes.ConfigError, match=match):
+        obj.cmd_RUN_SHELL_COMMAND(FakeGcmd({"PARAMS": params}))
+
+
+def test_shell_denies_params_by_default():
+    obj, printer = make_shell()
+    refused(obj, "--evil /etc/passwd", "does not accept PARAMS")
+    refused(obj, "x", "allow_params")
+    refused(obj, "''", "allow_params")          # an empty argument is still one
+    # nothing was started
+    assert obj.last_returncode is None
+
+
+def test_shell_default_still_runs_without_params(monkeypatch):
+    obj, printer = make_shell(verbose=False)
+    calls = []
+
+    class Proc:
+        pid, returncode, stdout = 1, 0, None
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(sys.modules["extras.gcode_shell_command"].subprocess,
+                        "Popen", lambda argv, **kw: calls.append(argv) or Proc())
+    for params in ({}, {"PARAMS": ""}, {"PARAMS": "   "}):
+        obj.cmd_RUN_SHELL_COMMAND(FakeGcmd(params))
+    assert calls == [["/bin/echo"]] * 3
+
+
+def test_shell_allow_params_opts_in(monkeypatch):
+    obj, printer = make_shell(allow_params=True, verbose=False)
+    calls = []
+
+    class Proc:
+        pid, returncode, stdout = 1, 0, None
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(sys.modules["extras.gcode_shell_command"].subprocess,
+                        "Popen", lambda argv, **kw: calls.append(argv) or Proc())
+    obj.cmd_RUN_SHELL_COMMAND(FakeGcmd({"PARAMS": "a 'b c'"}))
+    assert calls == [["/bin/echo", "a", "b c"]]
+    refused(obj, "'unterminated", "bad PARAMS")
+
+
 def test_shell_params_pattern_refuses_other_arguments():
     obj, printer = make_shell(params_pattern=r"[a-z]+\.wav")
-    gcmd = FakeGcmd({"PARAMS": "--evil /etc/passwd"})
-    with pytest.raises(fakes.ConfigError, match="params_pattern"):
-        obj.cmd_RUN_SHELL_COMMAND(gcmd)
+    refused(obj, "--evil /etc/passwd", "params_pattern")
     # a partial match is not enough
-    with pytest.raises(fakes.ConfigError, match="params_pattern"):
-        obj.cmd_RUN_SHELL_COMMAND(FakeGcmd({"PARAMS": "beep.wav --evil"}))
+    refused(obj, "beep.wav --evil", "params_pattern")
 
 
 def test_shell_empty_pattern_allows_no_arguments_at_all():
     obj, printer = make_shell(params_pattern="")
-    with pytest.raises(fakes.ConfigError, match="params_pattern"):
-        obj.cmd_RUN_SHELL_COMMAND(FakeGcmd({"PARAMS": "x"}))
+    refused(obj, "x", "params_pattern")
+
+
+def test_shell_pattern_still_applies_with_allow_params():
+    obj, printer = make_shell(allow_params=True, params_pattern=r"[a-z]+")
+    refused(obj, "A", "params_pattern")
 
 
 def test_shell_bad_pattern_is_a_config_error():
     with pytest.raises(fakes.ConfigError, match="params_pattern"):
         make_shell(params_pattern="[unclosed")
+
+
+def test_shell_contradictory_options_are_a_config_error():
+    with pytest.raises(fakes.ConfigError, match="contradict"):
+        make_shell(allow_params=False, params_pattern="x")
+
+
+# --- qd_shell_guard: the same policy on a host module that has none -----------
+
+def make_host_module():
+    """A stand-in for Kalico's unrestricted gcode_shell_command module."""
+    mod = types.ModuleType("extras.gcode_shell_command")
+    ran = []
+
+    class ShellCommand:
+        def __init__(self, config):
+            self.name = config.get_name().split()[-1]
+            self.command = [config.get("command")]
+            config.get_printer().lookup_object("gcode").register_mux_command(
+                "RUN_SHELL_COMMAND", "CMD", self.name,
+                self.cmd_RUN_SHELL_COMMAND)
+
+        def cmd_RUN_SHELL_COMMAND(self, params):
+            ran.append(self.command + params.get("PARAMS", "").split())
+
+    mod.ShellCommand = ShellCommand
+    mod.ran = ran
+    return mod
+
+
+def make_guarded(**opts):
+    host = make_host_module()
+    guard = fakes.load_extra("qd_shell_guard",
+                             sibling_modules={"gcode_shell_command": host})
+    printer = FakePrinter()
+    guard.load_config(FakeConfig({}, "qd_shell_guard", printer))
+    values = {"command": "/bin/echo"}
+    values.update(opts)
+    obj = host.ShellCommand(FakeConfig(values, "gcode_shell_command say",
+                                       printer))
+    return obj, host, printer
+
+
+def test_guard_denies_params_on_a_host_module_by_default():
+    obj, host, printer = make_guarded()
+    # the registered handler is the guarded one
+    handler = printer.gcode.commands[("RUN_SHELL_COMMAND", "say")]
+    with pytest.raises(fakes.ConfigError, match="allow_params"):
+        handler(FakeGcmd({"PARAMS": "--evil"}))
+    assert host.ran == []
+    handler(FakeGcmd({}))
+    assert host.ran == [["/bin/echo"]]
+
+
+def test_guard_honours_the_opt_in_options():
+    obj, host, printer = make_guarded(allow_params=True)
+    printer.gcode.commands[("RUN_SHELL_COMMAND", "say")](
+        FakeGcmd({"PARAMS": "a b"}))
+    assert host.ran == [["/bin/echo", "a", "b"]]
+    obj, host, printer = make_guarded(params_pattern="[a-z]+")
+    handler = printer.gcode.commands[("RUN_SHELL_COMMAND", "say")]
+    handler(FakeGcmd({"PARAMS": "abc"}))
+    with pytest.raises(fakes.ConfigError, match="params_pattern"):
+        handler(FakeGcmd({"PARAMS": "abc def"}))
+    assert host.ran == [["/bin/echo", "abc"]]
+
+
+def test_guard_config_errors_match_the_native_module():
+    with pytest.raises(fakes.ConfigError, match="contradict"):
+        make_guarded(allow_params=False, params_pattern="x")
+    with pytest.raises(fakes.ConfigError, match="params_pattern"):
+        make_guarded(params_pattern="[unclosed")
+
+
+def test_guard_fails_closed_for_a_section_loaded_before_it():
+    host = make_host_module()
+    printer = FakePrinter()
+    early = host.ShellCommand(FakeConfig({"command": "/bin/echo"},
+                                         "gcode_shell_command early", printer))
+    guard = fakes.load_extra("qd_shell_guard",
+                             sibling_modules={"gcode_shell_command": host})
+    guard.load_config(FakeConfig({}, "qd_shell_guard", printer))
+    with pytest.raises(fakes.ConfigError, match="before \\[qd_shell_guard\\]"):
+        host.ShellCommand.cmd_RUN_SHELL_COMMAND(early, FakeGcmd({}))
+    assert host.ran == []
+
+
+def test_guard_is_idempotent_and_a_noop_on_a_policy_aware_module():
+    host = make_host_module()
+    guard = fakes.load_extra("qd_shell_guard",
+                             sibling_modules={"gcode_shell_command": host})
+    printer = FakePrinter()
+    guard.load_config(FakeConfig({}, "qd_shell_guard", printer))
+    first = host.ShellCommand.cmd_RUN_SHELL_COMMAND
+    guard.load_config(FakeConfig({}, "qd_shell_guard", printer))
+    assert host.ShellCommand.cmd_RUN_SHELL_COMMAND is first
+    # our own module carries the marker: the guard must leave it alone
+    fakes.load_extra("qd_shell_guard")
+    native = fakes.load_extra("gcode_shell_command")
+    guard = fakes.load_extra("qd_shell_guard",
+                             sibling_modules={"gcode_shell_command": native})
+    before = native.ShellCommand.__init__
+    guard.load_config(FakeConfig({}, "qd_shell_guard", printer))
+    assert native.ShellCommand.__init__ is before
+    assert not getattr(native.ShellCommand, "_eitri_guarded", False)

@@ -57,6 +57,7 @@ secrets/
 !.env.example
 *.pem
 *.key
+*.sec
 *.p12
 *.pfx
 *.token
@@ -66,6 +67,10 @@ secrets/
 credentials*
 config.mksini
 moonraker-api-key*
+
+# Release signing work directories (tools/release/sign-release.sh output, downloaded unsigned sets)
+/signed/
+/unsigned/
 
 # Python
 __pycache__/

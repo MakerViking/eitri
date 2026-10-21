@@ -166,7 +166,7 @@ class Network:
     async def set_hostname(self, name: str) -> dict[str, Any]:
         name = validate_hostname(name)
         # Persist on /data (the rootfs is read-only); the OS applies it at boot.
-        atomic_write(self.s.eitri_dir / "hostname", name + "\n")
+        atomic_write(self.s.hostname_file, name + "\n")
         if self.s.mock:
             self.mock_hostname = name
             return {"ok": True, "hostname": name, "applied": "mock"}

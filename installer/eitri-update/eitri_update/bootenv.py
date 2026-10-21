@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Linux side of the boot selection.  Two layouts share one interface.
 
-in-place   (converted stock disk)  /boot/eitri/boot.env (vfat) holds five variables that boot.scr rewrites with
+in-place   (converted stock disk): THE user layout (installer/install.sh keeps the stock U-Boot).
+           /boot/eitri/boot.env (vfat) holds five variables that boot.scr rewrites with
            `env export`; this module reads and writes the same file.  See boot/boot.cmd for the U-Boot half and
            docs/BOOT.md for the state machine.  Slot state is a real tri-state (good / bad / unknown).
-flash-once (GPT image)             U-Boot keeps BOOT_ORDER and BOOT_<slot>_LEFT in one raw sector, owned by
+flash-once (GPT image): bench boards, microSD cards and CI only.
+           U-Boot keeps BOOT_ORDER and BOOT_<slot>_LEFT in one raw sector, owned by
            /usr/libexec/eitri/rauc-bootloader.  Everything is delegated to that script.  It only knows "attempts
            left", so a slot that has never proven itself (the freshly written one, the never-written one) would look
            "good"; a slot is therefore only reported good once eitri-update recorded a healthy boot of it

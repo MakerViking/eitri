@@ -38,11 +38,13 @@ export function enter(ctx) {
   const link = (label, href, ic) => h('a', { class: 'btn', href, target: '_blank', rel: 'noopener' }, icon(ic), h('span', null, label), icon('external'));
   const links = h('div', { class: 'row wrap' },
     opts.camera && link('Camera stream', `${origin}/webcam/stream`, 'camera'),
-    link('Moonraker API', `${origin}/server/info`, 'layers'));
+    // The RTSP password is deliberately not part of this page: it opens on a page of its own.
+    opts.camera && opts.go2rtc && h('a', { class: 'btn', href: 'camera.html', target: '_blank', rel: 'noopener' }, icon('key'), h('span', null, 'Camera sign-in (RTSP)'), icon('external')),
+    link('Moonraker API (port 80)', `${origin}/server/info`, 'layers'));
 
   ctx.actions.set({ next: { label: `Open ${ui}`, icon: 'external', onClick: () => { window.location.href = `${origin}/`; } }, note: 'Setup complete. The configurator is now locked.' });
   return { nodes: [receipt, klarity, h('div', null, h('div', { class: 'section-label', style: { marginTop: 0 } }, 'Quick links'), links),
     h('div', { class: 'card lock-note' }, h('span', { class: 'link-ico' }, icon('lock')),
-      h('p', null, h('strong', null, 'The configurator is locked. '), 'Nothing on your network can flash or rewrite the printer now. To run the wizard again, connect over SSH and run ', h('code', null, 'eitri-configurator unlock'), '.')),
+      h('p', null, h('strong', null, 'The configurator is locked. '), 'Nothing on your network can flash or rewrite the printer now. To run the wizard again, choose ', h('strong', null, 'Unlock setup'), ' on the printer’s touchscreen, or connect over SSH and run ', h('code', null, 'eitri-configurator unlock'), '. It then shows a pairing code and goes back to sleep when you are done.')),
     h('div', { class: 'card forged-note' }, h('p', null, h('strong', null, 'What stays yours. '), 'Your Klipper tree is a plain git clone (', h('code', null, '/data/firmware/klipper'), '), your config lives in ', h('code', null, '/data/printer_data/config'), ', and your own tweaks go in ', h('code', null, 'user.cfg'), ', which Eitri never overwrites.'))] };
 }

@@ -1,0 +1,120 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Install the data seed from a seed archive that ships inside the OS image.
+#
+# The normal printer images do NOT use this: the flash-once image carries a /data partition that was
+# populated with the seed when the image was built (board/eitri-plus4/mkdata.sh), and the in-place
+# installer's stage 2 unpacks the seed onto the new /data before the first boot. This tool is the third
+# way, for images that carry the archive themselves (bench and QEMU images built with the archive in
+# /usr/share/eitri/seed/): it unpacks it once, offline, on the first boot. It costs the archive's size
+# (about 55 MiB) in both RAUC root slots, which is why the printer images do not do it.
+#
+#   /usr/share/eitri/seed/data-seed-<version>-<flavor>.tar.zst
+#   /usr/share/eitri/seed/data-seed-<version>-<flavor>.manifest.json   (its archive.sha256 is trusted here:
+#                                       the files are part of the signed, read-only root filesystem)
+#
+# What it does, on every boot, in this order:
+#   1. /data/eitri/state/seed-installed.env exists  -> a seed is installed; nothing to do.
+#   2. no archive for the flavor in the image       -> say so and stop. If a Klipper tree is already
+#      there (installed by the in-place installer or by hand) that is fine; if not, klipper, moonraker
+#      and klarity stay off (their ConditionPathExists= are unmet), and /run/eitri/no-seed records why.
+#   3. otherwise eitri-seed-install --mode install  (idempotent, crash-resumable, never overwrites).
+#
+# The flavor is /data/eitri/flavor when that exists, else EITRI_DEFAULT_FLAVOR (klipper). The other
+# flavor is installed later by the configurator or eitri-update (--mode update --switch-flavor).
+#
+# Exit status: 0 when nothing was needed or the seed was installed, 1 when the installation failed
+# (the unit then shows up in `systemctl --failed`).
+#
+# Environment overrides, used by the tests: EITRI_DATA, EITRI_OWNER, EITRI_RUN, EITRI_SEED_DIR,
+# EITRI_SEED_INSTALL, EITRI_DEFAULT_FLAVOR, EITRI_PYTHON.
+
+set -eu
+
+DATA=${EITRI_DATA:-/data}
+OWNER=${EITRI_OWNER:-eitri:eitri}
+RUN=${EITRI_RUN:-/run/eitri}
+SEED_DIR=${EITRI_SEED_DIR:-/usr/share/eitri/seed}
+INSTALL=${EITRI_SEED_INSTALL:-/usr/libexec/eitri/eitri-seed-install}
+DEFAULT_FLAVOR=${EITRI_DEFAULT_FLAVOR:-klipper}
+PYTHON=${EITRI_PYTHON:-python3}
+
+log() { echo "seed-first-boot: $*"; }
+
+if [ -z "${EITRI_DATA:-}" ] && ! mountpoint -q "$DATA"; then
+	log "$DATA is not mounted, skipping"
+	exit 0
+fi
+
+mark="$DATA/eitri/state/seed-installed.env"
+if [ -f "$mark" ]; then
+	version=$(sed -n 's/^SEED_VERSION=//p' "$mark" | head -n 1)
+	flavor=$(sed -n 's/^SEED_FLAVOR=//p' "$mark" | head -n 1)
+	log "data seed ${version:-?} (${flavor:-?}) is installed"
+	rm -f "$RUN/no-seed"
+	exit 0
+fi
+
+flavor=$DEFAULT_FLAVOR
+if [ -f "$DATA/eitri/flavor" ]; then
+	flavor=$(tr -d ' \t\r\n' <"$DATA/eitri/flavor")
+fi
+case "$flavor" in
+klipper | kalico) ;;
+*)
+	log "unknown flavor '$flavor' in $DATA/eitri/flavor"
+	exit 1
+	;;
+esac
+
+archive=""
+count=0
+for candidate in "$SEED_DIR"/data-seed-*-"$flavor".tar.zst; do
+	[ -f "$candidate" ] || continue
+	archive=$candidate
+	count=$((count + 1))
+done
+
+if [ "$count" -eq 0 ]; then
+	if [ -f "$DATA/firmware/klipper/klippy/klippy.py" ]; then
+		log "no seed archive in the image; $DATA already holds a Klipper tree"
+		rm -f "$RUN/no-seed"
+	else
+		mkdir -p "$RUN"
+		echo "no data seed: $SEED_DIR has no $flavor archive and $DATA has no Klipper tree" >"$RUN/no-seed"
+		log "no data seed for $flavor: klipper, moonraker and klarity stay off until one is installed"
+	fi
+	exit 0
+fi
+if [ "$count" -gt 1 ]; then
+	log "refusing to choose between $count $flavor seed archives in $SEED_DIR"
+	exit 1
+fi
+
+manifest="${archive%.tar.zst}.manifest.json"
+if [ ! -f "$manifest" ]; then
+	log "$manifest is missing"
+	exit 1
+fi
+sha=$("$PYTHON" -I -c '
+import json, re, sys
+m = json.load(open(sys.argv[1]))
+sha = m["archive"]["sha256"]
+if not re.fullmatch(r"[0-9a-f]{64}", sha):
+    raise SystemExit(1)
+print(sha)
+' "$manifest") || {
+	log "cannot read archive.sha256 from $manifest"
+	exit 1
+}
+
+log "installing $(basename "$archive") (first boot, offline)"
+if "$INSTALL" --archive "$archive" --sha256 "$sha" --manifest "$manifest" --flavor "$flavor" \
+	--data "$DATA" --mode install --owner "$OWNER" -q; then
+	rm -f "$RUN/no-seed"
+	log "done"
+else
+	rc=$?
+	log "eitri-seed-install failed with status $rc"
+	exit 1
+fi

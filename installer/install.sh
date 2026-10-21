@@ -3,13 +3,19 @@
 #
 # Eitri in-place installer for a stock QIDI X-Plus 4 (stage 1, runs on the stock system over SSH).
 #
+# This IS the way to put Eitri on a printer: it keeps QIDI's own boot loader, leaves the original system bootable in
+# its own partition, and revert.sh brings everything back.  (The flash-once GPT disk image built by os/ is for bench
+# boards, microSD cards and CI only; it replaces the boot loader and is not a user path.)
+#
 #   sudo ./install.sh                         dry run: checks everything, changes nothing
 #   sudo ./install.sh --flavor klipper --i-have-a-backup --yes [--backup-to-usb | --backup-to-host U@H:DIR]
 #
 # What a real run does, in order - and where each step can still be undone:
 #   1  preflight          read-only checks (printer model, eMMC layout, space, not printing)
 #   2  backup             full eMMC image to a USB stick or your PC, read back and verified.   REQUIRED.
-#   3  stage              download the signed bundle, verify signature + checksums
+#   3  stage              download the signed bundle (system image, data seed, MCU firmware), verify signature +
+#                         checksums, then check the data seed (its manifest, the pinned firmware commit, a rehearsal
+#                         of the unpack rules); works offline from a USB stick or your PC (--bundle-dir, --seed-file)
 #   4  MCU recovery       save a way back for both MCU boards (Katapult read-back + round trip).  This WRITES to the
 #                         toolhead (erase + same image back) before step 5, so it needs --accept-mcu-roundtrip.
 #   5  --- you type CONVERT ---
@@ -46,19 +52,26 @@ STAGE_DIR=""; STAGE_USB=""
 BACKUP_MODE=""; BACKUP_TARGET=""; BACKUP_FILE=""; BACKUP_FILE_SHA=""; BACKUP_MAX_AGE_H=72
 MCU_MODE="auto"; PROBE_MCU=0; ACCEPT_NO_MCU_BACKUP=0; STOCK_MCU_BINS=()
 STATUS_ONLY=0; BACKUP_STREAM=0; STAGE_ONLY=0; MCU_EXTRA=(); ACCEPT_MCU_ROUNDTRIP=0
+SEED_FILE_ARG=""; SEED_MANIFEST_ARG=""
 
 usage() {
   awk 'NR >= 3 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
   cat <<'USAGE'
 
 Options
-  --flavor klipper|kalico        firmware flavor to install (asked interactively if omitted on a real run)
+  --flavor klipper|kalico        firmware flavor to install (asked interactively if omitted on a real run); the matching
+                                 data seed (Klipper or Kalico, Moonraker, their Python environments, Klarity, the extras) is
+                                 installed with it, so the first boot needs no network
   --i-have-a-backup --yes        BOTH are required to make real changes; without them this is a dry run
   --dry-run                      force a dry run even if the two flags above are given
   --confirm CONVERT              supply the typed confirmation (for the web configurator); never use blindly
 
   --bundle-url URL               directory URL holding install.json (+ .minisig) and the payload files
   --bundle-dir DIR               same, from a local directory (USB stick, offline install)
+  --seed-file FILE --seed-manifest FILE
+                                 use this data seed (data-seed-<version>-<flavor>.tar.zst and its .manifest.json, from
+                                 your PC or a USB stick) instead of downloading it. The signed install.json still decides:
+                                 the files must match its SHA-256, so nothing unverified is ever installed
   --pubkey FILE|DIR              trusted minisign public key(s); default: keys/ next to this script
   --stage-dir DIR                where the payload is staged (default: /var/lib/eitri-install/payload on the stock disk)
   --stage-usb [DEVICE]           stage on a USB stick instead (needs less space on the printer)
@@ -97,6 +110,8 @@ parse_args() {
       --flavor) FLAVOR="${2:?}"; shift ;;
       --bundle-url) BUNDLE_URL="${2:?}"; shift ;;
       --bundle-dir) BUNDLE_DIR="${2:?}"; shift ;;
+      --seed-file) SEED_FILE_ARG="${2:?}"; shift ;;
+      --seed-manifest) SEED_MANIFEST_ARG="${2:?}"; shift ;;
       --pubkey) PUBKEYS+=("${2:?}"); shift ;;
       --stage-dir) STAGE_DIR="${2:?}"; shift ;;
       --stage-usb) STAGE_USB="auto"; if [[ "${2:-}" == /dev/* ]]; then STAGE_USB="$2"; shift; fi ;;
@@ -123,6 +138,14 @@ parse_args() {
   [[ -z "$FLAVOR" || "$FLAVOR" == klipper || "$FLAVOR" == kalico ]] || { echo "--flavor must be klipper or kalico" >&2; exit 2; }
   case "$MCU_MODE" in auto | manual | skip) ;; *) echo "--mcu must be auto, manual or skip" >&2; exit 2 ;; esac
   if [[ "$BACKUP_MODE" == file && -z "$BACKUP_FILE_SHA" ]]; then echo "--backup-file needs --backup-sha256" >&2; exit 2; fi
+  if [[ -n "$SEED_FILE_ARG" || -n "$SEED_MANIFEST_ARG" ]]; then
+    [[ -n "$SEED_FILE_ARG" && -n "$SEED_MANIFEST_ARG" ]] || { echo "--seed-file and --seed-manifest go together" >&2; exit 2; }
+    [[ -r "$SEED_FILE_ARG" && -r "$SEED_MANIFEST_ARG" ]] || { echo "cannot read --seed-file / --seed-manifest" >&2; exit 2; }
+    SEED_FILE_ARG="$(cd "$(dirname "$SEED_FILE_ARG")" && pwd)/$(basename "$SEED_FILE_ARG")"
+    SEED_MANIFEST_ARG="$(cd "$(dirname "$SEED_MANIFEST_ARG")" && pwd)/$(basename "$SEED_MANIFEST_ARG")"
+    # they become file:// URLs: keep the names plain
+    [[ "$SEED_FILE_ARG$SEED_MANIFEST_ARG" =~ ^[A-Za-z0-9._/+@=,:~-]+$ ]] || { echo "--seed-file/--seed-manifest: use paths without spaces or special characters" >&2; exit 2; }
+  fi
 
   # Real changes need both flags, and never in the same breath as --dry-run.
   if ((I_HAVE_BACKUP && ASSUME_YES && !FORCE_DRY)); then
@@ -565,6 +588,7 @@ stage_manifest() {
   ok "install.json: signature OK"
   py "$INSTALLER_DIR/tools/prepare_payload.py" plan --install-json "$ij" --flavor "$FLAVOR" --base-url "$base" --out-dir "$work" ||
     die 12 "this release cannot be installed on this printer (see the message above)"
+  use_local_seed "$work/downloads.tsv"
   BUNDLE_VERSION="$(kv_get "$work/install.env" version)"
   PAYLOAD_BYTES="$(kv_get "$work/install.env" payload_bytes)"
   ROOT_MIB="$(kv_get "$work/install.env" root_mib)"; DATA_MIN_MIB="$(kv_get "$work/install.env" data_min_mib)"
@@ -576,6 +600,39 @@ stage_manifest() {
   _say "  Eitri $BUNDLE_VERSION ($FLAVOR $(kv_get "$work/install.env" flavor_describe)), $(human_bytes "$PAYLOAD_BYTES") to download"
   STAGE_BASE_URL="$base"
   step_ok manifest "Eitri $BUNDLE_VERSION: signature verified"
+}
+
+# --seed-file / --seed-manifest: read the data seed from these local files instead of fetching it.  Only the *source* of
+# the two files changes; their names, sizes and SHA-256 still come from the signed install.json and are checked after
+# staging exactly like a downloaded file.
+use_local_seed() {
+  local tsv="$1"
+  [[ -n "$SEED_FILE_ARG" ]] || return 0
+  awk -F'\t' -v OFS='\t' -v f="$SEED_FILE_ARG" -v m="$SEED_MANIFEST_ARG" '
+    $1 ~ /^data-seed-.*\.manifest\.json$/ { $2 = "file://" m }
+    $1 ~ /^data-seed-.*\.tar\.zst$/ { $2 = "file://" f }
+    { print }' "$tsv" >"$tsv.new" && mv -f "$tsv.new" "$tsv"
+  _say "  data seed: taken from $SEED_FILE_ARG (no download)"
+}
+
+# Rehearse the unpack of the data seed on the stock system, into a scratch directory, before anything irreversible: the
+# same tool stage 2 will run checks the archive digest, the member policy (only the seed layout; no traversal, devices,
+# setuid files or escaping links), the flavor and the listing.  Exit 5 (not enough room *here*) is only a warning: stage 2
+# checks the real, freshly created /data, and the signed layout already guarantees it fits.
+rehearse_seed() {
+  local name sha tool sandbox="$STATE_DIR/seed-rehearsal" rc=0
+  name="$(kv_get "$STAGE_DIR/payload.env" data_seed_file)"; sha="$(kv_get "$STAGE_DIR/payload.env" data_seed_sha256)"
+  tool="$(seed_tool)" || die 20 "eitri-seed-install is missing from this installer (bin/eitri-seed-install); the data seed cannot be checked"
+  have_cmd tar || die 20 "tar is needed to check the data seed"
+  rm -rf "$sandbox"; mkdir -p "$sandbox"
+  "$tool" --archive "$STAGE_DIR/$name" --sha256 "$sha" --flavor "$FLAVOR" --data "$sandbox" --mode install --dry-run -q \
+    >"$STATE_DIR/seed-check.log" 2>&1 || rc=$?
+  rm -rf "$sandbox"
+  case "$rc" in
+    0) ;;
+    5) warn "the stock disk is too full to rehearse unpacking the data seed; stage 2 checks the room on the new /data" ;;
+    *) die 12 "the data seed failed its unpack check (exit $rc): $(tail -3 "$STATE_DIR/seed-check.log" | tr '\n' ' ')- nothing was changed" ;;
+  esac
 }
 
 stage_download() {
@@ -608,6 +665,8 @@ stage_download() {
     progress stage 100 "$name"
   done <"$work/downloads.tsv"
   py "$INSTALLER_DIR/tools/prepare_payload.py" finalize --install-json "$ij" --flavor "$FLAVOR" --dir "$STAGE_DIR" || die 12 "staged payload failed its final check"
+  rehearse_seed
+  ok "data seed $(kv_get "$STAGE_DIR/payload.env" data_seed_version) ($FLAVOR): checksum, manifest, pinned firmware and unpack rules verified"
   # The MCU firmware is also needed right now, for the recovery proof.
   rm -rf "${STATE_DIR:?}/mcu-fw"; mkdir -p "$STATE_DIR/mcu-fw"
   have_cmd zstd || die 20 "zstd is needed to unpack the MCU firmware (apt install zstd)"

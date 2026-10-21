@@ -1,0 +1,5 @@
+# Build tools for the wheels the seed builds itself (Klarity, cross-compiled sdists). Host-side only;
+# none of this is installed on the printer. Input to `uv pip compile --python-version 3.14`.
+setuptools>=80
+hatchling>=1.27
+wheel>=0.45

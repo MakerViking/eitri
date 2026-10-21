@@ -3,6 +3,9 @@ enable eitri-grow-data.service
 enable eitri-data-init.service
 enable eitri-etc.service
 enable eitri-zram.service
+enable eitri-seed.service
+enable eitri-access.path
+enable eitri-access.service
 enable eitri-mark-good.service
 enable klipper.service
 enable moonraker.service

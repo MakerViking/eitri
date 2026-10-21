@@ -57,8 +57,9 @@ Safety properties (each covered by `tests/test_boot_script.py`, which runs the s
 
 Two layouts exist and `eitri-update` (`bootenv.BootControl`) handles both behind one interface:
 
-* **in-place conversion** (this document): state in `/boot/eitri/boot.env`; RAUC calls `eitri-bootctl`.
-* **flash-once GPT image**: no `boot.env`; U-Boot keeps `BOOT_ORDER`/`BOOT_<slot>_LEFT` in one raw eMMC sector owned by
+* **in-place conversion** (this document; the **default and the only path users are given**): state in
+  `/boot/eitri/boot.env`; RAUC calls `eitri-bootctl`. It keeps QIDI's U-Boot and the stock system.
+* **flash-once GPT image** (bench boards, microSD cards and CI only; built by `os/`, replaces the boot loader): no `boot.env`; U-Boot keeps `BOOT_ORDER`/`BOOT_<slot>_LEFT` in one raw eMMC sector owned by
   `/usr/libexec/eitri/rauc-bootloader` (the kernel command line carries `rauc.slot=`). That script only knows
   "attempts left", so a never-written or unproven slot looks `good` to it. `BootControl` therefore reports `good` only for
   slots with a recorded healthy boot (`/data/eitri/state/slot-confirmed.json`, written by `eitri-update`'s verify/confirm, cleared

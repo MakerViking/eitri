@@ -10,6 +10,8 @@
 | `eitri-update/tests` | minisign + pure-Python Ed25519 (RFC 8032 vectors, `cryptography` and the real `minisign` binary as oracles), manifest rules, resumable download, upgrade/post-boot/rollback, bootctl, upstream mode | file:// channel, fake `rauc`/`systemctl` |
 | `tests/test_boot_script.py` | `boot/boot.cmd` executed by **U-Boot 2021.07 sandbox** (hush, `env import/export`, `fatwrite`, `ext4load`) on a real FAT+ext4 image: counters, fallbacks, one-shot stage 2 | `booti`/`sysboot` echo their arguments (no sandbox implementation) |
 | `tests/test_install.py` | `install.sh` end to end: refusals, dry run changes nothing, backups, signatures, arming | PATH shims for `sfdisk blockdev findmnt lsblk blkid systemctl …`, fake root (`EITRI_ROOT`) |
+| `eitri-update/tests/test_seed_delivery.py`, `test_switch_flavor.py`, `test_seed_unit.py` | a release that carries a data seed and MCU firmware: manifest and archive checks before the OS is written, install after the reboot, commit, rollback of the whole data layer (incl. interrupted runs and leftovers), `switch-flavor` both ways with every failure restoring the old flavor, hostile MCU archives | synthetic seeds in the real layout (`tests/seedpack.py`) unpacked by the **real** `seed/bin/eitri-seed-install`; fake `rauc`/`systemctl`/`eitri-mcuflash` |
+| `tests/test_seed_install.py` | the seed in the in-place conversion: stage 1 checks (digest, manifest vs the signed release, pinned commit, ABI, size, unpack rehearsal, hostile members), offline use (`--bundle-dir`, `--seed-file`), stage 2 running the real seed installer and failing back to a bootable stock system | as `test_install.py` / `test_stage2.py` |
 | `tests/test_stage2.py`, `test_revert_restore.py` | `stage2.sh` convert/restore incl. failure injection and resume; `revert.sh` every mode | recording shims for `sfdisk resize2fs e2fsck mke2fs mount …`; devices are plain files |
 
 The U-Boot sandbox is not in the repo. Build it once (`make sandbox_defconfig`, enable `LEGACY_IMAGE_FORMAT`,
@@ -17,6 +19,11 @@ The U-Boot sandbox is not in the repo. Build it once (`make sandbox_defconfig`, 
 `EITRI_UBOOT_SANDBOX` at the binary; those tests skip otherwise.
 
 ## Needs real hardware (not verifiable here)
+
+0. **The data seed on a Cortex-A53.** Everything about the seed here is proven with synthetic seeds and (in `seed/`) with
+   qemu-user. Unmeasured: how long stage 2 takes to unpack 55-94 MiB of zstd into 380-470 MiB on the eMMC (a few minutes
+   expected), the first slow `git status` of the stat-free clone, the klippy + MCU handshake with the shipped `c_helper.so`,
+   and a real `eitri-update switch-flavor` (stop services, swap trees, flash both MCUs, restart) on the machine.
 
 1. **Which UART is which board.** The stock `printer.cfg` puts steppers/bed/chamber on `[mcu U_1]` = `/dev/ttyS0`
    and the extruder on `[mcu]` = `/dev/ttyS2`; the code binds boards from that evidence (and from an explicit

@@ -6,8 +6,8 @@
 #
 # The machine mimics the printer's board where QEMU can: 4 x Cortex-A53, 1 GiB of RAM (the board
 # reports 976 MB; set MEM=976 to match), the root filesystem on a read-only virtio disk, a second
-# virtio disk for /data (a blank ext4 file system on the first run, so the first boot creates the
-# /data layout), user-mode networking that cannot reach anything outside the host (restrict=on:
+# virtio disk for /data (on the first run an ext4 file system built from the data seed exactly like the
+# flash-once image's data partition, or a blank one with SEED_FLAVOR=none), user-mode networking that cannot reach anything outside the host (restrict=on:
 # no NTP, no DNS, no Internet), and forwarded host ports for SSH, the web UI and the configurator.
 #
 # What QEMU cannot mimic: the RK3328 SoC, its boot chain (U-Boot, TF-A), the UARTs, the camera
@@ -22,9 +22,12 @@
 #   RUN_DIR       disks, logs, sockets           (default: $OUT/qemu)
 #   MEM           guest RAM in MiB               (default: 1024)
 #   SMP           guest CPUs                     (default: 4)
-#   DATA_SIZE     size of the blank /data disk   (default: 512M; a sparse file)
-#   SSH_PORT, HTTP_PORT, CONFIGURATOR_PORT, MOONRAKER_PORT   host ports on 127.0.0.1
-#                 (defaults 2222, 8088, 8099, 7125; set to 0 to forward nothing)
+#   DATA_SIZE     size of the blank /data disk   (default: 512M; a sparse file; only without a seed)
+#   SEED_FLAVOR   klipper | kalico | none        (default: klipper) which data seed populates /data on --fresh
+#   SEED_DIR      where data-seed-*-<flavor>.tar.zst and .manifest.json are (default: <build>/seed/out)
+#   SEED_HEADROOM_MIB   free space added to the seeded disk (default 256)
+#   SSH_PORT, HTTP_PORT, CONFIGURATOR_PORT   host ports on 127.0.0.1 (defaults 2222, 8088, 8099; 0 = forward nothing)
+#                 Moonraker (7125) listens on loopback only and is reached through nginx (HTTP_PORT), as on the printer
 #   APPEND        extra kernel command line words
 #   VERBOSE=1     show kernel messages and systemd's unit status on the console (slower boot)
 #   QEMU          qemu binary                    (default: qemu-system-aarch64)
@@ -42,8 +45,9 @@ DATA_SIZE=${DATA_SIZE:-512M}
 SSH_PORT=${SSH_PORT:-2222}
 HTTP_PORT=${HTTP_PORT:-8088}
 CONFIGURATOR_PORT=${CONFIGURATOR_PORT:-8099}
-MOONRAKER_PORT=${MOONRAKER_PORT:-7125}
 QEMU=${QEMU:-qemu-system-aarch64}
+SEED_DIR=${SEED_DIR:-$BUILD_ROOT/seed/out}
+SEED_FLAVOR=${SEED_FLAVOR:-klipper}
 
 fresh=0
 socket=
@@ -67,10 +71,23 @@ mkdir -p "$RUN_DIR"
 data=$RUN_DIR/data.img
 if [ "$fresh" = 1 ] || [ ! -f "$data" ]; then
 	rm -f "$data"
-	truncate -s "$DATA_SIZE" "$data"
-	# What grow-data and the image's genimage config give the printer: one ext4 file system, labelled "data".
-	mke2fs -q -t ext4 -L data -m 0 "$data"
-	echo "run-qemu.sh: new blank /data disk $data ($DATA_SIZE)" >&2
+	seed=$(ls "$SEED_DIR"/data-seed-*-"$SEED_FLAVOR".tar.zst 2>/dev/null | head -1 || true)
+	if [ "$SEED_FLAVOR" != none ] && [ -n "$seed" ]; then
+		# The same path the flash-once printer image takes (os/board/eitri-plus4/post-image.sh): the data seed is
+		# installed with eitri-seed-install into a scratch tree, then mke2fs -d makes the "data" file system from it,
+		# all files owned by the eitri user. The first boot then finds /data populated, as on a shipped image.
+		manifest=${seed%.tar.zst}.manifest.json
+		[ -f "$manifest" ] || { echo "run-qemu.sh: $manifest is missing next to $seed" >&2; exit 1; }
+		command -v fakeroot >/dev/null || { echo "run-qemu.sh: fakeroot not found (needed to own the seed's files as eitri; SEED_FLAVOR=none for a blank /data)" >&2; exit 1; }
+		fakeroot -- "$REPO_ROOT/os/board/eitri-plus4/mkdata.sh" --output "$data" --seed "$seed" --manifest "$manifest" \
+			--flavor "$SEED_FLAVOR" --headroom-mib "${SEED_HEADROOM_MIB:-256}" >&2
+		echo "run-qemu.sh: new /data disk $data from $(basename "$seed")" >&2
+	else
+		truncate -s "$DATA_SIZE" "$data"
+		# What grow-data and the image's genimage config give the printer: one ext4 file system, labelled "data".
+		mke2fs -q -t ext4 -L data -m 0 "$data"
+		echo "run-qemu.sh: new blank /data disk $data ($DATA_SIZE; no seed: SEED_FLAVOR=$SEED_FLAVOR, looked in $SEED_DIR)" >&2
+	fi
 fi
 
 fwd=
@@ -81,7 +98,6 @@ add_fwd() { # host-port guest-port
 add_fwd "$SSH_PORT" 22
 add_fwd "$HTTP_PORT" 80
 add_fwd "$CONFIGURATOR_PORT" 8099
-add_fwd "$MOONRAKER_PORT" 7125
 
 # The printer has no console; here the PL011 serial port is it. "quiet" and a hidden systemd status
 # keep the console from slowing the boot being measured; the journal and dmesg have everything.

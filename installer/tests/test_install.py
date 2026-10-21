@@ -249,6 +249,10 @@ def test_real_run_arms_stage_two_and_reboots(printer, tmp_path):
     assert subprocess.run(["sha256sum", "-c", "payload.sha256", "--quiet"], cwd=payload).returncode == 0
     penv = dict(l.split("=", 1) for l in open(payload + "/payload.env").read().splitlines())
     assert penv["rootfs_raw_sha256"] == sha256(printer.rootfs_raw) and penv["mcu_firmware_file"] == "mcu-firmware.tar.zst"
+    seed = printer.seeds["klipper"]
+    assert penv["data_seed_file"] == "data-seed-2026.10.0-klipper.tar.zst" and penv["data_seed_sha256"] == seed["sha256"]
+    assert penv["data_seed_manifest_file"] == "data-seed-2026.10.0-klipper.manifest.json" and penv["data_seed_version"] == "2026.10.0"
+    assert os.path.isfile(payload + "/" + penv["data_seed_file"]) and os.path.isfile(payload + "/" + penv["data_seed_manifest_file"])
     # the RAM installer = CI base archive + our extra archive, containing config, scripts and the stock modules
     blob = open(boot + "/eitri/stage2/initramfs.cpio.gz", "rb").read()
     base = open(os.path.join(printer.bundle, "stage2-initramfs.cpio.gz"), "rb").read()
@@ -256,7 +260,8 @@ def test_real_run_arms_stage_two_and_reboots(printer, tmp_path):
     # the kernel unpacks the two members one after the other; cpio -t reads a single archive, so list each member
     listing = "".join(subprocess.run("zcat | cpio -it 2>/dev/null", shell=True, input=part, stdout=subprocess.PIPE).stdout.decode()
                       for part in (blob[:len(base)], blob[len(base):]))
-    for needed in ("init", "etc/eitri/stage2.conf", "usr/lib/eitri/stage2.sh", "usr/lib/eitri/layout.sh", "usr/lib/eitri/www/index.html", "etc/eitri/modules.list"):
+    for needed in ("init", "etc/eitri/stage2.conf", "usr/lib/eitri/stage2.sh", "usr/lib/eitri/layout.sh", "usr/lib/eitri/www/index.html", "etc/eitri/modules.list",
+                   "usr/libexec/eitri/eitri-seed-install"):
         assert needed in listing, listing
     s2 = open(os.path.join(printer.state, "stage2.conf")).read()
     assert "operation=convert" in s2 and "payload_loc=stock:/var/lib/eitri-install/payload" in s2 and "stock_fs_uuid=5dcae443-0796-4029-ae6c-bf5bd2a37067" in s2
@@ -373,8 +378,10 @@ def test_install_into_rootfs_places_the_on_device_tools(tmp_path):
     assert r.returncode == 0, r.stdout
     site = dest / "usr" / "lib" / "python3.14" / "site-packages"
     assert (site / "eitri_update" / "cli.py").is_file() and not list(site.rglob("__pycache__"))
-    for exe in ("usr/bin/eitri-update", "usr/libexec/eitri/eitri-bootctl"):
+    for exe in ("usr/bin/eitri-update", "usr/libexec/eitri/eitri-bootctl", "usr/libexec/eitri/eitri-seed-install", "usr/libexec/eitri/switch-flavor"):
         assert os.access(dest / exe, os.X_OK)
+    # the seed installer is the reference implementation itself, byte for byte
+    assert (dest / "usr/libexec/eitri/eitri-seed-install").read_bytes() == open(os.path.join(INSTALLER, "..", "seed", "bin", "eitri-seed-install"), "rb").read()
     # the wrappers are runnable against the copied package (the bootctl one answers for a missing boot dir with a clean error)
     out = subprocess.run(["python3", "-I", "-c", "import sys; sys.path[:0]=[sys.argv[1], sys.argv[2]]; from eitri_update.cli import main; sys.exit(main(['--version']))",
                           str(site), os.path.join(INSTALLER, "mcuflash")], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
@@ -535,6 +542,7 @@ def _rootfs_install(tmp_path, keys_dir=None, **env):
         for f in os.listdir(keys_dir):
             shutil.copy(os.path.join(keys_dir, f), tool_root / "keys" / f)
     e = dict(os.environ)
+    e["EITRI_SEED_INSTALL_SRC"] = os.path.join(INSTALLER, "..", "seed", "bin", "eitri-seed-install")      # the copy has no seed/ beside it
     e.update(env)
     r = subprocess.run([str(tool_root / "tools" / "install-into-rootfs.sh"), str(dest)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        universal_newlines=True, env=e)
@@ -560,3 +568,15 @@ def test_a_release_build_ships_the_key_the_revocations_and_the_sequence_floor(tm
     assert (dest / "usr/share/eitri/min-manifest-sequence").read_text() == "42\n"
     dest, r = _rootfs_install(tmp_path / "bad", str(keys), EITRI_MIN_MANIFEST_SEQUENCE="soon")
     assert r.returncode == 2
+
+
+def test_a_rootfs_build_without_the_seed_installer_fails_loudly(tmp_path):
+    dest, r = _rootfs_install(tmp_path, EITRI_SEED_INSTALL_SRC=str(tmp_path / "missing"))
+    assert r.returncode == 1 and "eitri-seed-install not found" in r.stdout
+
+
+def test_the_help_says_which_install_path_is_the_user_path():
+    out = subprocess.run([os.path.join(INSTALLER, "install.sh"), "--help"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True).stdout
+    assert "This IS the way to put Eitri on a printer" in out
+    assert "GPT disk image built by os/ is for bench" in out and "microSD cards and CI only" in out
+    assert "--seed-file FILE --seed-manifest FILE" in out and "data seed" in out

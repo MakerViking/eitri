@@ -5,12 +5,15 @@ import asyncio
 import ipaddress
 import json
 import logging
+import os
+import signal
 from typing import Any
 from urllib.parse import urlsplit
 
 from aiohttp import web
 
-from . import __version__, mcuflash, options as opts, releaselock, sysinfo, workflows
+from . import __version__, access as access_mod, mcuflash, options as opts, releaselock, rtsp, sysinfo, workflows
+from .access import AccessError
 from .auth import COOKIE, CSRF_HEADER, SESSION_TTL, PairError
 from .calibrate import CalibrationError
 from .context import Context
@@ -25,6 +28,7 @@ log = logging.getLogger("eitri.configurator")
 CTX = web.AppKey("ctx", Context)
 MOCK_MR = web.AppKey("mock_mr", web.AppRunner)
 WATCH = web.AppKey("auth_watch", asyncio.Future)
+RETIRE = web.AppKey("retire_watch", asyncio.Future)
 
 CSP = ("default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
        "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
@@ -64,6 +68,8 @@ def _host_allowed(host: str) -> bool:
 
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 PUBLIC_WRITES = ("/api/pair",)
+# Reads that need a paired browser too: they expose how the printer can be reached or a secret.
+PRIVATE_READS = ("/api/access", "/api/camera/rtsp")
 
 
 def _bearer(request: web.Request) -> str | None:
@@ -91,7 +97,7 @@ def _write_precheck(request: web.Request) -> web.Response | None:
     return None
 
 
-def _authenticate(request: web.Request) -> web.Response | None:
+def _authenticate(request: web.Request, csrf: bool = True) -> web.Response | None:
     """Every state-changing /api call needs a paired session: proof of standing at the printer."""
     ctx = ctx_of(request)
     token, how = session_token(request)
@@ -99,7 +105,7 @@ def _authenticate(request: web.Request) -> web.Response | None:
         if ctx.auth.locked:
             return jerr(423, "Setup is complete and the configurator is locked. Unlock it on the printer (eitri-configurator unlock).", locked=True)
         return jerr(401, "Pair this browser first: enter the code shown on the printer.", pairing_required=True)
-    if how == "cookie" and not ctx.auth.csrf_ok(token, request.headers.get(CSRF_HEADER)):
+    if csrf and how == "cookie" and not ctx.auth.csrf_ok(token, request.headers.get(CSRF_HEADER)):
         # A cookie is sent by the browser on any request; only our own page knows the CSRF token.
         return jerr(403, "missing or wrong CSRF token")
     request["session_token"] = token
@@ -119,6 +125,9 @@ async def guard(request: web.Request, handler):
         if request.path.startswith("/api/") and request.path not in PUBLIC_WRITES and (bad := _authenticate(request)) is not None:
             _secure(bad)
             return bad
+    elif request.path in PRIVATE_READS and (bad := _authenticate(request, csrf=False)) is not None:
+        _secure(bad)
+        return bad
     try:
         resp = await handler(request)
     except web.HTTPException as exc:
@@ -130,10 +139,14 @@ async def guard(request: web.Request, handler):
         resp = jerr(409, f"{exc.job.kind} is already running - wait for it to finish.", job=exc.job.id)
     except (CalibrationError, MoonrakerError, LayerError) as exc:
         resp = jerr(409, str(exc))
+    except AccessError as exc:
+        resp = jerr(exc.status, exc.message)
     except Exception:       # noqa: BLE001
         log.exception("unhandled error in %s %s", request.method, request.path)
         resp = jerr(500, "internal error - see the configurator log")
     _secure(resp)
+    if request.path in PRIVATE_READS or request.path.startswith("/api/access/"):
+        resp.headers["Cache-Control"] = "no-store"
     return resp
 
 
@@ -371,6 +384,45 @@ async def restart_service(request: web.Request) -> web.Response:
         return jerr(422, str(exc))
 
 
+# --- remote access (optional, off by default) --------------------------------------------
+
+async def access_status(request: web.Request) -> web.Response:
+    return web.json_response(await ctx_of(request).access.status())
+
+
+async def access_set_key(request: web.Request) -> web.Response:
+    ctx = ctx_of(request)
+    key = access_mod.parse_public_key((await body(request)).get("key"))
+    status = await ctx.access.set_key(key)
+    # The key itself is never echoed back, only what `ssh-keygen -l` would print for it.
+    return web.json_response({"ok": True, "added": {"type": key.type, "fingerprint": key.fingerprint, "comment": key.comment}, "status": status})
+
+
+async def access_set_password(request: web.Request) -> web.Response:
+    ctx = ctx_of(request)
+    data = await body(request)
+    password = access_mod.validate_password(data.get("password"), data.get("confirm"))
+    ssh_login = data.get("ssh_login", False)
+    if not isinstance(ssh_login, bool):
+        raise opts.ValidationError({"ssh_login": "must be true or false"})
+    return web.json_response({"ok": True, "status": await ctx.access.set_password(password, ssh_login)})
+
+
+async def access_disable(request: web.Request) -> web.Response:
+    ctx = ctx_of(request)
+    if (await body(request)).get("confirm") is not True:
+        return jerr(422, "confirmation required")
+    return web.json_response({"ok": True, "status": await ctx.access.disable()})
+
+
+# --- camera sign-in (a page of its own, not a wizard step) --------------------------------
+
+async def camera_rtsp(request: web.Request) -> web.Response:
+    ctx = ctx_of(request)
+    opt = opts.validate(ctx.state.data["options"])
+    return web.json_response(rtsp.describe(ctx.settings.camera_auth_file, bool(opt["camera"]), bool(opt["go2rtc"]), ctx.settings.data_dir))
+
+
 # --- calibration -------------------------------------------------------------
 
 async def cal_status(request: web.Request) -> web.Response:
@@ -477,6 +529,24 @@ async def static_cache(request: web.Request, handler):
     return resp
 
 
+def retire_due(ctx: Context) -> bool:
+    """Setup is complete, nobody opened maintenance, no browser keeps a session (the finishing one's grace is over)
+    and nothing is running: the configurator has nothing left to do and frees its memory."""
+    a = ctx.auth
+    a._prune()
+    return a.locked and not a._data["sessions"] and ctx.jobs.active() is None
+
+
+async def retire_watch(ctx: Context) -> None:
+    s = ctx.settings
+    while True:
+        await asyncio.sleep(s.retire_poll)
+        if retire_due(ctx):
+            log.info("setup is complete and the configurator is locked: exiting (`eitri-configurator unlock` brings it back)")
+            (s.retire_hook or (lambda: os.kill(os.getpid(), signal.SIGTERM)))()
+            return
+
+
 def create_app(settings: Settings) -> web.Application:
     ctx = Context(settings=settings, state=StateStore(settings.state_file))
     app = web.Application(middlewares=[guard, static_cache], client_max_size=64 * 1024)
@@ -501,6 +571,11 @@ def create_app(settings: Settings) -> web.Application:
     r.add_post("/api/apply", apply_start)
     r.add_post("/api/flash", flash_start)
     r.add_post("/api/services/restart", restart_service)
+    r.add_get("/api/access", access_status)
+    r.add_post("/api/access/key", access_set_key)
+    r.add_post("/api/access/password", access_set_password)
+    r.add_post("/api/access/disable", access_disable)
+    r.add_get("/api/camera/rtsp", camera_rtsp)
     r.add_get("/api/calibrate/status", cal_status)
     r.add_post("/api/calibrate/zoffset/{action}", cal_zoffset)
     r.add_post("/api/calibrate/shaper", cal_shaper)
@@ -514,6 +589,8 @@ def create_app(settings: Settings) -> web.Application:
 
     async def on_startup(app: web.Application) -> None:
         app[WATCH] = asyncio.ensure_future(ctx.auth.watch())
+        if settings.retire_when_locked:
+            app[RETIRE] = asyncio.ensure_future(retire_watch(ctx))
         if settings.mock:
             from .mock import moonraker as mock_mr
             app[MOCK_MR], ctx.settings.moonraker_url = await mock_mr.start(settings)
@@ -521,6 +598,8 @@ def create_app(settings: Settings) -> web.Application:
 
     async def on_cleanup(app: web.Application) -> None:
         app[WATCH].cancel()
+        if RETIRE in app:
+            app[RETIRE].cancel()
         await ctx.jobs.shutdown()
         await ctx.moonraker.close()
         if MOCK_MR in app:

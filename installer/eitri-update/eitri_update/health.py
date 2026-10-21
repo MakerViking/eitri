@@ -68,3 +68,19 @@ def check(
             last = "Moonraker not reachable (%s)" % getattr(exc, "reason", exc)
         sleep(interval)
     return Health(False, last)
+
+
+def print_state(moonraker_url: str = "http://127.0.0.1:7125", *, fetch: Optional[Callable[[str], bytes]] = None) -> Optional[str]:
+    """Klipper's ``print_stats.state`` (standby, printing, paused, complete, cancelled, error), or None when it cannot be
+    asked (Moonraker or Klippy down).  Used to refuse operations that must not interrupt a print."""
+    def default_fetch(url: str) -> bytes:
+        with urllib.request.urlopen(url, timeout=5) as resp:  # noqa: S310 - local URL
+            return resp.read()
+
+    get = fetch or default_fetch
+    try:
+        doc = json.loads(get(moonraker_url.rstrip("/") + "/printer/objects/query?print_stats"))
+        state = doc.get("result", {}).get("status", {}).get("print_stats", {}).get("state")
+    except (urllib.error.URLError, OSError, ValueError, AttributeError):
+        return None
+    return str(state) if state else None

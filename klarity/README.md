@@ -20,9 +20,10 @@ Moonraker over a websocket. **The panel is never reflashed.**
 | State -> screen push loop (diffing, coalescing, rate limit, page repaint) | done, tested |
 | YAML screen map, learn mode, action runner with guards | done, tested |
 | Camera snapshot fetch + resize | done; **pushing it to the panel is unverified** (off by default) |
-| Stock page / widget / component ids | **partial.** `maps/default.yaml` has 66 pages and 511 widget entries observed from the stock host's behaviour; 105 entries are flagged `todo` (unconfirmed or not expressible) and ignored at runtime. **None of it has been checked against a live panel.** |
+| Stock page / widget / component ids | **partial.** `maps/default.yaml` has 66 pages and 511 widget entries observed from the stock host's behaviour; 104 entries are flagged `todo` (unconfirmed or not expressible) and ignored at runtime. **None of it has been checked against a live panel.** |
 | Typed numbers (stock `0x71 page widget lo hi` frame), `bind.offset`, `derived.speed_mms` | done, tested |
 | Link state for the configurator (`/run/klarity/status.json`) | done |
+| "Unlock setup" from the panel (Settings > Network > accounts button) | done, tested with a fake serial link and fake `sudo`/`systemctl`; the button, `t7` and the sudo/polkit path are **unverified on hardware** |
 | UART device and baud of the panel | shipped default `/dev/ttyS1` @ 115200 (what the stock host opens); **unconfirmed on mainline**, the 8250 numbering depends on the device tree |
 
 Not yet expressible in the map schema (these stay `todo`): the file browser, preview and print
@@ -36,7 +37,9 @@ nothing in the map is active Klarity runs in *observe-only* mode and just logs.
 
 ## Install and run
 
-Eitri images ship Klarity in `/data/eitri/klarity` (a `uv` venv) with the unit in
+Eitri's data seed (`seed/SPEC.md`) installs Klarity as a wheel into the venv `/data/eitri/klarity/venv`
+(console script `/data/eitri/klarity/venv/bin/klarity`, the path `klarity.service` starts and
+`ConditionPathExists=` checks), with the unit in
 `systemd/klarity.service` and the config at `/data/printer_data/config/klarity.cfg`
 (template: `config/klarity.cfg`). Manually:
 
@@ -53,6 +56,39 @@ serial port) is not restarted.
 Useful flags: `--check-map`, `--learn`, `--simulate` (in-memory panel, no hardware),
 `--dry-run` (never send G-code or print control), `--serial/--baud`, `--log-level DEBUG`
 (shows every instruction sent), `--allow-todo` (see Safety).
+
+## Unlock setup (reopening the configurator from the panel)
+
+The configurator exits after setup and stays locked (Decision 8). To change settings later the owner
+opens it from the printer: **Settings > Network > the stock "accounts" button** (page `0x3e`, widget 9).
+The `.tft` cannot get a new button, so Klarity repurposes the one stock widget on the network page that
+the stock host left inert (it only logged an account list; Eitri has no accounts). It keeps its stock
+label; if it is not the right button on your panel, move the widget id in `maps/default.yaml`
+(`network.widgets.unlock_setup`). On a tap Klarity
+
+1. refuses if a print is running or paused (map guard, and again in the action runner),
+2. runs `sudo -n /usr/bin/eitri-configurator unlock` (no shell; one narrow sudoers rule, see below),
+3. runs `systemctl --no-block start eitri-configurator.service` (polkit; brings back a retired service),
+4. waits up to `wait` seconds for `/data/eitri/configurator/pairing.json` (`{"state": "pairing", "code": "1234-5678"}`;
+   note: the real path is `/data/eitri/...`, not `/run`) and
+5. writes `Code 1234-5678 at 192.168.0.5:8099` into the page's text field `t7` (where the stock host showed the
+   IP). Open that address in a browser and enter the code. On failure the field says `Unlock failed - see the log`
+   and the panel beeps. Nothing is sent to Klipper.
+
+The address is the printer's IPv4 on its default route (a UDP `connect`, no traffic), else `<hostname>.local`;
+`[unlock] host` overrides it. Only the pairing code format `dddd-dddd` is accepted from the file. A QR image is
+not pushed (the file-transfer path is unverified on hardware, see `[camera] push_enabled`).
+
+Map verb: `unlock: setup` (it **requires** a `guard`, like the print-control verbs) sets `{code}`, `{host}`,
+`{url}` and `{message}` for the `set` actions after it in the same list. These values are Klarity's own and bypass
+the panel-text filter, which still applies to everything the panel sends. `--dry-run` never unlocks; it only
+shows a code that is already open. Disable with `[unlock] enabled: false`.
+
+The OS image provides the `/usr/bin/eitri-configurator` wrapper and a sudoers rule for exactly
+`eitri ALL=(root) NOPASSWD: /usr/bin/eitri-configurator unlock`. Because that runs as root, the wrapper must not
+execute code from the user-writable `/data/eitri/configurator/venv`. `klarity.service` therefore drops
+`NoNewPrivileges` (it would block the setuid `sudo`), uses none of the seccomp-based sandbox options (systemd sets `NoNewPrivs` anyway when
+they are present, measured on the QEMU image) and makes `/data/eitri/configurator` writable.
 
 ## Configuration
 

@@ -1,11 +1,16 @@
 name: os-image
 
-# Builds the Eitri OS disk image and the signed RAUC update bundle.
+# Builds the Eitri OS disk image and the RAUC update bundle.
 #
-# Pull requests and pushes get a development build (throwaway signing key,
-# nothing is published). A pushed v* tag is a release build when the signing
-# secrets exist; it fails otherwise instead of falling back to the development
-# key.
+# No job here holds a signing key (docs/RELEASING.md, "Deferred signing").
+#
+#   pull request / push to main   development build: throwaway signing CA, nothing is published
+#   v* tag                        release build: the image trusts the committed RAUC CA
+#                                 (os/board/eitri-plus4/rauc/keyring.crt) and installer/keys/*.pub, the bundle is
+#                                 built with a throwaway key (EITRI_DEFERRED_SIGNING=1) and uploaded as an UNSIGNED
+#                                 artifact. release.yml collects it, and its protected "release" job re-signs it.
+#
+# A tag build fails if the public trust roots are not committed; it never falls back to the development key.
 
 on:
   pull_request:
@@ -16,8 +21,10 @@ on:
       - "configurator/**"
       - "installer/**"
       - "klipper-layer/**"
-      - "klarity/systemd/**"
+      - "klarity/**"
+      - "seed/**"
       - ".github/workflows/os-image.yml"
+      - ".github/workflows/data-seed.yml"
   push:
     branches: [main]
     tags: ["v*"]
@@ -28,8 +35,10 @@ on:
       - "configurator/**"
       - "installer/**"
       - "klipper-layer/**"
-      - "klarity/systemd/**"
+      - "klarity/**"
+      - "seed/**"
       - ".github/workflows/os-image.yml"
+      - ".github/workflows/data-seed.yml"
   workflow_dispatch:
 
 permissions:
@@ -45,6 +54,15 @@ env:
   BUILD_ROOT: ${{ github.workspace }}/../build
 
 jobs:
+  seed:
+    name: Data seed for the image
+    uses: ./.github/workflows/data-seed.yml
+    permissions:
+      contents: read
+    with:
+      flavors: '["klipper"]'
+      attach: "false"
+
   check:
     name: Checks without a full build
     runs-on: ubuntu-24.04
@@ -74,7 +92,7 @@ jobs:
 
   image:
     name: Build the image
-    needs: check
+    needs: [check, seed]
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
@@ -115,58 +133,50 @@ jobs:
 
       - name: Decide development or release build
         id: mode
-        env:
-          HAVE_KEY: ${{ secrets.EITRI_RAUC_KEY != '' }}
-          HAVE_CERT: ${{ secrets.EITRI_RAUC_CERT != '' }}
-          HAVE_KEYRING: ${{ secrets.EITRI_RAUC_KEYRING != '' }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            if [ "$HAVE_KEY" != true ] || [ "$HAVE_CERT" != true ] || [ "$HAVE_KEYRING" != true ]; then
-              echo "::error::tag build without the EITRI_RAUC_KEY, EITRI_RAUC_CERT and EITRI_RAUC_KEYRING secrets"
+            if [ ! -s os/board/eitri-plus4/rauc/keyring.crt ]; then
+              echo "::error::tag build without os/board/eitri-plus4/rauc/keyring.crt (the public RAUC CA certificate); see docs/RELEASING.md"
               exit 1
             fi
+            if ! compgen -G 'installer/keys/*.pub' >/dev/null; then
+              echo "::error::tag build without a trusted minisign public key in installer/keys/; see docs/RELEASING.md"
+              exit 1
+            fi
+            min_sequence=$(python3 -c 'import tomllib; print(tomllib.load(open("release.lock", "rb"))["release"]["min_manifest_sequence"])')
             {
               echo "release=1"
               echo "version=${GITHUB_REF_NAME#v}"
-              echo "keys=$RUNNER_TEMP/rauc"
+              echo "min_sequence=$min_sequence"
             } >> "$GITHUB_OUTPUT"
           else
             echo "release=0" >> "$GITHUB_OUTPUT"
           fi
 
-      # The signing key is written to disk only for the build step that signs the bundle and is
-      # removed as soon as that step ends, so the tests and packaging below never see it. Nothing
-      # earlier in the job (cache restore, package installs) has it either.
-      # Known limit: post-bundle.sh signs inside `make -C os image`, so the Buildroot package builds
-      # run while the key exists. Closing that needs an unsigned-bundle mode in os/ plus a final
-      # signing step (see STATUS.md); until then the release job must stay behind a protected
-      # environment with required reviewers.
-      - name: Write release keys
-        if: steps.mode.outputs.release == '1'
-        env:
-          RAUC_KEY: ${{ secrets.EITRI_RAUC_KEY }}
-          RAUC_CERT: ${{ secrets.EITRI_RAUC_CERT }}
-          RAUC_KEYRING: ${{ secrets.EITRI_RAUC_KEYRING }}
-          KEYS: ${{ steps.mode.outputs.keys }}
-        run: |
-          umask 077
-          mkdir -p "$KEYS"
-          printf '%s\n' "$RAUC_KEY" > "$KEYS/release.key"
-          printf '%s\n' "$RAUC_CERT" > "$KEYS/release.crt"
-          printf '%s\n' "$RAUC_KEYRING" > "$KEYS/keyring.crt"
+      # The data seed for the image comes from data-seed.yml (called above): mkdata.sh installs it into the data partition.
+      - name: Fetch the klipper data seed
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: eitri-data-seed-klipper
+          path: ${{ env.BUILD_ROOT }}/seed/out
 
+      - name: Check the seed that was downloaded
+        run: |
+          cd "$BUILD_ROOT/seed/out"
+          sha256sum --check --strict SHA256SUMS-klipper
+          ls -l
+
+      # Deferred signing: a release build gets the public keyring and the manifest verification keys but no private key.
+      # post-bundle.sh builds the bundle with a throwaway key when EITRI_DEFERRED_SIGNING=1; the real signature is
+      # added by the sign job of release.yml.
       - name: Build
         env:
           EITRI_RELEASE: ${{ steps.mode.outputs.release }}
+          EITRI_DEFERRED_SIGNING: ${{ steps.mode.outputs.release }}
+          EITRI_REQUIRE_UPDATE_KEY: ${{ steps.mode.outputs.release }}
           EITRI_VERSION: ${{ steps.mode.outputs.version }}
-          EITRI_RAUC_CERT: ${{ steps.mode.outputs.keys && format('{0}/release.crt', steps.mode.outputs.keys) || '' }}
-          EITRI_RAUC_KEY: ${{ steps.mode.outputs.keys && format('{0}/release.key', steps.mode.outputs.keys) || '' }}
-          EITRI_RAUC_KEYRING: ${{ steps.mode.outputs.keys && format('{0}/keyring.crt', steps.mode.outputs.keys) || '' }}
+          EITRI_MIN_MANIFEST_SEQUENCE: ${{ steps.mode.outputs.min_sequence }}
         run: make -C os image
-
-      - name: Remove release keys
-        if: always()
-        run: rm -rf "$RUNNER_TEMP/rauc"
 
       - name: Test the image tooling against the host tools that were just built
         run: |
@@ -190,45 +200,7 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: eitri-os-${{ steps.package.outputs.version }}${{ steps.mode.outputs.release == '1' && '' || '-dev' }}
+          name: eitri-os-${{ steps.package.outputs.version }}${{ steps.mode.outputs.release == '1' && '-unsigned' || '-dev' }}
           path: ${{ steps.package.outputs.dir }}
-          retention-days: ${{ steps.mode.outputs.release == '1' && 90 || 14 }}
+          retention-days: ${{ steps.mode.outputs.release == '1' && 30 || 14 }}
           if-no-files-found: error
-
-  publish:
-    name: Attach release files
-    needs: image
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: eitri-os-*
-          merge-multiple: true
-          path: dist
-
-      # download-artifact can finish with a partly extracted file and still succeed.
-      - name: Verify the downloaded files
-        run: cd dist && sha256sum --check --strict SHA256SUMS
-
-      # legal.yml may have created the draft already (it finishes first). Create it only when it is
-      # missing, then upload with --clobber so either order and a re-run both work. Never upload
-      # into a release that was published in the meantime.
-      - name: Create or update the draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
-            if [ "$draft" != true ]; then
-              echo "::error::release $GITHUB_REF_NAME is already published; refusing to change its files"
-              exit 1
-            fi
-          else
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
-              --title "Eitri OS ${GITHUB_REF_NAME#v}" \
-              --notes "Release candidate. Nothing in this release has been tested on a printer unless release.lock says so."
-          fi
-          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber dist/*

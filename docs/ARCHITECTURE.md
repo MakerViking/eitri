@@ -26,8 +26,9 @@ Eitri has four versioned layers. Each is updated independently and has a clear i
  |     screen daemon: pyserial <-> stock TJC .tft over UART                 |
  |     Moonraker websocket for state, polls L3 /snapshot for the preview    |
  +--------------------------------------------------------------------------+
- | L2  Klipper extras (GPL-3.0-or-later)                                    |
- |     qd_* modules symlinked into klippy/extras/, KAMP-style config dir    |
+ | L2  Klipper extras (GPL-3.0-or-later), config layer (AGPL-3.0-or-later)  |
+ |     qd_* modules symlinked into klippy/extras/, KAMP-style config dir,   |
+ |     both on /data (from the data seed) and updated with Klipper/Kalico  |
  |     ----------------------------------------------------------------     |
  |     Klipper OR Kalico — pristine upstream clone, never patched           |
  |     Moonraker — pristine upstream clone, plus Eitri config               |
@@ -47,7 +48,7 @@ Two things cut across the layers rather than sitting in them:
 - **Install and configurator tooling** (the first-run web configurator on port 8099 and the installer) writes the config and drives MCU flashing. It is delivered inside the L0 image and the L2 app layer, and it is versioned with them.
 - **Release tooling** (`release.lock`, CI, signing, RAUC bundle creation) builds and verifies every layer together.
 
-The L0 image holds the OS. Everything that Klipper, Moonraker, Klarity, and the camera need at runtime lives in the **app layer** on `/data`. The app layer can be updated without reflashing the OS, and the OS can be updated without touching `/data`.
+The L0 image holds the OS. Everything that Klipper, Moonraker, and Klarity need at runtime lives in the **app layer** on `/data`: the pinned clones, their Python environments, the `qd_*` extras and the configuration layer. CI builds that layer for the printer's CPU and ships it as the **data seed** (§4.2), so a first boot needs no network. The app layer can be updated without reflashing the OS, and the OS can be updated without touching `/data`. The extras follow the Klipper or Kalico clone they are linked into, not the OS image.
 
 ## 3. Base OS (L0)
 
@@ -81,7 +82,9 @@ The source of every pin, with its digest or commit, is in `release.lock`.
 
 ### 3.3 Storage layout
 
-The disk image (`os/board/eitri-plus4/genimage.cfg`) builds and has been checked statically; it has not been booted on a printer. The data partition is grown to the end of the eMMC on first boot. Sizes may still change after the first bench image.
+There are two boot backends. **The user default is the DOS in-place layout**: the installer converts the stock eMMC without replacing the stock U-Boot (a `boot.scr` chooses between Eitri and the stock entry, the stock system stays in its own partition, `revert.sh` is the way back; see [`installer/docs/BOOT.md`](../installer/docs/BOOT.md)). The **GPT flash-once layout** below is for the bench, microSD boots, CI and the QEMU smoke test; it is not offered to users as the install path. Both mount `/data` by label and never refer to partition numbers, so the same root file system serves both.
+
+The GPT disk image (`os/board/eitri-plus4/genimage.cfg`) builds and has been checked statically; it has not been booted on a printer. The data partition is grown to the end of the eMMC on first boot. Sizes may still change after the first bench image.
 
 | Region | Device | Contents | Written by |
 |---|---|---|---|
@@ -106,19 +109,24 @@ systemd is the init system. Moonraker's `machine` component integrates with syst
 | Unit | Role | Port |
 |---|---|---|
 | `klipper.service` | Klipper host process | — |
-| `moonraker.service` | API server (127.0.0.1 only; reach it through nginx on 80) | 7125 |
+| `moonraker.service` | API server, **loopback only** (reach it through nginx on 80; slicers and apps use port 80) | 7125 |
 | `klarity.service` | Screen daemon (L1) | — (serial) |
 | `eitri-camera.service` | ustreamer (L3) | 8080 |
 | `go2rtc.service` | Optional RTSP gateway (password protected, WebRTC off) | 1984, 8554 |
-| `eitri-configurator.service` | First-run and maintenance web configurator | 8099 |
-| `nginx.service` | Fluidd or Mainsail, configurator reverse proxy | 80 |
+| `eitri-configurator.service` | First-run and maintenance web configurator; **exits when setup is complete** and is restarted by Klarity's "Unlock setup" action | 8099 |
+| `nginx.service` | Fluidd or Mainsail, configurator reverse proxy. **IPv4 only**: the LAN allow-list is IPv4, so there is no IPv6 listener | 80 |
 
 Port 8080 serves `/stream` (MJPEG) and `/snapshot` (JPEG). Those are the stable paths that Klarity and Fluidd use.
+
+**Configurator lifecycle.** The wizard is started with `--retire-when-locked` (the default in the unit). While setup is incomplete it listens on 8099 and publishes a one-time pairing code to `/data/eitri/configurator/pairing.json (mode 0640, owner eitri)`; Klarity shows that code on the touchscreen. When setup completes the wizard locks and the service exits, which frees about 30 MiB. Klarity's **Unlock setup** action runs `sudo -n /usr/bin/eitri-configurator unlock`, which restarts the wizard (the `--retire-when-locked` drop-in belongs to the OS image) and publishes a new code. The wizard refuses changes while a print is running.
+
+**Privileged helpers.** Services run unprivileged. The few operations that need root are narrow helpers behind exact `sudoers` rules, called with `sudo -n`: `eitri-update`, `eitri-bootctl`, `eitri-configurator unlock`, and `/usr/libexec/eitri/eitri-access` (`set-key`, `set-password`, `disable`, `status`) which the wizard's optional remote-access step uses. They validate their input strictly and never interpolate it into a shell.
 
 ### 3.6 Users, hostname, and network
 
 - Default hostname: `eitri`.
 - The OS user is `eitri` (uid 1000), in the groups `dialout`, `video`, `plugdev`, and `tty`. Services that need serial or camera access run as this user, not as root.
+- **Shell access is opt-in.** A new install has no password login. The wizard's optional remote-access step (off by default) adds an SSH public key and/or sets a password for `eitri` through `eitri-access`; `disable` removes both again. sshd enables password authentication only when a password was chosen.
 - The printer is reachable as `eitri.local` through mDNS on the LAN. The mDNS implementation is TBD.
 
 ## 4. The `/data` application layer
@@ -128,12 +136,13 @@ Port 8080 serves `/stream` (MJPEG) and `/snapshot` (JPEG). Those are the stable 
 ```
 /data
 ├── firmware/
-│   ├── klipper/              pristine clone (always named "klipper", whichever flavor)
+│   ├── klipper/              pristine clone (always named "klipper", whichever flavor), qd_* symlinks,
+│   │                         prebuilt klippy/chelper/c_helper.so
 │   └── moonraker/            pristine clone
 ├── venv/
-│   ├── klippy/               uv-managed venv, Python 3.14
-│   └── moonraker/            uv-managed venv
-├── printer_data/
+│   ├── klippy/               Python 3.14 environment of Klippy (flavor-specific)
+│   └── moonraker/            Python 3.14 environment of Moonraker
+├── printer_data/             user data: never part of a seed, never overwritten by one
 │   ├── config/               printer.cfg, moonraker.conf, klarity.cfg, eitri-vars.toml (optional overrides),
 │   │                         eitri-update-manager.conf, eitri -> klipper-layer config set, eitri-flavor.cfg
 │   ├── logs/
@@ -142,14 +151,31 @@ Port 8080 serves `/stream` (MJPEG) and `/snapshot` (JPEG). Those are the stable 
 │   └── comms/
 └── eitri/
     ├── flavor                "klipper" or "kalico"
-    ├── extras/               qd_* Klipper extras (GPL-3.0-or-later); optional copy shipped by a data bundle
-    ├── klipper-layer/        optional newer copy of the layer (see 6.2); the OS image carries /usr/lib/eitri/klipper-layer
-    ├── klarity/              screen daemon install
+    ├── extras/               qd_* Klipper extras (GPL-3.0-or-later) and gcode_shell_command.py: the source of truth
+    ├── klipper-layer/        config/ (printer.cfg template, macros, flavor files), scripts/, extras -> ../extras
+    ├── klarity/venv/         Klarity's environment (the daemon itself is installed into it as a wheel)
+    ├── seed/                 seed-info.json, seed-info.env, locks/ (what exactly was installed)
     ├── toolchain/            optional add-on for upstream mode (gcc, arm-none-eabi-gcc)
-    └── state/                install and update bookkeeping
+    ├── mcu/                  MCU firmware, backups and stock images (written by the installer and eitri-update)
+    └── state/                install and update bookkeeping (seed-installed.env, boot.env copies, ...)
 ```
 
 The directory `firmware/klipper` is always called `klipper`, even when the flavor is Kalico. Code should look up the flavor in `/data/eitri/flavor`, never from the directory name.
+
+### 4.1 Where the extras and the layer live
+
+The `qd_*` extras and the configuration layer are **on `/data`**, not in the OS image, so they update together with Klipper or Kalico (a seed update, or upstream mode) instead of with the OS. The OS image carries no copy of the layer (the former `/usr/lib/eitri/klipper-layer` package was removed), so nothing in the image decides what the machine does with Klipper.
+
+### 4.2 The data seed
+
+CI builds, for aarch64 and per firmware flavor, one archive `data-seed-<version>-<flavor>.tar.zst` plus `data-seed-<version>-<flavor>.manifest.json` (SHA-256 of the archive, flavor, pinned commits, Python version, creation date). Unpacking it yields the tree above except `printer_data/` and the state, mcu and toolchain directories:
+
+* shallow clones of Klipper (or Kalico) and Moonraker at the exact commits in `release.lock`, attached to their upstream branches so Moonraker's update manager and `git describe` work;
+* `venv/klippy`, `venv/moonraker` and `eitri/klarity/venv`, built from hash-pinned lock files with binary wheels only (the one dependency without an aarch64 wheel is cross-compiled from its pinned sdist);
+* a prebuilt `c_helper.so`, so Klippy does not need a C compiler on the printer;
+* the extras and the layer, with the overlay already applied.
+
+A seed is installed by the in-place installer's stage 2, by `data-init` on a flash-once image (first boot, offline), or by `eitri-update` for a release or a flavor switch, always through the one tool `eitri-seed-install`, which verifies the digest before it reads the archive, refuses unsafe members, installs component by component with atomic renames, and never overwrites a non-empty target in install mode. The archive format, layout, update and rollback algorithm, reproducibility rules and the image prerequisites are in [`../seed/SPEC.md`](../seed/SPEC.md); the workflow that builds it is `.github/workflows/data-seed.yml`.
 
 ## 5. Firmware flavor: Klipper or Kalico (L2 base)
 
@@ -186,7 +212,7 @@ The display protocol is documented in the clean-room notes and summarized in [`C
 
 Eitri's QIDI-specific behavior is a set of **new, uniquely named** modules. The rules are:
 
-- Each module is a new file named `qd_<feature>.py`, kept in the klipper-layer's `extras/` and symlinked into `klippy/extras/` by `klipper-layer/scripts/overlay-install.sh`. The layer is part of the OS image (`/usr/lib/eitri/klipper-layer`); a copy in `/data/eitri/klipper-layer` (shipped with a data bundle) takes precedence, so the extras can follow the Klipper clone rather than the OS.
+- Each module is a new file named `qd_<feature>.py`, kept in `/data/eitri/extras` (the layer's `extras/` points there) and symlinked into `klippy/extras/` by `klipper-layer/scripts/overlay-install.sh`. The data seed puts the layer on `/data` (§4.1), so the extras follow the Klipper or Kalico clone rather than the OS.
 - The symlink is hidden from `git status` through `.git/info/exclude` in the Klipper clone.
 - Config and macro files are symlinked into `printer_data/config/` (`eitri` -> the layer's config set, `eitri-flavor.cfg` -> the file for the chosen flavor). `printer.cfg` is rendered by the configurator from the layer's template.
 - The version string of a clone with the overlay reads `...-dirty`: `klippy.py` marks any untracked or ignored file under `klippy/extras/` that way. `git status` and Moonraker's checks stay clean; compare versions by commit, not by string.
@@ -246,9 +272,9 @@ Eitri has two channels. The install chooses one, and it can be changed later.
 
 | | **Eitri release channel** (default) | **Upstream mode** (opt-in) |
 |---|---|---|
-| What updates | Signed RAUC OS bundles, plus matching app-layer bundles and MCU firmware | `git pull` on Klipper, Moonraker, and Klarity, or any branch, through the Moonraker update manager |
+| What updates | Signed RAUC OS bundles, plus the release's data seed (clones, environments, extras, layer) and the matching MCU firmware | `git pull` on Klipper, Moonraker, and Klarity, or any branch, through the Moonraker update manager |
 | MCU firmware | Built in CI, shipped in the bundle, matches the release | Built on the device |
-| Rollback | One click, to the previous A/B slot or to the previous bundle | Manual, through git |
+| Rollback | One click, to the previous A/B slot; a seed update keeps the previous trees until the health check passes (`eitri-seed-install --mode rollback`) | Manual, through git |
 | Requires | Nothing extra | `toolchain` add-on in `/data/eitri/toolchain` (about 300 MB: gcc and arm-none-eabi-gcc) |
 | Who it is for | Most users | People who build their own firmware, and anyone whose project upstream has gone quiet |
 
@@ -256,22 +282,24 @@ Both channels record the pinned versions they run. Upstream mode is a deliberate
 
 ## 10. Release model
 
-1. `release.lock` pins every input (§3.2, §5, and the rest).
-2. CI builds the Buildroot image and the app-layer bundle from those pins.
-3. MCU firmware is built for each flavor, with the same pins.
-4. Every artifact gets a SHA-256 digest. RAUC bundles are signed.
-5. The release is tested on hardware before it is marked `tested = true` in `release.lock`.
+1. `release.lock` pins every input (§3.2, §5, and the rest), and its `[release]` tables hold the numbers that move with each release (manifest sequence, image floor, clock floor).
+2. CI builds the Buildroot image and, for each flavor, the data seed from those pins. MCU firmware is built for each flavor with the same pins.
+3. Every artifact gets a SHA-256 digest. **No build job holds a signing key.** A separate `release` workflow collects the unsigned artifacts, waits for the maintainer's approval in a protected GitHub environment, re-signs the RAUC bundle, writes and minisigns `install.json`, `manifest.json` and `SHA256SUMS`, and verifies the result with the printer's own code before it attaches anything to a draft release.
+4. The release is tested on hardware before it is marked `tested = true` in `release.lock`.
 
-Nothing in `release.lock` is marked tested yet. Every pin is currently `tested = false`.
+Keys, custody, rotation and revocation: [`RELEASING.md`](RELEASING.md). Nothing in `release.lock` is marked tested yet. Every pin is currently `tested = false`.
 
 ## 11. Licensing boundaries
 
 | Path | License |
 |---|---|
-| Repository root, configurator, camera config, Klarity, docs, tooling | Apache-2.0 |
-| `klipper-layer/extras/` (the `qd_*` modules) | GPL-3.0-or-later, with its own `LICENSE` |
+| Repository root, configurator, camera config, Klarity, installer, docs, tooling, `klipper-layer/config/flavors/` | Apache-2.0 |
+| `klipper-layer/config/` (`printer.cfg.tmpl`, `macros.cfg`, `eitri-variables.toml`) | AGPL-3.0-or-later: adapted from `QIDITECH/QIDI_PLUS4`, which Eitri treats as AGPL-3.0; see `klipper-layer/config/LICENSE-NOTE.md` |
+| `klipper-layer/extras/` (the `qd_*` modules) | GPL-3.0-or-later (a file derived from GPLv3-only code is GPL-3.0-only), with its own `LICENSE` |
 | Kernel and U-Boot patches | GPL-2.0 |
 | Upstream components (Klipper, Kalico, Moonraker, ustreamer, Fluidd, Mainsail, RAUC, Katapult, uv, nginx, Python) | Their own licenses, listed in [`NOTICE`](../NOTICE) |
+
+`tools/check-repo.py` checks the SPDX tags of the two klipper-layer directories and that copyleft tags appear only where this table allows them.
 
 ## 12. Directory layout of the repository
 
@@ -283,12 +311,13 @@ eitri/
 ├── release.lock
 ├── docs/                    this directory
 ├── klarity/                 L1 screen daemon and its screen map (Apache-2.0)
-├── klipper-layer/           L2: extras/ (GPL-3.0-or-later), config/ (printer.cfg template, macros), scripts/
+├── klipper-layer/           L2: extras/ (GPL-3.0-or-later), config/ (AGPL-3.0-or-later templates and macros), scripts/
 ├── camera/                  L3 ustreamer and go2rtc config, udev, systemd
 ├── configurator/            first-run web configurator (port 8099)
 ├── installer/               in-place installer, eitri-mcuflash, eitri-update, boot manager
+├── seed/                    data seed: build, verify, install tool, specification (SPEC.md)
 ├── os/                      Buildroot BR2_EXTERNAL tree: defconfig, board files, packages, tests
-├── tools/                   repository checks (check-repo.py)
+├── tools/                   repository checks (check-repo.py, lint.py) and release tooling (release/: metadata, preflight, signing)
 ├── Makefile                 test, lint, os-defconfig, configurator-dev
 ├── STATUS.md                what works, what is a stub, what needs hardware
 └── .github/                 CI workflows

@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tarfile
 
@@ -17,7 +18,10 @@ from eitri_update.client import Config, Updater
 from eitri_update.rauc import RaucClient
 from eitri_update.state import State
 
+import seedpack
 
+
+SEED_TOOL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "seed", "bin", "eitri-seed-install")
 RAUC_BOOTLOADER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "os", "board", "eitri-plus4",
                                       "rootfs-overlay", "usr", "libexec", "eitri", "rauc-bootloader")
 
@@ -50,8 +54,10 @@ def sha(path):
 class Channel:
     """A directory acting as the update server; URLs are file:// so no network is involved."""
 
-    def __init__(self, tmp, signer, versions=("2026.10.0",), sequence=1, flavors=("klipper", "kalico")):
+    def __init__(self, tmp, signer, versions=("2026.10.0",), sequence=1, flavors=("klipper", "kalico"), seeds=False):
         self.tmp = str(tmp)
+        self.seeds = seeds
+        self.seed_info = {}                  # (version, flavor) -> seedpack.make_seed() result
         self.dir = os.path.join(self.tmp, "server")
         os.makedirs(self.dir, exist_ok=True)
         self.signer = signer
@@ -68,16 +74,33 @@ class Channel:
             fh.write((hashlib.sha256(seed.encode()).digest() * (size // 32 + 1))[:size])
         return path
 
-    def add_release(self, version, flavors=("klipper", "kalico"), **extra):
+    def add_release(self, version, flavors=("klipper", "kalico"), seed_kw=None, **extra):
         osb = self._file("os-%s.raucb" % version, 4096, "os" + version)
         bundles = [{"kind": "os", "url": "file://" + osb, "sha256": sha(osb), "size": os.path.getsize(osb), "reboot": True}]
         for fl in flavors:
+            if self.seeds:
+                bundles.extend(self._seed_bundles(version, fl, **(seed_kw or {})))
+                continue
             d = self._file("data-%s-%s.raucb" % (fl, version), 2048, fl + version)
             bundles.append({"kind": "data", "flavor": fl, "url": "file://" + d, "sha256": sha(d), "size": os.path.getsize(d),
                             "restart_services": ["klipper", "moonraker"]})
         rel = {"version": version, "bundles": bundles, "notes_url": "https://example.test/notes/" + version}
+        if self.seeds:
+            rel["flavors"] = seedpack.release_flavors(version, flavors)
         rel.update(extra)
         self.releases.append(rel)
+
+    def _seed_bundles(self, version, flavor, **kw):
+        info = seedpack.make_seed(os.path.join(self.dir, "seeds"), version, flavor, **kw)
+        self.seed_info[(version, flavor)] = info
+        mcu = seedpack.make_mcu_archive(os.path.join(self.dir, "mcu-firmware-%s-%s.tar.zst" % (flavor, version)), flavor, version,
+                                        other_flavors=())
+        return [
+            {"kind": "mcu", "flavor": flavor, "url": "file://" + mcu, "sha256": sha(mcu), "size": os.path.getsize(mcu)},
+            {"kind": "seed", "flavor": flavor, "url": "file://" + info["path"], "sha256": info["sha256"], "size": info["size"],
+             "manifest": {"url": "file://" + info["manifest_path"], "sha256": info["manifest_sha256"], "size": info["manifest_size"]},
+             "restart_services": ["klipper", "moonraker", "klarity"]},
+        ]
 
     def add_toolchain(self, archive, version="13.3-2026.10"):
         self.addons["toolchain"] = {"version": version, "url": "file://" + archive, "sha256": sha(archive),
@@ -115,6 +138,10 @@ class Dispatcher:
         self.mcu_rollbacks = []
         self.passthrough = ("tar", "git")
         self.helper_calls = []
+        self.active_units = {"klarity", "moonraker", "klipper"}     # what `systemctl is-active` reports as running
+        self.overlay_fail = False
+        self.overlay_calls = []
+        self.fail_seed_update = False                              # make eitri-seed-install fail instead of running it
 
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
@@ -122,12 +149,24 @@ class Dispatcher:
         if a0 == "rauc":
             return self._rauc(argv, kw)
         if a0 == "systemctl":
+            if argv[1] == "is-active":
+                return RunResult(0 if argv[-1] in self.active_units else 3, "")
+            if argv[1] == "stop":
+                self.active_units.discard(argv[-1])
+            elif argv[1] == "start":
+                self.active_units.add(argv[-1])
             return RunResult(0, "")
+        if os.path.basename(a0) == "overlay-install.sh":
+            self.overlay_calls.append(list(argv))
+            return RunResult(1, "overlay failed") if self.overlay_fail else RunResult(0, "")
+        if os.path.basename(a0) == "eitri-seed-install" and self.fail_seed_update and "update" in argv:
+            self.helper_calls.append(list(argv))
+            return RunResult(6, "eitri-seed-install: injected failure")
         if a0 == "mount" or a0 == "sync":
             return RunResult(0, "")
         if "eitri_mcuflash" in argv:
             return self._mcuflash(argv, kw)
-        if a0 in self.passthrough or os.path.basename(a0) == "rauc-bootloader":
+        if a0 in self.passthrough or os.path.basename(a0) in ("rauc-bootloader", "eitri-seed-install"):
             self.helper_calls.append(list(argv))
             return run(argv, **kw)
         return RunResult(127, "unexpected command %r" % (argv,))
@@ -178,11 +217,11 @@ class Dispatcher:
 
 class Rig:
     def __init__(self, tmp, versions=("2026.10.0",), installed="2026.09.0", flavor="klipper", slot="A", sequence=1,
-                 health_ok=True, tries="3", configured=True, gpt=False):
+                 health_ok=True, tries="3", configured=True, gpt=False, seeds=False, seed_installed=False):
         tmp = str(tmp)
         self.tmp = tmp
         self.signer = Signer(tmp)
-        self.channel = Channel(tmp, self.signer, versions, sequence)
+        self.channel = Channel(tmp, self.signer, versions, sequence, seeds=seeds)
         self.data = os.path.join(tmp, "data")
         os.makedirs(os.path.join(self.data, "eitri", "state"))
         for name, value in (("flavor", flavor), ("channel", "eitri")):
@@ -222,15 +261,33 @@ class Rig:
         self.events = EventSink(keep=True, run_id="t")
         self.cfg = Config(manifest_url=self.channel_url(), key_paths=[self.signer.pub], data_root=self.data,
                           mcu_firmware_root=os.path.join(self.data, "eitri", "mcu", "firmware"),
-                          mcu_state_dir=os.path.join(self.data, "eitri", "mcu"), health_timeout=1)
+                          mcu_state_dir=os.path.join(self.data, "eitri", "mcu"), health_timeout=1, seed_tool=SEED_TOOL)
         self.state = State(os.path.join(self.data, "eitri"))
         if installed:
             self.state.update(installed_version=installed)
         self.bootctl = BootControl(self.boot, runner=self.run, cmdline_path=self.cmdline, lock_path=os.path.join(tmp, "lock"), **bootctl_kw)
         self.rebooted = 0
+        if seed_installed:
+            self.install_seed(installed or "2026.09.0", flavor)
         self.health = lambda url, **kw: type("H", (), {"ok": health_ok, "detail": "ok" if health_ok else "klippy not connected"})()
         self.updater = Updater(self.cfg, self.events, runner=self.run, rauc=RaucClient(self.run), bootctl=self.bootctl, state=self.state,
                                reboot=self._reboot, health_check=self.health, sleep=lambda s: None)
+
+    def install_seed(self, version, flavor=None, mode="install"):
+        """Put a (synthetic) data seed on /data with the real eitri-seed-install, as stage 2 or an earlier update would have."""
+        flavor = flavor or self.state.flavor
+        info = seedpack.make_seed(os.path.join(self.tmp, "seeds-installed"), version, flavor)
+        if mode == "install":
+            for placeholder in ("firmware", "venv"):          # what `configured=True` stood in for
+                shutil.rmtree(os.path.join(self.data, placeholder), ignore_errors=True)
+        res = run([SEED_TOOL, "--archive", info["path"], "--sha256", info["sha256"], "--flavor", flavor, "--data", self.data,
+                   "--mode", mode, "-q"] + (["--switch-flavor"] if mode == "update" else []))
+        assert res.returncode == 0, res.output
+        return info
+
+    def read(self, rel):
+        with open(os.path.join(self.data, rel)) as fh:
+            return fh.read()
 
     def channel_url(self):
         return "file://" + os.path.join(self.channel.dir, "manifest.json")

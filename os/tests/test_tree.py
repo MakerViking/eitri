@@ -16,7 +16,17 @@ LIBEXEC_DIR = OVERLAY / "usr/libexec/eitri"
 # klarity.service and eitri-configurator.service belong to their components; post-build.sh installs them.
 COMPONENT_UNITS = [REPO_ROOT / "klarity/systemd/klarity.service", REPO_ROOT / "configurator/systemd/eitri-configurator.service"]
 UNITS = sorted(UNIT_DIR.glob("*.service")) + COMPONENT_UNITS
+PATH_UNITS = sorted(UNIT_DIR.glob("*.path"))
 
+
+#: Sandbox options that systemd implements with seccomp. For a unit whose user lacks CAP_SYS_ADMIN, systemd then sets
+#: NoNewPrivs on the process even with NoNewPrivileges=false (measured with systemd 258 on the QEMU image), and sudo
+#: refuses to run. Units that call sudo must not use any of them.
+SECCOMP_OPTIONS = {
+    "ProtectKernelTunables", "ProtectKernelModules", "RestrictNamespaces", "LockPersonality", "RestrictAddressFamilies",
+    "MemoryDenyWriteExecute", "SystemCallFilter", "SystemCallArchitectures", "RestrictRealtime", "RestrictSUIDSGID",
+    "ProtectClock", "ProtectHostname", "ProtectKernelLogs",
+}
 
 def parse(path):
     parser = configparser.ConfigParser(strict=False, interpolation=None)
@@ -49,7 +59,7 @@ def test_unit_executables_exist_in_the_overlay_or_are_documented_app_paths(unit)
 
 def test_every_preset_names_a_unit_we_or_a_package_provide():
     preset = (OVERLAY / "usr/lib/systemd/system-preset/50-eitri.preset").read_text()
-    ours = {u.name for u in UNITS}
+    ours = {u.name for u in UNITS} | {u.name for u in PATH_UNITS}
     from_packages = {"eitri-camera.service", "go2rtc.service", "nginx.service", "sshd.service",
                      "NetworkManager.service", "avahi-daemon.service", "chrony.service", "rauc.service",
                      "dnsmasq.service", "systemd-networkd.service", "systemd-networkd-wait-online.service",
@@ -86,13 +96,31 @@ def test_no_unit_weakens_heater_safety():
     assert int(klipper["OOMScoreAdjust"]) < 0
 
 
+# Tools in the overlay that are Python, not sh: the root helpers behind the sudo rules.
+PYTHON_TOOLS = {"eitri-access"}
+
+
 def test_overlay_scripts_are_executable_and_pass_sh_syntax():
     scripts = list((OVERLAY / "usr/libexec/eitri").iterdir()) + [
         OVERLAY / "usr/lib/systemd/system-generators/eitri-generator"]
     for script in scripts:
         assert script.stat().st_mode & 0o111, f"{script} is not executable"
+        if script.name in PYTHON_TOOLS:
+            assert script.read_text().startswith("#!/usr/bin/python3 -I\n"), script
+            compile(script.read_text(), str(script), "exec")
+            continue
         assert run(["sh", "-n", script]).returncode == 0, script
         assert script.read_text().startswith("#!/bin/sh"), script
+
+
+def test_eitri_configurator_cli_is_an_isolated_python_script():
+    cli = OVERLAY / "usr/bin/eitri-configurator"
+    assert cli.stat().st_mode & 0o111
+    text = cli.read_text()
+    assert text.startswith("#!/usr/bin/python3 -I\n")
+    compile(text, str(cli), "exec")
+    # It runs as root through sudo: it must load the image's copy, never the venv under /data.
+    assert 'LIB = "/usr/lib/eitri/configurator"' in text and "/data/" not in text.replace("/data/eitri/configurator", "")
 
 
 def test_board_scripts_pass_bash_syntax():
@@ -211,6 +239,11 @@ def test_sshd_takes_keys_only():
         line.split(None, 1) for line in (OVERLAY / "etc/ssh/sshd_config").read_text().splitlines()
         if line.strip() and not line.startswith("#"))
     assert config["PasswordAuthentication"] == "no"
+    # The owner's optional choices (decision 4) come in through two fixed paths, and the Include must be read
+    # before PasswordAuthentication because sshd takes the first value it sees.
+    text = (OVERLAY / "etc/ssh/sshd_config").read_text()
+    assert text.index("Include /data/eitri/state/access/sshd.conf") < text.index("PasswordAuthentication no")
+    assert config["AuthorizedKeysFile"] == ".ssh/authorized_keys /data/eitri/state/access/authorized_keys"
     assert config["PermitRootLogin"] == "no" and config["AllowTcpForwarding"] == "no"
     assert int(config["MaxAuthTries"]) <= 3
 
@@ -227,6 +260,17 @@ def test_nginx_limits_uploads_and_is_lan_only():
     rules = [ln.strip() for ln in acl if ln.strip() and not ln.startswith("#")]
     assert rules[-1] == "deny all;" and "allow 192.168.0.0/16;" in rules
     assert "allow 0.0.0.0/0;" not in rules and "allow all;" not in rules
+    assert not any(":" in r for r in rules if r.startswith("allow")), "no IPv6 allow rule: there is no IPv6 listener"
+
+
+def test_nginx_has_no_ipv6_listener():
+    # Decision 7: the LAN allow-list is IPv4-only, so IPv6 must not be served at all.
+    conf = (OVERLAY / "etc/nginx/nginx.conf").read_text()
+    listens = re.findall(r"^\s*listen\s+([^;]+);", conf, re.M)
+    assert listens, "no listen directive"
+    for listen in listens:
+        assert "[" not in listen and "::" not in listen, listen
+        assert listen.split()[0] in ("80", "0.0.0.0:80"), listen
 
 
 def test_root_is_not_checked_at_every_boot():
@@ -258,3 +302,132 @@ def test_klipper_is_never_limited_and_the_rest_only_softly():
 def test_klipper_and_moonraker_cannot_gain_privileges():
     for name in ("klipper", "moonraker"):
         assert parse(UNIT_DIR / f"{name}.service")["Service"]["NoNewPrivileges"] == "true"
+
+
+# --- the data seed, the klipper layer on /data, root access, the configurator's retirement ---------
+
+def defconfig_lines():
+    return (OS_DIR / "configs/eitri_plus4_defconfig").read_text().splitlines()
+
+
+def test_klipper_layer_is_not_shipped_in_the_image():
+    # Decision 2: /data/eitri/extras and /data/eitri/klipper-layer (from the seed) are the source of truth.
+    assert not (OS_DIR / "package/eitri-klipper-layer").exists()
+    assert "BR2_PACKAGE_EITRI_KLIPPER_LAYER=y" not in defconfig_lines()
+    for text in ((OS_DIR / "Config.in").read_text(), (OS_DIR / "package/eitri-configurator/Config.in").read_text()):
+        assert "KLIPPER_LAYER" not in text and "klipper-layer" not in text
+    assert not (OVERLAY / "usr/lib/eitri/klipper-layer").exists()
+
+
+def test_image_has_what_the_seed_needs():
+    lines = defconfig_lines()
+    # Moonraker imports libnacl at start-up and libnacl loads libsodium (seed/SPEC.md section 13).
+    assert "BR2_PACKAGE_LIBSODIUM=y" in lines
+    # eitri-seed-install and its callers use the zstd binary, not only the library.
+    assert "BR2_PACKAGE_ZSTD=y" in lines
+    for option in ("BR2_PACKAGE_GIT=y", "BR2_PACKAGE_PYTHON3_ZLIB=y", "BR2_PACKAGE_PYTHON3_SSL=y",
+                   "BR2_PACKAGE_PYTHON3_SQLITE=y"):
+        assert option in lines, option
+
+
+def test_seed_units_run_before_the_programs_that_use_the_seed():
+    seed = parse(UNIT_DIR / "eitri-seed.service")
+    before = set(seed["Unit"]["Before"].split())
+    assert {"klipper.service", "moonraker.service", "klarity.service", "eitri-configurator.service",
+            "eitri-prepare.service"} <= before
+    assert "eitri-data-init.service" in seed["Unit"]["After"].split()
+    assert seed["Service"]["Type"] == "oneshot" and seed["Service"]["ExecStart"] == "/usr/libexec/eitri/seed-first-boot"
+    prepare = dropin("eitri-prepare.service")["Unit"]
+    assert "eitri-seed.service" in prepare["After"].split() and "eitri-seed.service" in prepare["Wants"].split()
+
+
+def test_seeded_services_start_on_the_paths_the_seed_provides():
+    # The conditions are the seed's own files (seed/SPEC.md section 3), so the units start as soon as the seed
+    # is in place and the configurator has rendered the config, and not before.
+    def conditions_of(unit):  # a unit may repeat the key, which configparser would collapse
+        return re.findall(r"^ConditionPathExists=(\S+)", unit.read_text(), re.M)
+
+    klipper = conditions_of(UNIT_DIR / "klipper.service")
+    moonraker = conditions_of(UNIT_DIR / "moonraker.service")
+    klarity = conditions_of(COMPONENT_UNITS[0])
+    for conditions, want in ((klipper, ("/data/firmware/klipper/klippy/klippy.py", "/data/venv/klippy/bin/python")),
+                             (moonraker, ("/data/firmware/moonraker/moonraker/moonraker.py", "/data/venv/moonraker/bin/python")),
+                             (klarity, ("/data/eitri/klarity/venv/bin/klarity",))):
+        for path in want:
+            assert path in conditions, path
+
+
+def test_configurator_retires_when_locked_by_default():
+    # Decision 8. The flag may come from the component's own unit or from the OS drop-in (which then repeats the
+    # unit's command line exactly, plus the flag).
+    base = parse(COMPONENT_UNITS[1])["Service"]["ExecStart"].split()
+    drop = parse(UNIT_DIR / "eitri-configurator.service.d/20-eitri-os.conf")["Service"]["ExecStart"].split()
+    assert "--retire-when-locked" in drop
+    assert [a for a in drop if a != "--retire-when-locked"] == [a for a in base if a != "--retire-when-locked"]
+    # A clean exit must stay stopped; only a failure restarts.
+    assert parse(COMPONENT_UNITS[1])["Service"]["Restart"] == "on-failure"
+    text = (UNIT_DIR / "eitri-configurator.service.d/20-eitri-os.conf").read_text()
+    assert "ExecStart=\nExecStart=" in text, "the drop-in must reset ExecStart before setting it"
+
+
+def test_units_that_call_sudo_may_gain_privileges_and_the_others_may_not():
+    # sudo is setuid: NoNewPrivileges would silently break `eitri-access` and `eitri-configurator unlock`.
+    klarity = parse(COMPONENT_UNITS[0])["Service"]
+    configurator = parse(UNIT_DIR / "eitri-configurator.service.d/20-eitri-os.conf")["Service"]
+    assert klarity["NoNewPrivileges"] == "false" and configurator["NoNewPrivileges"] == "false"
+    for unit in (klarity, configurator, parse(COMPONENT_UNITS[1])["Service"]):
+        # systemd sets NoNewPrivs anyway for a unit that uses a seccomp-based option (measured on the QEMU image)
+        assert not SECCOMP_OPTIONS & set(unit), SECCOMP_OPTIONS & set(unit)
+    for name in ("klipper", "moonraker"):
+        assert parse(UNIT_DIR / f"{name}.service")["Service"]["NoNewPrivileges"] == "true"
+
+
+def sudo_rules():
+    rules = {}
+    for raw in (OVERLAY / "etc/sudoers.d/eitri").read_text().splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            rules.setdefault("password" if "NOPASSWD" not in line else "nopasswd", []).append(line)
+    return rules
+
+
+def test_sudo_rules_for_root_access_and_unlock_are_exact():
+    rules = sudo_rules()
+    commands = set()
+    for line in rules["nopasswd"]:
+        commands |= {c.strip() for c in line.split("NOPASSWD:", 1)[1].split(",")}
+    assert commands == {
+        "/usr/bin/eitri-update", "/usr/libexec/eitri/eitri-bootctl",
+        "/usr/libexec/eitri/eitri-access set-key", "/usr/libexec/eitri/eitri-access disable",
+        "/usr/libexec/eitri/eitri-access status", "/usr/libexec/eitri/eitri-access set-password",
+        "/usr/libexec/eitri/eitri-access set-password --ssh-login",
+        "/usr/bin/eitri-configurator unlock",
+    }, "the apply subcommand in particular must not be reachable through sudo"
+    for command in commands:
+        if "eitri-access" in command or "eitri-configurator" in command:  # eitri-update/-bootctl: installer family
+            assert (OVERLAY / command.split()[0].lstrip("/")).is_file(), command
+
+
+def test_the_broad_sudo_rule_comes_first_because_the_last_match_wins():
+    # sudo applies the LAST rule that matches. With the password rule last, every passwordless rule above it
+    # would be overridden for the commands it names.
+    order = [ln.strip() for ln in (OVERLAY / "etc/sudoers.d/eitri").read_text().splitlines()
+             if ln.strip() and not ln.startswith("#")]
+    broad = next(i for i, ln in enumerate(order) if ln == "eitri ALL=(ALL) ALL")
+    specific = [i for i, ln in enumerate(order) if "NOPASSWD" in ln]
+    assert specific and broad < min(specific)
+
+
+def test_access_units_are_wired_to_the_helper():
+    service = parse(UNIT_DIR / "eitri-access.service")
+    assert service["Service"]["ExecStart"] == "/usr/libexec/eitri/eitri-access apply"
+    assert "sshd.service" in service["Unit"]["Before"].split()
+    assert "eitri-etc.service" in service["Unit"]["After"].split()
+    path = parse(UNIT_DIR / "eitri-access.path")
+    assert path["Path"]["PathChanged"] == "/data/eitri/state/access/generation"
+    assert path["Path"]["Unit"] == "eitri-access.service"
+    helper = (LIBEXEC_DIR / "eitri-access").read_text()
+    assert 'F_GEN = STATE / "generation"' in helper and 'STATE = ROOT / "data/eitri/state/access"' in helper
+    preset = (OVERLAY / "usr/lib/systemd/system-preset/50-eitri.preset").read_text().split("\n")
+    for unit in ("eitri-access.path", "eitri-access.service", "eitri-seed.service"):
+        assert f"enable {unit}" in preset

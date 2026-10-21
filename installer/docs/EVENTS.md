@@ -10,7 +10,7 @@
 | `run` | id shared by every line of one invocation (`EITRI_RUN_ID` to share it across tools) |
 | `component` | `install`, `revert`, `mcuflash`, `update`, `stage2` |
 | `type` | `plan`, `step`, `progress`, `log`, `prompt`, `result` |
-| `step` | machine name: `preflight`, `manifest`, `layout`, `backup`, `backup-verify`, `stage`, `mcu`, `arm`, `probe`, `bootloader`, `roundtrip`, `flash`, `verify`, `rollback`, `health`, … |
+| `step` | machine name: `preflight`, `manifest`, `layout`, `backup`, `backup-verify`, `stage`, `mcu`, `arm`, `probe`, `bootloader`, `roundtrip`, `flash`, `verify`, `rollback`, `health`, `seed-manifest`, `mcu-firmware`, `seed`, `flavor-switch`, `data-seed` (stage 2), … |
 | `status` | for `step`: `start`, `ok`, `failed`, `skipped` |
 | `board` | `mainboard`, `toolhead` or absent |
 | `pct` | 0-100 for `progress` |
@@ -30,4 +30,4 @@ The log is also saved to `/boot/eitri/stage2.log`, a failure to `/boot/eitri/LAS
 Exit codes. `install.sh`: 0 ok, 2 usage, 3 not confirmed, 10 preflight, 11 backup, 12 download/signature,
 13 MCU recovery not proven, 20 missing tools. `eitri-mcuflash`: 0, 1 failed, 2 usage, 3 blocked by preflight
 (nothing touched), 4 operator action needed. `eitri-update`: 0, 1 failed, 2 usage, 3 refused by policy
-(up to date, downgrade, upstream mode).
+(up to date, downgrade, upstream mode, a print in progress for `switch-flavor`).

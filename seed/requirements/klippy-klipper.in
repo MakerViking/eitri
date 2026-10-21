@@ -1,0 +1,18 @@
+# Klippy venv, Klipper flavor. Input to `uv pip compile` (see ../tools/lock.sh).
+#
+# Starts from Klipper's scripts/klippy-requirements.txt (commit pinned in release.lock) and deviates
+# only where that file cannot work on the image's CPython 3.14 with binary wheels:
+#   Jinja2==2.11.3 / markupsafe==1.1.1  -> Jinja2 3.1.6 / markupsafe 3.x   (old pins have no 3.14 wheels
+#                                          and Jinja2 2.x does not support 3.14; Moonraker pins 3.1.6 too)
+#   python-can==3.3.4 + setuptools      -> python-can 4.6 (same pin as Kalico; 3.3.4 predates 3.14)
+#   msgspec==0.19.0                     -> any release with a cp314 aarch64 wheel (optional speed-up)
+#   cffi==2.1.1, greenlet==3.3.2        -> as upstream
+greenlet==3.3.2
+cffi>=2.1,<3
+Jinja2==3.1.6
+markupsafe>=3.0,<4
+pyserial==3.4
+python-can~=4.6
+msgspec>=0.20
+# Moonraker's update manager calls "<venv>/bin/python -m pip"; keep it equal to the image's pip.
+pip==25.3
