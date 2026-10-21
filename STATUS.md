@@ -169,7 +169,7 @@ Measured with Klipper's built-in `debug_read` (klippy stopped, then restarted; n
 
 Consequences:
 - **Mainboard is buildable and serial-flashable**: offset and crystal confirmed on the board; flash via the stock bootloader / SD path. Its gate can flip to go once a real build passes the dictionary checks.
-- **Toolhead has no bootloader**, so it cannot be reflashed over serial at all. Upgrading it needs a **one-time ST-Link/SWD flash** to install Katapult (then serial flashing forever). The installer must say this up front.
+- **Toolhead has no bootloader**, so it cannot be reflashed over serial at all — **but it does not need to be**: the toolhead can stay on its stock Klipper v0.12.0-65 firmware with the newest host. Verified 2026-10-22: all 84 klippy batch tests pass on BOTH mainline Klipper and Kalico with the stock toolhead dictionary (extracted from the dump) when the ADXL345 block is off. Only the accelerometer query formats changed since v0.12 (mainline keeps a backward-compat path for the old `query_analog_in`/`analog_in_state`, so thermistors work; Kalico's analog format is unchanged). **Plan:** default install keeps the toolhead stock and reflashes only the mainboard; add a new-named extra `qd_adxl345_compat` that speaks the v0.12 ADXL345 format so input-shaper calibration works without flashing; offer a one-time ST-Link/SWD Katapult install as an *optional* advanced step (future-proofing). Batch mode proves command compatibility, not real-time behaviour — the first real run is the final check.
 - Full stock flash dumps of both boards exist as private recovery images, kept outside the repo per the clean-room policy.
 
 ## MCU firmware (`mcu/`, `installer/mcuflash`)
