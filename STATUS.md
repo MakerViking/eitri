@@ -156,6 +156,22 @@ None of these was visible in a unit test; each came from running the real servic
 | 12 | `QIDI_PLUS4` treated as AGPL-3.0 | SPDX `AGPL-3.0-or-later` on `klipper-layer/config/{printer.cfg.tmpl,macros.cfg,eitri-variables.toml}`, `config/LICENSE`, `LICENSE-NOTE.md`, README/NOTICE |
 | 13 | Keep `.py` source in the image | unchanged (the seed's venvs also keep `.py` next to the byte-code) |
 
+## MCU facts measured on the real printer (2026-10-22, read-only probe)
+
+Measured with Klipper's built-in `debug_read` (klippy stopped, then restarted; nothing written). **These supersede the inferred/unresolved values in the MCU section below.**
+
+| | mainboard (`/dev/ttyS0`) | toolhead (`/dev/ttyS2`) |
+|---|---|---|
+| chip | genuine STM32F401xC (IDCODE 0x16423), 256 KiB | IDCODE 0x21040414, flash-size register 128 KiB → almost certainly a GD32F103 clone (built as stm32f103xe) |
+| SCB->VTOR / app offset | **0x08008000 (confirmed)** | **0x08000000 — no bootloader** |
+| bootloader | stock QIDI/Makerbase, 32 KiB at 0x08000000 | **none** |
+| crystal (from RCC registers) | **8 MHz confirmed** (PLLCFGR 0x07412A04: M4 N168 P4, HSE) | **8 MHz confirmed** (CFGR 0x001DE40A: HSE, x9) |
+
+Consequences:
+- **Mainboard is buildable and serial-flashable**: offset and crystal confirmed on the board; flash via the stock bootloader / SD path. Its gate can flip to go once a real build passes the dictionary checks.
+- **Toolhead has no bootloader**, so it cannot be reflashed over serial at all. Upgrading it needs a **one-time ST-Link/SWD flash** to install Katapult (then serial flashing forever). The installer must say this up front.
+- Full stock flash dumps of both boards exist as private recovery images, kept outside the repo per the clean-room policy.
+
 ## MCU firmware (`mcu/`, `installer/mcuflash`)
 
 **State: tooling and checks are built and green; no firmware was built and no release bundle exists, on purpose.** The parameter
