@@ -119,6 +119,22 @@ def test_refuses_to_write_when_booted_from_another_disk(state, cmdline, tmp_path
     assert run([BACKEND, "get-primary"], env=env).returncode == 0
 
 
+@pytest.mark.parametrize("line", [
+    # the in-place boot.scr (stock U-Boot), e.g. a bench microSD card next to a stock eMMC
+    "root=PARTUUID=e17a5d01-05 ro rootwait eitri.slot=A eitri.data=PARTUUID=e17a5d01-07",
+    "root=/dev/mmcblk1p2 rauc.slot=A",
+])
+def test_refuses_to_write_without_proof_that_the_eitri_uboot_started_this_disk(state, cmdline, tmp_path, line):
+    """No eitri.disk= means another boot manager: the raw sector on the eMMC (the stock U-Boot's area) is not ours."""
+    env = {**os.environ, "EITRI_STATE_DEV": str(state.path), "EITRI_STATE_SECTOR": str(SECTOR),
+           "EITRI_CMDLINE": str(cmdline(line)), "EITRI_LOCK": str(tmp_path / "lock")}
+    before = state.path.read_bytes()
+    for args in (("set-primary", "B"), ("set-state", "A", "good"), ("set-state", "B", "bad")):
+        result = run([BACKEND, *args], env=env)
+        assert result.returncode != 0 and "refusing" in result.stderr, args
+    assert state.path.read_bytes() == before
+
+
 @pytest.mark.parametrize("args", [(), ("bogus",), ("set-primary",), ("set-primary", "C"), ("set-state", "A", "meh"),
                                   ("get-state", "Z")])
 def test_bad_usage_fails(state, args):

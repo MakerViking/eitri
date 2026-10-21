@@ -22,6 +22,7 @@ and builds. A cold build downloads the sources into `../build/br-dl`. Outputs:
 |---|---|
 | `eitri-plus4.img` | raw disk image, about 2.3 GiB with the data seed (1.7 GiB without); write it to the start of the eMMC or a microSD card |
 | `eitri-plus4-<version>.raucb` | signed update bundle for an installed printer |
+| `../bench/eitri-sd-bench.img` | not built by `make image`: `os/bench/mk-sd-bench.sh` makes a microSD card that the printer's **stock** U-Boot boots, leaving the eMMC untouched ([`bench/README.md`](bench/README.md)) |
 | `idbloader.img`, `u-boot.itb`, `Image`, `rk3328-eitri-plus4.dtb`, `rootfs.ext4` | the parts |
 
 Host prerequisites beyond Buildroot's own list: `python3` 3.11 or newer, `rsync`,
@@ -108,7 +109,10 @@ sector 16384  u-boot.itb           U-Boot proper + TF-A BL31
 
 The image holds a data partition of the seed's size plus 128 MiB (a seedless bench image: 128 MiB). On first boot `eitri-grow-data`
 rewrites the GPT so partition 4 reaches the end of the disk (and the backup GPT
-moves there), and `eitri-data-init` grows the file system online. The reasoning
+moves there), and `eitri-data-init` grows the file system online. `eitri-grow-data`
+only modifies the disk that holds the running root file system; on a DOS disk
+booted by the in-place `boot.scr` it acts only with `eitri.growdata=1` (the bench
+microSD card) and then enlarges the extended partition and the last logical one. The reasoning
 behind the raw offsets, the A/B state sector and the open boot-chain questions
 are in [`docs/boot-chain.md`](docs/boot-chain.md).
 
@@ -152,6 +156,7 @@ rootfs talk to userspace through these parameters:
 | `eitri.data=SPEC`, `eitri.bootfs=SPEC` | name those partitions explicitly (`/dev/...`, `PARTUUID=`, `UUID=`, `LABEL=`); they win over `eitri.disk` |
 | `eitri.bootmount=PATH` | where the FAT partition is mounted (default `/boot/firmware`) |
 | `rauc.slot=A\|B` | the running slot, read by `rauc-bootloader` |
+| `eitri.growdata=1` | on a DOS disk: let `eitri-grow-data` enlarge the `eitri.data=PARTUUID=` partition (the bench microSD card) |
 
 A boot manager with a different partition map, such as the in-place installer
 with the stock U-Boot, passes `eitri.data=`, `eitri.bootfs=` and its own RAUC
@@ -159,6 +164,10 @@ configuration instead of `eitri.disk=`. It can ship that configuration by
 writing `rauc/system.conf` into `/data/eitri/state/etc/upper/` (the persistent
 `/etc` layer) before the first boot. For the stock U-Boot's benefit the rootfs
 also offers the device tree as `/boot/dtb/rockchip/rk3328-roc-cc.dtb`.
+Whatever the slots say, `rauc-pre-install` stops any installation into a slot
+that is not on the disk holding the running root file system, and
+`rauc-bootloader` only writes its raw state sector when `eitri.disk=` names the
+disk it lives on.
 
 ### First boot
 

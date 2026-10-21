@@ -57,8 +57,10 @@ parser to keep in step. A sector that is blank, garbled or without the marker
 means the defaults (order `A B`, three attempts each).
 
 Booting from a microSD card (bench mode) always runs slot A of the card and
-never writes the state; `rauc-bootloader` and `mark-good` refuse to write when
-`eitri.disk=` names another disk.
+never writes the state; `rauc-bootloader` refuses to write unless `eitri.disk=`
+names the disk that holds the sector (so also when another boot manager started
+the system and passed no `eitri.disk=` at all), and `mark-good` does nothing
+when `eitri.disk=` names another disk.
 
 ## What was verified without the printer
 
@@ -139,6 +141,14 @@ eMMC stays untouched. It is not verified on this printer (`docs/RECOVERY.md`
 section 5). If the BootROM prefers a valid eMMC loader, the stock U-Boot starts
 first and looks for `extlinux/extlinux.conf` or `boot.scr` on the card, which
 this image does not carry, so the card would not boot.
+
+The printer's stock eMMC U-Boot (2021.07-armbian, read from the eMMC backup) has
+`bootcmd=run distro_bootcmd` and `boot_targets=mmc1 mmc0 usb0 pxe dhcp`, and on
+the RK3328 mmc1 is the microSD slot: it scans the card first and runs a
+`boot.scr` it finds there. `os/bench/mk-sd-bench.sh` builds a card for exactly
+that path (no Rockchip loader on the card, the in-place `boot.scr`, the card's
+own partitions by PARTUUID), so the open question above does not block bench
+work: see [`../bench/README.md`](../bench/README.md).
 
 ### 3. Boot messages on the MCU line
 

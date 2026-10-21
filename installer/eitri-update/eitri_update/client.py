@@ -28,6 +28,18 @@ DEFAULT_KEY_DIRS = ["/usr/share/eitri/keys"]
 CONF_PATH = "/etc/eitri/update.conf"
 
 
+def _slot_device_matches(device: str, part: str, partuuid: str) -> bool:
+    """Does RAUC's slot device name partition *part* of layout.env?  /dev/mmcblk1p5 style nodes are compared by their
+    trailing number.  A DOS /dev/disk/by-partuuid/<label-id>-<nn> link (the bench microSD image addresses its slots
+    that way, so they can never resolve to the eMMC) must be the exact PARTUUID layout.env records, whose suffix is the
+    partition number in hex."""
+    m = re.fullmatch(r"/dev/disk/by-partuuid/([0-9a-f]{8})-([0-9a-f]{2})", device or "")
+    if m:
+        return bool(partuuid) and part.isdigit() and device.rsplit("/", 1)[1] == partuuid.lower() and int(m.group(2), 16) == int(part)
+    m = re.search(r"(\d+)$", device or "")
+    return m is not None and part.isdigit() and int(m.group(1)) == int(part)
+
+
 @dataclass
 class Config:
     manifest_url: str = DEFAULT_MANIFEST_URL
@@ -255,8 +267,7 @@ class Updater:
             if not want:
                 continue
             info = status.slot(slot)
-            m = re.search(r"(\d+)$", info.device) if info is not None else None
-            if m is None or m.group(1) != want:
+            if not _slot_device_matches(info.device if info is not None else "", want, layout.get("eitri_partuuid_%s" % slot, "")):
                 raise FlashError(
                     "RAUC's slot %s is %s but this printer's slot %s is partition %s: refusing to write an update there"
                     % (slot, (info.device if info is not None and info.device else "unknown"), slot, want),

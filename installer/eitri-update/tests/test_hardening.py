@@ -28,9 +28,21 @@ def _reboot_into(rig, slot):
     other = "A" if slot == "B" else "B"
     rig.run.rauc_slots = {slot: {"state": "booted", "boot_status": "good", "version": "2026.10.0"},
                           other: {"state": "inactive", "boot_status": "good", "version": "2026.09.0"}}
-    open(rig.cmdline, "w").write("root=/dev/mmcblk1p%d ro rootwait rauc.slot=%s\n" % (2 if slot == "A" else 3, slot))
+    open(rig.cmdline, "w").write("root=/dev/mmcblk1p%d ro rootwait rauc.slot=%s eitri.disk=%s\n" % (2 if slot == "A" else 3, slot, rig.state_dev))
     rig.rebooted = 0
     rig.run.calls.clear()
+
+
+def test_gpt_backend_refuses_to_write_the_raw_sector_without_eitri_disk(tmp_path):
+    """No eitri.disk=: not started by the Eitri U-Boot (e.g. a bench microSD card whose boot.env is not mounted).
+    The raw sector on the eMMC is then never written, the failure surfaces instead."""
+    rig = _gpt_rig(tmp_path)
+    open(rig.cmdline, "w").write("root=PARTUUID=e17a5d01-05 ro rootwait eitri.slot=A\n")
+    before = open(rig.state_dev, "rb").read()
+    with pytest.raises(FlashError) as exc:
+        rig.bootctl.set_state("A", "good")
+    assert "refusing" in exc.value.message
+    assert open(rig.state_dev, "rb").read() == before
 
 
 def test_gpt_backend_is_selected_without_a_vfat_boot_env(tmp_path):

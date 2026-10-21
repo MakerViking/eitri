@@ -245,7 +245,8 @@ class Rig:
             with open(self.state_dev, "wb") as fh:
                 fh.truncate(4 * 512)
             with open(self.cmdline, "w") as fh:
-                fh.write("root=/dev/mmcblk1p%d ro rootwait rauc.slot=%s\n" % (2 if slot == "A" else 3, slot))
+                # The Eitri U-Boot always names the booted disk; rauc-bootloader only writes when it is the state's disk.
+                fh.write("root=/dev/mmcblk1p%d ro rootwait rauc.slot=%s eitri.disk=%s\n" % (2 if slot == "A" else 3, slot, self.state_dev))
             self.helper_env = {"EITRI_STATE_DEV": self.state_dev, "EITRI_STATE_SECTOR": "1", "EITRI_CMDLINE": self.cmdline,
                                "EITRI_LOCK": os.path.join(tmp, "state.lock")}
             bootctl_kw = dict(helper=RAUC_BOOTLOADER_SCRIPT, helper_env=self.helper_env,

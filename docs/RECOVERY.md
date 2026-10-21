@@ -119,7 +119,7 @@ Erasing a bootloader without a verified backup of the flash is the one thing tha
 
 ## 5. microSD boot (developers only)
 
-The printer's internal microSD slot lets you boot an Eitri image from a card while the eMMC keeps the stock system. Pulling the card returns the printer to stock. Whether the card wins over the eMMC depends on the boot order of the loader already on the eMMC, which has not been verified on this printer. If the stock loader does not chain to the card, a card boot may require a blank or altered eMMC loader.
+The printer's internal microSD slot lets you boot an Eitri image from a card while the eMMC keeps the stock system. Pulling the card returns the printer to stock. The stock eMMC U-Boot (2021.07-armbian, read from an eMMC backup) scans the microSD slot (`mmc1`) before the eMMC (`mmc0`) and runs a `boot.scr` it finds on the card's bootable partition, so a card built with `os/bench/mk-sd-bench.sh` boots Eitri without touching the eMMC (see `os/bench/README.md`). If Eitri on the card cannot boot, the card's boot script gives up and the stock system on the eMMC starts. This has been replayed in a U-Boot 2021.07 sandbox, not yet on a printer. The flash-once GPT image (`eitri-plus4.img`) is different: it carries its own loader, and whether that loader on a card wins over the eMMC's is still unverified.
 
 This is a development tool. It needs the case open, and it is not a user-facing install path.
 

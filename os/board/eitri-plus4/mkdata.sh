@@ -4,6 +4,11 @@
 #
 #   mkdata.sh --output FILE [--seed ARCHIVE --manifest FILE [--flavor klipper|kalico]]
 #             [--installer PATH] [--owner UID:GID] [--headroom-mib N] [--min-mib N]
+#             [--label LABEL] [--uuid UUID] [--overlay DIR]
+#
+# --label/--uuid name the file system (default "data" and the image's fixed UUID); the bench microSD
+# image (os/bench/) uses its own so it can never be mistaken for another disk's /data. --overlay copies
+# DIR's contents into the tree after the seed, owned by root (the bench image's RAUC override).
 #
 # With a data seed the partition leaves the factory populated: the seed is installed into a scratch
 # directory with eitri-seed-install (seed/SPEC.md, "Installing a seed"), then mke2fs -d turns that
@@ -27,6 +32,7 @@
 set -euo pipefail
 
 OUTPUT="" SEED="" MANIFEST="" FLAVOR=klipper INSTALLER="" OWNER=1000:1000 HEADROOM_MIB=128 MIN_MIB=128
+LABEL=data OVERLAY=""
 
 # The same ids as before, so that the image differs between builds only by its content.
 FS_UUID=7b1f9f0e-3a5c-4f6e-9c41-0e17a1d20004
@@ -45,7 +51,10 @@ while [ $# -gt 0 ]; do
 	--owner) OWNER=${2:?}; shift 2 ;;
 	--headroom-mib) HEADROOM_MIB=${2:?}; shift 2 ;;
 	--min-mib) MIN_MIB=${2:?}; shift 2 ;;
-	-h | --help) sed -n '3,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	--label) LABEL=${2:?}; shift 2 ;;
+	--uuid) FS_UUID=${2:?}; shift 2 ;;
+	--overlay) OVERLAY=${2:?}; shift 2 ;;
+	-h | --help) sed -n '3,34p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) die "unknown option: $1" ;;
 	esac
 done
@@ -53,6 +62,9 @@ done
 case "$FLAVOR" in klipper | kalico) ;; *) die "--flavor must be klipper or kalico" ;; esac
 case "$HEADROOM_MIB$MIN_MIB" in *[!0-9]* | "") die "--headroom-mib and --min-mib must be numbers" ;; esac
 command -v mke2fs >/dev/null 2>&1 || die "mke2fs not found (host-e2fsprogs)"
+[ "${#LABEL}" -le 16 ] && [ -n "$LABEL" ] || die "--label must be 1 to 16 characters"
+printf '%s\n' "$FS_UUID" | grep -Eqx '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' || die "--uuid must be a lower-case UUID"
+[ -z "$OVERLAY" ] || [ -d "$OVERLAY" ] || die "--overlay $OVERLAY is not a directory"
 
 if [ -z "$INSTALLER" ]; then
 	INSTALLER=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/seed/bin/eitri-seed-install
@@ -99,6 +111,12 @@ print(sha)
 	[ -f "$root/eitri/flavor" ] || die "the seed has no eitri/flavor"
 fi
 
+if [ -n "$OVERLAY" ]; then
+	# Copied as the running user, i.e. root under fakeroot; no owners or modes from the source tree.
+	cp -R --no-preserve=ownership "$OVERLAY"/. "$root"/ || die "cannot copy the overlay $OVERLAY"
+	log "added $(find "$OVERLAY" -type f | wc -l) file(s) from $OVERLAY"
+fi
+
 # Size: the tree as the build host's file system counts it, plus 20 % for ext4 metadata, plus working
 # room. The partition is enlarged to the whole eMMC on the first boot (eitri-grow-data), so this is
 # the size of the flash-once image, not of the printer's /data.
@@ -117,7 +135,7 @@ mkdir -p "$(dirname "$OUTPUT")"
 # -e remount-ro: a filesystem error must stop the writes (the mount unit says the same). root_owner:
 # sshd's StrictModes wants the directories above the access keys (/data/eitri/state/access) to be root's.
 # -i 8192: a Python venv and two git clones are many small files.
-env -u SOURCE_DATE_EPOCH -u E2FSPROGS_FAKE_TIME mke2fs -q -F -t ext4 -L data -m 1 -i 8192 -e remount-ro -U "$FS_UUID" \
+env -u SOURCE_DATE_EPOCH -u E2FSPROGS_FAKE_TIME mke2fs -q -F -t ext4 -L "$LABEL" -m 1 -i 8192 -e remount-ro -U "$FS_UUID" \
 	-E "hash_seed=$HASH_SEED,root_owner=0:0" -d "$root" "$tmp" "${size_mib}M"
 mv "$tmp" "$OUTPUT"
 log "wrote $OUTPUT: ${size_mib} MiB, $([ -n "$SEED" ] && echo "seeded ($FLAVOR)" || echo "empty")"

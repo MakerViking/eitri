@@ -1,0 +1,62 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# RAUC pre-install handler: refuse to write any slot that is not on the disk
+# holding the running root file system.
+#
+# RAUC's slot devices come from system.conf. The image's own copy describes the
+# flash-once eMMC (/dev/mmcblk1p2, p3); the in-place conversion and the bench
+# microSD image (os/bench/) replace it through the /etc overlay on /data. If
+# that override were missing, or a system were started from a card while the
+# eMMC still holds the stock system, a plain `rauc install` would otherwise
+# write a root file system over a partition of the other disk. A root file
+# system slot always lives next to the running one, so anything else is a
+# configuration error and the installation stops here, before RAUC writes
+# anything.
+#
+# RAUC passes RAUC_TARGET_SLOTS ("1 2 ...") and RAUC_SLOT_DEVICE_<n>.
+# Environment overrides, used by the tests: EITRI_SYSFS (default /sys),
+# EITRI_ROOT_DISK (the disk holding /, instead of the one found through sysfs).
+
+set -u
+
+SYSFS=${EITRI_SYSFS:-/sys}
+
+die() {
+	echo "rauc-pre-install: $*" >&2
+	exit 1
+}
+
+# The whole disk a partition device belongs to: /dev/mmcblk0p6 -> mmcblk0.
+disk_of() {
+	name=$(basename "$(readlink -f "$1")")
+	sys=$(readlink -f "$SYSFS/class/block/$name" 2>/dev/null) || return 1
+	[ -e "$sys/partition" ] || return 1
+	basename "$(dirname "$sys")"
+}
+
+root_disk() {
+	if [ -n "${EITRI_ROOT_DISK:-}" ]; then
+		basename "$EITRI_ROOT_DISK"
+		return 0
+	fi
+	devno=$(mountpoint -d / 2>/dev/null) || return 1
+	sys=$(readlink -f "$SYSFS/dev/block/$devno" 2>/dev/null) || return 1
+	[ -e "$sys/partition" ] || return 1
+	basename "$(dirname "$sys")"
+}
+
+rdisk=$(root_disk) || die "cannot tell which disk holds the root file system; refusing to install"
+[ -n "${RAUC_TARGET_SLOTS:-}" ] || die "RAUC named no target slots"
+
+for n in $RAUC_TARGET_SLOTS; do
+	case "$n" in
+	*[!0-9]* | "") die "unexpected slot index '$n'" ;;
+	esac
+	eval "dev=\${RAUC_SLOT_DEVICE_$n:-}"
+	# shellcheck disable=SC2154  # set by the eval above
+	[ -n "$dev" ] || die "no device for target slot $n"
+	ddisk=$(disk_of "$dev") || die "target slot device $dev is not a partition of a known disk; refusing to install"
+	[ "$ddisk" = "$rdisk" ] ||
+		die "target slot device $dev is on /dev/$ddisk, but the running system is on /dev/$rdisk; refusing to write another disk (check /etc/rauc/system.conf)"
+done
+exit 0

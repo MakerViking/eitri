@@ -25,6 +25,7 @@ def system_conf(tmp_path: Path, keyring: Path | None = None) -> Path:
         (tmp_path / name).write_bytes(b"\0" * (1 << 20))
     text = (OVERLAY / "etc/rauc/system.conf").read_text()
     text = text.replace("/usr/libexec/eitri/rauc-bootloader", str(LIBEXEC / "rauc-bootloader"))
+    text = text.replace("/usr/libexec/eitri/rauc-pre-install", str(LIBEXEC / "rauc-pre-install"))
     text = text.replace("/dev/mmcblk1p2", str(tmp_path / "slotA.img"))
     text = text.replace("/dev/mmcblk1p3", str(tmp_path / "slotB.img"))
     text = text.replace("/data/eitri/state/rauc.status", str(tmp_path / "rauc.status"))

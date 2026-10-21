@@ -61,12 +61,19 @@ check_slot() {
 	esac
 }
 
-# The state sector belongs to the eMMC. A bench boot from a microSD card must
-# leave it alone, so writes are refused unless the running system is on the
-# device that holds the state.
+# The state sector belongs to the flash-once eMMC layout. Writes are refused
+# unless there is positive proof that the running system was started from that
+# disk by the Eitri U-Boot (uboot.env always passes eitri.disk=). Without
+# eitri.disk= another boot manager started this system (the in-place boot.scr,
+# for example from a bench microSD card while the eMMC still holds the stock
+# system): the raw sector at 0x3F8000 on $DEV is not ours then and must never
+# be written.
 check_writable() {
 	disk=$(cmdline_value eitri.disk || true)
-	if [ -n "$disk" ] && [ "$disk" != "$DEV" ]; then
+	if [ -z "$disk" ]; then
+		die "no eitri.disk= on the kernel command line (not started by the Eitri U-Boot), refusing to modify the boot state on $DEV"
+	fi
+	if [ "$disk" != "$DEV" ]; then
 		die "booted from $disk, refusing to modify the boot state on $DEV"
 	fi
 }

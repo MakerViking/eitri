@@ -43,7 +43,7 @@ def test_grow_data_fills_the_disk_and_moves_the_backup_gpt(tmp_path):
     disk = tmp_path / "emmc.img"
     make_disk(disk, total_mib=256, image_mib=64)
     before = partitions(disk)
-    env = {**os.environ, "EITRI_DISK": str(disk)}
+    env = {**os.environ, "EITRI_DISK": str(disk), "EITRI_ROOT_DISK": str(disk)}
     result = run([LIBEXEC / "grow-data"], env=env)
     assert result.returncode == 0, result.stderr
 
@@ -62,7 +62,7 @@ def test_grow_data_fills_the_disk_and_moves_the_backup_gpt(tmp_path):
 def test_grow_data_is_idempotent(tmp_path):
     disk = tmp_path / "emmc.img"
     make_disk(disk, total_mib=256, image_mib=64)
-    env = {**os.environ, "EITRI_DISK": str(disk)}
+    env = {**os.environ, "EITRI_DISK": str(disk), "EITRI_ROOT_DISK": str(disk)}
     run([LIBEXEC / "grow-data"], env=env)
     once = disk.read_bytes()[: 2 * MIB]
     result = run([LIBEXEC / "grow-data"], env=env)
@@ -76,7 +76,7 @@ def test_grow_data_leaves_a_foreign_table_alone(tmp_path):
     run(["truncate", "-s", "64M", disk], check=True)
     run(["sfdisk", "--quiet", disk], input="label: gpt\nstart=2048, size=8192, name=\"stuff\"\n", check=True)
     before = disk.read_bytes()
-    result = run([LIBEXEC / "grow-data"], env={**os.environ, "EITRI_DISK": str(disk)})
+    result = run([LIBEXEC / "grow-data"], env={**os.environ, "EITRI_DISK": str(disk), "EITRI_ROOT_DISK": str(disk)})
     assert result.returncode == 0 and "no partition named" in result.stdout
     assert disk.read_bytes() == before
 
@@ -86,6 +86,100 @@ def test_grow_data_never_fails_the_boot(tmp_path, cmdline):
     assert result.returncode == 0
     result = run([LIBEXEC / "grow-data"], env={**os.environ, "EITRI_DISK": str(tmp_path / "missing")})
     assert result.returncode == 0
+
+
+def test_grow_data_never_touches_a_disk_that_does_not_hold_the_root_file_system(tmp_path):
+    """eitri.disk= pointing at another disk (e.g. the eMMC while / is on a microSD card) changes nothing."""
+    disk = tmp_path / "emmc.img"
+    make_disk(disk, total_mib=256, image_mib=64)
+    before = disk.read_bytes()
+    for root in (str(tmp_path / "sdcard.img"), ""):
+        env = {**os.environ, "EITRI_DISK": str(disk), "EITRI_ROOT_DISK": root}
+        if not root:
+            env.pop("EITRI_ROOT_DISK")
+            env["EITRI_CMDLINE"] = str(tmp_path / "missing-cmdline")
+        result = run([LIBEXEC / "grow-data"], env=env)
+        assert result.returncode == 0 and "leaving" in result.stdout, result.stdout
+        assert disk.read_bytes() == before
+
+
+# --- grow-data on a DOS disk started by the in-place boot.scr (the bench microSD image) ----------
+
+LABEL_ID = "e17a5d01"
+
+
+def make_dos_disk(path: Path, total_mib: int, image_mib: int, label_id: str = LABEL_ID, data_nr: int = 7) -> None:
+    """Laid out like os/bench/mk-sd-bench.sh: p1 vfat, p3 extended, p5/p6 rootfs slots, p7 data last."""
+    need("sfdisk", "truncate")
+    path.write_bytes(b"")
+    run(["truncate", "-s", f"{image_mib}M", path], check=True)
+    end = image_mib * 2048
+    table = (
+        f"label: dos\nlabel-id: 0x{label_id}\nunit: sectors\n\n"
+        "1 : start=32768, size=32768, type=c, bootable\n"
+        f"3 : start=65536, size={end - 65536}, type=5\n"
+        "5 : start=67584, size=16384, type=83\n"
+        "6 : start=86016, size=16384, type=83\n"
+    )
+    if data_nr == 7:
+        table += f"7 : start=104448, size={end - 104448}, type=83\n"
+    run(["sfdisk", "--quiet", path], input=table, check=True)
+    run(["truncate", "-s", f"{total_mib}M", path], check=True)
+
+
+def dos_parts(path: Path) -> dict[int, tuple[int, int]]:
+    out = {}
+    for line in run(["sfdisk", "-d", path], check=True).stdout.splitlines():
+        m = re.match(r"\S*?(\d+) : start= *(\d+), size= *(\d+)", line)
+        if m:
+            out[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
+    return out
+
+
+def dos_env(tmp_path, cmdline, disk, line=None, root_disk=None):
+    line = line or (f"root=PARTUUID={LABEL_ID}-05 ro rootwait eitri.slot=A "
+                    f"eitri.data=PARTUUID={LABEL_ID}-07 eitri.bootfs=PARTUUID={LABEL_ID}-01 eitri.growdata=1")
+    return {**os.environ, "EITRI_DISK": str(disk), "EITRI_ROOT_DISK": str(root_disk or disk), "EITRI_CMDLINE": str(cmdline(line))}
+
+
+def test_grow_data_enlarges_the_extended_and_the_last_logical_partition(tmp_path, cmdline):
+    disk = tmp_path / "sdcard.img"
+    make_dos_disk(disk, total_mib=512, image_mib=128)
+    before = dos_parts(disk)
+    result = run([LIBEXEC / "grow-data"], env=dos_env(tmp_path, cmdline, disk))
+    assert result.returncode == 0 and "growing extended partition 3 and partition 7" in result.stdout, result.stdout
+    after = dos_parts(disk)
+    total = 512 * 2048
+    assert after[1] == before[1] and after[5] == before[5] and after[6] == before[6]
+    assert after[3][0] == before[3][0] and sum(after[3]) == total
+    assert after[7][0] == before[7][0] and sum(after[7]) == total
+    dump = run(["sfdisk", "-d", disk], check=True).stdout
+    assert f"label-id: 0x{LABEL_ID}" in dump and "bootable" in dump
+    again = run([LIBEXEC / "grow-data"], env=dos_env(tmp_path, cmdline, disk))
+    assert "already fills" in again.stdout and dos_parts(disk) == after
+
+
+@pytest.mark.parametrize("case", ["no-opt-in", "other-label-id", "root-elsewhere", "root-other-disk", "not-last", "gpt-spec"])
+def test_grow_data_leaves_dos_disks_alone_unless_every_check_passes(tmp_path, cmdline, case):
+    disk = tmp_path / "disk.img"
+    make_dos_disk(disk, total_mib=256, image_mib=128, label_id="6a783df4" if case == "other-label-id" else LABEL_ID)
+    line = None
+    root_disk = None
+    if case == "no-opt-in":
+        line = f"root=PARTUUID={LABEL_ID}-05 eitri.data=PARTUUID={LABEL_ID}-07"
+    elif case == "root-elsewhere":
+        line = f"root=PARTUUID=6a783df4-02 eitri.data=PARTUUID={LABEL_ID}-07 eitri.growdata=1"
+    elif case == "root-other-disk":
+        root_disk = tmp_path / "emmc.img"
+    elif case == "not-last":
+        line = f"root=PARTUUID={LABEL_ID}-05 eitri.data=PARTUUID={LABEL_ID}-05 eitri.growdata=1"
+    elif case == "gpt-spec":
+        line = f"root=PARTUUID={LABEL_ID}-05 eitri.data=LABEL=eitri-data eitri.growdata=1"
+    before = disk.read_bytes()
+    result = run([LIBEXEC / "grow-data"], env=dos_env(tmp_path, cmdline, disk, line, root_disk))
+    assert result.returncode == 0, result.stderr
+    assert "growing" not in result.stdout, result.stdout
+    assert disk.read_bytes() == before
 
 
 # --- data-init ----------------------------------------------------------------

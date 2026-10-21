@@ -346,9 +346,11 @@ def test_release_commit_pin_is_passed_to_mcuflash(tmp_path):
     assert mcu and all("--commit" in c and "a08fc79fcfa342e5b95ac02a9a8b271f453523e9" in c for c in mcu)
 
 
-def _inplace_layout(rig, dev_a="/dev/mmcblk1p5", dev_b="/dev/mmcblk1p6"):
+def _inplace_layout(rig, dev_a="/dev/mmcblk1p5", dev_b="/dev/mmcblk1p6", partuuids=None):
     with open(os.path.join(rig.boot, "eitri", "layout.env"), "w") as fh:
         fh.write("eitri_part_A=5\neitri_part_B=6\n")
+        if partuuids:
+            fh.write("eitri_partuuid_A=%s\neitri_partuuid_B=%s\n" % partuuids)
     orig = rig.run._rauc
 
     def rauc(argv, kw):
@@ -378,6 +380,25 @@ def test_upgrade_proceeds_when_rauc_slots_match_the_inplace_layout(tmp_path):
     _inplace_layout(rig)
     rig.updater.upgrade(reboot=False)
     assert len(rig.run.installs) == 1
+
+
+def test_upgrade_accepts_by_partuuid_slots_that_name_the_layouts_own_partitions(tmp_path):
+    """The bench microSD image addresses its RAUC slots by PARTUUID, so they cannot resolve to the eMMC."""
+    rig = Rig(tmp_path)
+    _inplace_layout(rig, dev_a="/dev/disk/by-partuuid/e17a5d01-05", dev_b="/dev/disk/by-partuuid/e17a5d01-06",
+                    partuuids=("e17a5d01-05", "e17a5d01-06"))
+    rig.updater.upgrade(reboot=False)
+    assert len(rig.run.installs) == 1
+
+
+@pytest.mark.parametrize("dev_b", ["/dev/disk/by-partuuid/6a783df4-06",     # right number, another disk (the stock eMMC id)
+                                   "/dev/disk/by-partuuid/e17a5d01-02"])    # right disk, wrong partition
+def test_upgrade_refuses_by_partuuid_slots_that_are_not_the_layouts_partitions(tmp_path, dev_b):
+    rig = Rig(tmp_path)
+    _inplace_layout(rig, dev_a="/dev/disk/by-partuuid/e17a5d01-05", dev_b=dev_b, partuuids=("e17a5d01-05", "e17a5d01-06"))
+    with pytest.raises(FlashError) as exc:
+        rig.updater.upgrade(reboot=False)
+    assert exc.value.code == "slot_layout" and rig.run.installs == []
 
 
 def test_partially_flashed_mcus_are_all_put_back_when_a_later_board_fails(tmp_path):

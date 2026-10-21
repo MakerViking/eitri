@@ -1,37 +1,59 @@
 #!/bin/sh
 # SPDX-License-Identifier: Apache-2.0
-# Grow the "data" partition (partition 4) to the end of the disk.
+# Grow the data partition to the end of the disk it lives on.
 #
-# The disk image is written to the start of the eMMC, so the backup GPT sits
-# inside the disk instead of at its end and the data partition is small. sfdisk
-# moves the backup GPT as part of rewriting the table; "-N 4" with a size of "+"
-# makes partition 4 as large as possible. The kernel is then told about the new
-# size with partx. The file system itself is grown online by eitri-data-init
-# once it is mounted.
+# Two layouts, both found from the kernel command line, never from a fixed
+# device name:
 #
-# Safe to run on every boot: it does nothing unless the partition is named
-# "data" and there is room to grow, and it never exits non-zero, because a
-# failure to grow must not stop the boot.
+#  * the flash-once GPT image (eitri.disk=/dev/mmcblkN, passed by the Eitri
+#    U-Boot): the partition named "data" (partition 4). The image is written to
+#    the start of the eMMC, so the backup GPT sits inside the disk instead of at
+#    its end and the data partition is small. sfdisk moves the backup GPT as
+#    part of rewriting the table; "-N 4" with a size of "+" makes partition 4 as
+#    large as possible.
 #
-# Environment overrides, used by the tests: EITRI_CMDLINE, EITRI_DISK.
+#  * a DOS disk started by the in-place boot.scr (stock U-Boot), only when it
+#    asks for it with eitri.growdata=1 (the bench microSD image, os/bench/).
+#    The data partition is eitri.data=PARTUUID=<label-id>-<nn>: the last
+#    logical partition, at the end of its extended container. Both the
+#    container and the partition are enlarged. An in-place conversion of the
+#    eMMC does not pass eitri.growdata=1 (its data partition already fills the
+#    disk), so it is never touched here.
+#
+# In both cases the disk is only modified when it is the disk that holds the
+# running root file system (a DOS disk must also carry the label-id of the
+# root= PARTUUID): a stale or wrong command line can never make this script
+# repartition another disk, such as a stock eMMC next to a bench microSD card.
+# The kernel is then told about the new size with partx. The file system itself
+# is grown online by eitri-data-init once it is mounted.
+#
+# Safe to run on every boot: it does nothing unless every check passes and
+# there is room to grow, and it never exits non-zero, because a failure to grow
+# must not stop the boot.
+#
+# Environment overrides, used by the tests: EITRI_CMDLINE, EITRI_DISK (the disk
+# to grow, instead of the one found from the command line), EITRI_ROOT_DISK
+# (the disk holding /, instead of the one found through sysfs).
 
 set -u
 
 CMDLINE=${EITRI_CMDLINE:-/proc/cmdline}
 disk=${EITRI_DISK:-}
-if [ -z "$disk" ]; then
-	# shellcheck disable=SC2013  # words of the command line, split on purpose
-	for word in $(cat "$CMDLINE"); do
-		case "$word" in
-		eitri.disk=*) disk=${word#eitri.disk=} ;;
-		esac
-	done
-fi
+gpt_disk=
+data_spec=
+root_spec=
+grow_dos=0
+# shellcheck disable=SC2013  # words of the command line, split on purpose
+for word in $(cat "$CMDLINE" 2>/dev/null); do
+	case "$word" in
+	eitri.disk=*) gpt_disk=${word#eitri.disk=} ;;
+	eitri.data=*) data_spec=${word#eitri.data=} ;;
+	eitri.growdata=1) grow_dos=1 ;;
+	root=*) root_spec=${word#root=} ;;
+	esac
+done
 
 log() { echo "grow-data: $*"; }
-
-[ -n "$disk" ] || { log "no eitri.disk= on the kernel command line, nothing to do"; exit 0; }
-[ -e "$disk" ] || { log "$disk does not exist"; exit 0; }
 
 sectors() {
 	if [ -b "$1" ]; then
@@ -41,36 +63,167 @@ sectors() {
 	fi
 }
 
-# "name=data" is the guard: only touch a table that looks like an Eitri image.
-line=$(sfdisk -d "$disk" 2>/dev/null | grep -E ' : .*name="data"') || {
-	log "no partition named \"data\" on $disk, leaving the partition table alone"
-	exit 0
+# The whole disk a partition device belongs to, from sysfs: /dev/mmcblk0p7 -> /dev/mmcblk0.
+disk_of_partition() {
+	name=$(basename "$(readlink -f "$1")")
+	sys=$(readlink -f "/sys/class/block/$name" 2>/dev/null) || return 1
+	[ -e "$sys/partition" ] || return 1
+	echo "/dev/$(basename "$(dirname "$sys")")"
 }
-number=$(printf '%s\n' "$line" | sed -E 's#^[^ ]*[^0-9]([0-9]+) :.*#\1#')
-start=$(printf '%s\n' "$line" | sed -E 's#.*start= *([0-9]+).*#\1#')
-size=$(printf '%s\n' "$line" | sed -E 's#.*size= *([0-9]+).*#\1#')
-if [ -z "$number" ] || [ -z "$start" ] || [ -z "$size" ]; then
-	log "cannot parse the partition table of $disk"
-	exit 0
-fi
 
-total=$(sectors "$disk")
-# The backup GPT is 32 sectors of entries plus the header, so the last usable
-# sector is total - 34. 2048 sectors (1 MiB) of slack absorb sfdisk's alignment.
-last_usable=$((total - 34))
-end=$((start + size - 1))
-if [ $((last_usable - end)) -lt 2048 ]; then
-	log "partition $number already fills $disk"
-	exit 0
-fi
+# The disk that holds the running root file system.
+root_disk() {
+	if [ -n "${EITRI_ROOT_DISK:-}" ]; then
+		echo "$EITRI_ROOT_DISK"
+		return 0
+	fi
+	devno=$(mountpoint -d / 2>/dev/null) || return 1
+	sys=$(readlink -f "/sys/dev/block/$devno" 2>/dev/null) || return 1
+	[ -e "$sys/partition" ] || return 1
+	echo "/dev/$(basename "$(dirname "$sys")")"
+}
 
-log "growing partition $number of $disk from $size sectors to the end of the disk"
-if ! echo ', +' | sfdisk --quiet --no-reread --no-tell-kernel -N "$number" "$disk"; then
-	log "sfdisk failed, /data keeps its current size"
-	exit 0
-fi
+# require_root_disk DISK: refuse (exit 0) unless DISK holds the running root file system.
+require_root_disk() {
+	rdisk=$(root_disk) || {
+		log "cannot tell which disk holds the root file system, leaving $1 alone"
+		exit 0
+	}
+	if [ "$(readlink -f "$1")" != "$(readlink -f "$rdisk")" ]; then
+		log "$1 does not hold the running root file system ($rdisk does), leaving it alone"
+		exit 0
+	fi
+}
 
-if [ -b "$disk" ]; then
-	partx --update --nr "$number" "$disk" || log "partx could not update the kernel, a reboot will pick up the new size"
+# field LINE KEY: the number after "KEY=" in one sfdisk -d line.
+field() {
+	printf '%s\n' "$1" | sed -nE "s#.*[ ,]$2= *([0-9a-fA-F]+).*#\\1#p"
+}
+
+grow_gpt() {
+	[ -e "$disk" ] || { log "$disk does not exist"; exit 0; }
+	require_root_disk "$disk"
+	# "name=data" is the guard: only touch a table that looks like an Eitri image.
+	line=$(sfdisk -d "$disk" 2>/dev/null | grep -E ' : .*name="data"') || {
+		log "no partition named \"data\" on $disk, leaving the partition table alone"
+		exit 0
+	}
+	number=$(printf '%s\n' "$line" | sed -E 's#^[^ ]*[^0-9]([0-9]+) :.*#\1#')
+	start=$(field "$line" start)
+	size=$(field "$line" size)
+	if [ -z "$number" ] || [ -z "$start" ] || [ -z "$size" ]; then
+		log "cannot parse the partition table of $disk"
+		exit 0
+	fi
+
+	total=$(sectors "$disk")
+	# The backup GPT is 32 sectors of entries plus the header, so the last usable
+	# sector is total - 34. 2048 sectors (1 MiB) of slack absorb sfdisk's alignment.
+	last_usable=$((total - 34))
+	end=$((start + size - 1))
+	if [ $((last_usable - end)) -lt 2048 ]; then
+		log "partition $number already fills $disk"
+		exit 0
+	fi
+
+	log "growing partition $number of $disk from $size sectors to the end of the disk"
+	if ! echo ', +' | sfdisk --quiet --no-reread --no-tell-kernel -N "$number" "$disk"; then
+		log "sfdisk failed, /data keeps its current size"
+		exit 0
+	fi
+	if [ -b "$disk" ]; then
+		partx --update --nr "$number" "$disk" || log "partx could not update the kernel, a reboot will pick up the new size"
+	fi
+}
+
+grow_dos() {
+	spec=${data_spec#PARTUUID=}
+	if [ "$spec" = "$data_spec" ] || ! printf '%s\n' "$spec" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{2}$'; then
+		log "eitri.data=$data_spec is not a DOS PARTUUID, leaving the partition table alone"
+		exit 0
+	fi
+	label_id=${spec%-*}
+	number=$((0x${spec#*-}))
+	# The root file system must be on the same DOS disk (same label-id).
+	case "$root_spec" in
+	PARTUUID="$label_id"-??) ;;
+	*)
+		log "root=$root_spec is not on the disk with label-id 0x$label_id, leaving the partition table alone"
+		exit 0
+		;;
+	esac
+	if [ -z "$disk" ]; then
+		dev=/dev/disk/by-partuuid/$spec
+		[ -b "$dev" ] || { log "$dev does not exist"; exit 0; }
+		disk=$(disk_of_partition "$dev") || { log "cannot find the disk of $dev"; exit 0; }
+	fi
+	[ -e "$disk" ] || { log "$disk does not exist"; exit 0; }
+	require_root_disk "$disk"
+
+	dump=$(sfdisk -d "$disk" 2>/dev/null) || { log "cannot read the partition table of $disk"; exit 0; }
+	printf '%s\n' "$dump" | grep -qx 'label: dos' || { log "$disk has no DOS partition table, leaving it alone"; exit 0; }
+	printf '%s\n' "$dump" | grep -qix "label-id: 0x$label_id" || {
+		log "$disk does not carry label-id 0x$label_id, leaving it alone"
+		exit 0
+	}
+	[ "$number" -ge 5 ] || { log "partition $number is not a logical partition, leaving the table alone"; exit 0; }
+
+	parts=$(printf '%s\n' "$dump" | grep -E '^[^ ]*[^0-9][0-9]+ : ')
+	line=$(printf '%s\n' "$parts" | grep -E "^[^ ]*[^0-9]$number : ") || { log "no partition $number on $disk"; exit 0; }
+	start=$(field "$line" start)
+	size=$(field "$line" size)
+	[ -n "$start" ] && [ -n "$size" ] || { log "cannot parse the partition table of $disk"; exit 0; }
+	end=$((start + size))
+
+	ext_nr=
+	ext_end=
+	last_start=0
+	for nr in $(printf '%s\n' "$parts" | sed -E 's#^[^ ]*[^0-9]([0-9]+) : .*#\1#'); do
+		l=$(printf '%s\n' "$parts" | grep -E "^[^ ]*[^0-9]$nr : ")
+		s=$(field "$l" start)
+		z=$(field "$l" size)
+		t=$(field "$l" type)
+		[ -n "$s" ] && [ -n "$z" ] || continue
+		[ "$s" -gt "$last_start" ] && last_start=$s
+		case "$t" in
+		5 | f | 85)
+			if [ "$nr" -le 4 ] && [ "$s" -lt "$start" ] && [ $((s + z)) -ge "$end" ]; then
+				ext_nr=$nr
+				ext_end=$((s + z))
+			fi
+			;;
+		esac
+	done
+	[ "$last_start" = "$start" ] || { log "partition $number is not the last partition of $disk, leaving the table alone"; exit 0; }
+	[ -n "$ext_nr" ] || { log "partition $number is not inside an extended partition, leaving the table alone"; exit 0; }
+	[ "$ext_end" = "$end" ] || { log "the extended partition does not end with partition $number, leaving the table alone"; exit 0; }
+
+	total=$(sectors "$disk")
+	if [ $((total - end)) -lt 2048 ]; then
+		log "partition $number already fills $disk"
+		exit 0
+	fi
+
+	log "growing extended partition $ext_nr and partition $number of $disk from $size sectors to the end of the disk"
+	if ! echo ', +' | sfdisk --quiet --no-reread --no-tell-kernel -N "$ext_nr" "$disk"; then
+		log "sfdisk could not enlarge the extended partition, /data keeps its current size"
+		exit 0
+	fi
+	if ! echo ', +' | sfdisk --quiet --no-reread --no-tell-kernel -N "$number" "$disk"; then
+		log "sfdisk failed, /data keeps its current size"
+		exit 0
+	fi
+	if [ -b "$disk" ]; then
+		partx --update --nr "$number" "$disk" || log "partx could not update the kernel, a reboot will pick up the new size"
+	fi
+}
+
+if [ -n "$gpt_disk" ] || { [ -n "$disk" ] && [ "$grow_dos" != 1 ]; }; then
+	[ -n "$disk" ] || disk=$gpt_disk
+	grow_gpt
+elif [ "$grow_dos" = 1 ] && [ -n "$data_spec" ]; then
+	grow_dos
+else
+	log "no eitri.disk= and no eitri.growdata=1 on the kernel command line, nothing to do"
 fi
 exit 0
