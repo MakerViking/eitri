@@ -47,6 +47,13 @@ else
 	rm -f "$DEFCONFIG.new"
 fi
 
+# Local-site packages (SITE_METHOD = local) are not re-synced by Buildroot after their first build;
+# rebuild them so the QEMU image tests the current repo, not a stale copy.
+if [ $# -eq 0 ] || [ "$*" = all ]; then
+	local_pkgs=$(grep -l "SITE_METHOD = local" "$OS_DIR"/package/*/*.mk | xargs -n1 basename | sed "s/\.mk$//")
+	# shellcheck disable=SC2046
+	make -C "$BR_DIR" BR2_EXTERNAL="$OS_DIR" O="$OUT" $(printf "%s-rebuild " $local_pkgs)
+fi
 make -C "$BR_DIR" BR2_EXTERNAL="$OS_DIR" O="$OUT" "$@"
 
 # Every line of both kernel fragments must have survived Kconfig; a silently reverted option is a bug.

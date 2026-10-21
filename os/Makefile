@@ -96,7 +96,13 @@ savedefconfig: $(OUT)/.config
 	$(BR) BR2_DEFCONFIG=$(OS_DIR)/configs/$(DEFCONFIG) savedefconfig
 
 # --- Build ---------------------------------------------------------------
+# Packages with SITE_METHOD = local are rsynced from this repo only on their first build;
+# Buildroot does not notice later source edits. Rebuild them every time so an image never
+# ships a stale component.
+LOCAL_PKGS := $(shell grep -l 'SITE_METHOD = local' $(OS_DIR)/package/*/*.mk | xargs -n1 basename | sed 's/\.mk$$//')
+
 image: $(OUT)/.config
+	$(BR) $(addsuffix -rebuild,$(LOCAL_PKGS))
 	$(BR)
 	@ls -lh $(IMAGES)/eitri-plus4.img $(IMAGES)/eitri-plus4-*.raucb
 

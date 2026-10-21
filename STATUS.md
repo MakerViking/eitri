@@ -25,6 +25,10 @@ Test counts are from the final `make test` of the hardening run (all suites pass
 
 ## Measurements (QEMU virt, no printer)
 
+**Re-measured 2026-10-22 on the hardened code** (after fixing the stale local-package build, see below): boot 1 (blank /data) = 0.49 s kernel + 17.6 s userspace to `multi-user.target`; boot 2 = 0.49 s + **13.0 s** (was 29.9 s — the camera unit no longer blocks boot); idle ≈ **143 MiB** used of 982 MiB; 16/16 smoke checks pass. `eitri-prepare`/`eitri-verify` now fail only because QEMU boots without a bootloader (no `eitri.slot=`), which is correct behaviour; the `/data/eitri/logs` bug is fixed.
+
+**Build-system fix (2026-10-22):** Buildroot only rsyncs `SITE_METHOD = local` packages (eitri-camera, eitri-configurator, eitri-klipper-layer, eitri-mcuflash) on their first build, so earlier images/QEMU runs shipped stale copies after code edits. `make -C os image` and `os/qemu/build.sh` now run `<pkg>-rebuild` for every local package first.
+
 `os/qemu/smoke-test.sh` boots the real image (same Buildroot tree, overlay, packages and units; no TF-A or
 U-Boot) on a blank `/data`, powers off, boots again on the same `/data` and writes a report. QEMU virt is
 4 x Cortex-A53 under TCG (software emulation) with 1024 MiB: **times compare one run with the next, not with

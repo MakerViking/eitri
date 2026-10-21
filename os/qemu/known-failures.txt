@@ -5,9 +5,8 @@
 # kind "qemu" is a difference of the virtual machine (not a defect); kind "bug" is a defect in a
 # shared file that smoke.py reports as a known failure until it is fixed. Delete a line when its
 # cause is gone: smoke.py warns when a listed unit did not fail.
-eitri-mark-good.service   qemu  no RAUC slot: the kernel command line has no rauc.slot=, there is no eMMC (the unit is skipped while /usr/bin/eitri-update exists, so it normally does not even start)
 #
-# eitri-camera.service is not listed: with no camera it never settles in "failed", it cycles between
-# "activating (start-pre)" and "auto-restart" (smoke.py checks that it is not running).
-eitri-prepare.service     bug   was: data-init never created /data/eitri/logs (fixed in data-init; stays listed until a QEMU run shows the unit passes)
-eitri-verify.service      bug   same cause as eitri-prepare.service
+# eitri-camera.service is not listed: with no camera its ConditionPathExists=/dev/eitri-cam skips it
+# (inactive/dead) and multi-user.target is no longer delayed (verified 2026-10-22).
+eitri-prepare.service     qemu  no boot slot: QEMU boots the kernel directly, so there is no eitri.slot=/rauc.slot= on the command line and eitri-update refuses (correct). The /data/eitri/logs bug is fixed (verified 2026-10-22).
+eitri-verify.service      qemu  same cause as eitri-prepare.service (no boot slot under QEMU)
