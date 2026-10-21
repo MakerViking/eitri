@@ -26,6 +26,13 @@ from eitri_mcuflash.fsutil import atomic_write
 from eitri_mcuflash.proc import Runner, run
 
 STATE_KEYS = ("eitri_mode", "eitri_slot", "eitri_tries", "eitri_state_A", "eitri_state_B")
+# What boot.scr (installer/boot/boot.cmd) takes over from the two files: `env import -t ADDR SIZE <these>` only, so a
+# hand-edited file cannot set anything else (where fatwrite writes, what `run` executes).  Every writer of the files
+# (this module, installer/install.sh, installer/stage2/stage2.sh, installer/revert.sh, os/bench/mk-sd-bench.sh) must
+# stay within these lists; installer/tests/test_boot_script.py checks both sides.
+BOOT_SCR_STATE_KEYS = STATE_KEYS + ("eitri_s2_tries",)
+LAYOUT_KEYS = ("eitri_part_A", "eitri_part_B", "eitri_partuuid_A", "eitri_partuuid_B", "eitri_cmdline", "eitri_hide_emmc",
+               "eitri_s2_kernel", "eitri_s2_fdt", "eitri_s2_initrd", "eitri_s2_args")
 SLOTS = ("A", "B")
 MODES = ("eitri", "stage2", "stock")
 MAX_TRIES = 3

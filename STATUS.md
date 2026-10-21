@@ -19,6 +19,16 @@ deliberately refuses to run.
   checks passes, with the Klipper seed and with the Kalico seed. klippy loads the rendered `printer.cfg` and every `qd_*`
   extra and then, correctly, cannot find an MCU.
 * What is still unproven is everything that needs a printer: see "Needs hardware" and "Next steps".
+* **Bench microSD card** (`os/bench/mk-sd-bench.sh`, `os/bench/README.md`): the stock eMMC U-Boot boots it from the SD slot and the
+  eMMC is never written. Its `boot.scr` also **hides the eMMC from Linux** (`eitri_hide_emmc=1` in the card's `layout.env`:
+  `fdt set /mmc@ff520000 status disabled` before `booti`, no Eitri boot if that fails), proven in the U-Boot 2021.07 sandbox on the
+  real build output; the in-place eMMC install never sets it. Current image: `build/bench/eitri-sd-bench.img`, 2,336,227,328 B
+  (2228 MiB), sha256 `ab1fef76084c9f1fd159d6d5c2274fc635b75fef6d4be3acab4223be034a657f`, built from 5caa463 + this change.
+* **Hardening from an independent audit (2026-10-21):** `boot.scr` imports only a fixed variable list from `boot.env`/`layout.env`
+  (a hand-edited file can no longer redirect its `fatwrite` or what it runs); through sudo, `eitri-update` refuses `--config`,
+  `--manifest-url`, `--key-dir`, `--data-root`, `--allow-insecure`, `--allow-downgrade` and another `--events-file`; nothing root runs
+  executes the service user's files on `/data` as root any more (`overlay-install.sh`, Klipper's `spi_flash.py`, firmware `make`, git in
+  the clone run as the owner via `eitri_mcuflash/privs.py`; git also with fsmonitor and hooks off).
 
 ## Components
 
@@ -26,10 +36,10 @@ deliberately refuses to run.
 |---|---|---|---|
 | Repository core (`README`, `docs/`, `release.lock`, licences, CI, `tools/release`) | done | `tools/check-repo.py`: 1284 checks; release tooling 106 passed; `tools/lint.py` clean | Python and nginx source digests are resolved from Buildroot at build time, not pinned in `release.lock`. Every pin is `tested = false`. Klipper is pinned to an untested master commit. No release key is committed (the public halves do not exist yet). CI has never run on GitHub. |
 | `seed/` (data seed: build, verify, reference installer) | done (never on a printer) | 159 passed (spec, manifest, archive policy, installer on synthetic and real seeds, built-seed checks, workflow shape); `make seed` verifies both seeds under qemu-aarch64 | The CI workflow (`data-seed.yml`, also called by `os-image.yml` and `qemu-smoke.yml`) has not run on GitHub; the Ubuntu gcc and the pinned python-build-standalone headers path was only emulated locally. First-boot timing of an unpack on the A53 and the first slow `git status` are unmeasured. |
-| `os/` (Buildroot image, RAUC bundle, U-Boot, kernel, DTS, QEMU rig) | partial | 234 passed, 4 skipped (U-Boot sandbox); `check-pins` and `check-defconfig` (163 options) pass; QEMU smoke test 75/75 with the Klipper seed and 75/75 with the Kalico seed | Never booted on the board. No release signing CA or key is committed. U-Boot sandbox tests skip (no sandbox build here). |
+| `os/` (Buildroot image, RAUC bundle, U-Boot, kernel, DTS, QEMU rig) | partial | 253 passed, 4 skipped (U-Boot sandbox); `check-pins` and `check-defconfig` (163 options) pass; QEMU smoke test 77/77 with the Klipper seed (2026-10-22, incl. the two privilege checks) and 75/75 with the Kalico seed (before them) | Never booted on the board. No release signing CA or key is committed. U-Boot sandbox tests skip (no sandbox build here). |
 | `klarity/` (screen daemon) | partial | 242 passed (warnings are errors), ruff clean | Screen map is 66 pages / 511 widgets, **104 flagged `todo`**, none checked against a live panel. The **Unlock setup** button reuses stock Settings widget 9 (page 0x3e) and the text field `t7`: both are assumptions about the panel. File browser, preview/print start, session state, thumbnails and forced page changes are not expressible. No camera page exists in the stock UI. Home e-stop widget is still `todo` (inert). |
 | `klipper-layer/` (qd_* extras, printer.cfg template, macros) | partial | 259 passed: unit tests, overlay install on throw-away clones of Klipper and Kalico, render tests, licence tags, real klippy batch tests for both flavors | `qd_probe` and `qd_reverse_home` are **stubs** (they refuse to load). Macros, currents, probe, interlock, power-loss recovery and the new 85 °C chamber backstop are untested on a machine. |
-| `installer/` (in-place install, `eitri-mcuflash`, `eitri-update`, boot manager, seed/MCU delivery, flavor switch) | partial | mcuflash 102, eitri-update 223, installer suite 162 passed (includes a real U-Boot 2021.07 sandbox run of `boot.scr`) | Never run against a board. No release signing key, placeholder download URLs, no stage-2 initramfs builder. The flasher refuses the toolhead (see "MCU firmware") and has no `hid-flash` path for the mainboard. |
+| `installer/` (in-place install, `eitri-mcuflash`, `eitri-update`, boot manager, seed/MCU delivery, flavor switch) | partial | mcuflash 114, eitri-update 241, installer suite 179 passed (includes a real U-Boot 2021.07 sandbox run of `boot.scr` and of the bench card) | Never run against a board. No release signing key, placeholder download URLs, no stage-2 initramfs builder. The flasher refuses the toolhead (see "MCU firmware") and has no `hid-flash` path for the mainboard. |
 | `mcu/` (MCU firmware parameters, configs, build and packaging tooling) | partial (**no firmware built**) | 48 passed, 1 skipped (artifact checks skip without a build) | Nothing compiled: the parameter gate stops the build while the toolhead is unresolved, and no toolchain is pinned in `release.lock`. The compile path has never run. See "MCU firmware". |
 | `configurator/` (setup wizard, port 8099) | done | 170 passed, including the real `eitri-mcuflash` CLI against non-existent ports, the real klipper-layer renderer and the real `eitri-access` helper | Pairing, lock/retire, nmcli handling, polkit and the remote-access step are proven in QEMU, not on hardware. |
 | `camera/` (ustreamer, go2rtc, udev) | done | 125 passed, 0 failed, 4 skipped (hardware only), including real go2rtc 1.9.14 auth enforcement | ustreamer v6.67 flags unchecked against the real binary. The 23.7 fps cause is unknown. `/webcam/` has no authentication (RTSP does). |
@@ -94,7 +104,7 @@ critical path is device probing, `eitri-data-init` and sshd). Details of the rig
 
 ## What the first-run setup checks in QEMU
 
-`os/qemu/smoke.py` (75 checks; the rootfs is the real image, `/data` is built from the seed by the same `mkdata.sh` as the
+`os/qemu/smoke.py` (77 checks; the rootfs is the real image, `/data` is built from the seed by the same `mkdata.sh` as the
 printer image, only the kernel's platform options and the missing hardware differ):
 
 * the seed is on `/data` from the first boot, the Klipper clone has a clean `git status`, Klipper/Moonraker/Klarity wait quietly
@@ -104,6 +114,8 @@ printer image, only the kernel's platform options and the missing hardware diffe
 * Klipper, Moonraker, Klarity active with no restarts; Moonraker answers on `127.0.0.1:7125` and through nginx on 80, and not on
   the guest's address; klippy loaded the config with all its `qd_*` extras and reports only the missing MCU; Klarity has the
   Unlock-setup feature and a valid map and waits for `/dev/ttyS1` with a back-off instead of crash-looping;
+* privileges: `sudo -n eitri-update --data-root ...` from the eitri account is refused, and root's helpers run a `/data` command
+  as eitri (uid/gid 1000, dialout) and git in the Klipper clone as its owner (`eitri_mcuflash/privs.py` on the real image);
 * the optional **root-access step**: add an SSH key through `sudo -n eitri-access`, log in over SSH with it from the host, remove it,
   login refused;
 * finish: the configurator locks and **retires** by itself; Klarity's sandbox (a transient unit with `klarity.service`'s own mount,
@@ -254,7 +266,9 @@ with versions and hashes (`venvs.*.packages`), but no licence report exists for 
 ## Needs hardware (none of this is proven)
 
 * **Boot chain:** open TPL DRAM init on this board (fallback: Rockchip DDR blob), BootROM order between microSD and eMMC, mmcblk
-  numbering, A/B state sector, TF-A v2.15 BL31, Ethernet (gmac2phy), USB VBUS pin for the camera, regulators.
+  numbering, A/B state sector, TF-A v2.15 BL31, Ethernet (gmac2phy), USB VBUS pin for the camera, regulators. The bench card's
+  `fdt addr/resize/set` on the stock U-Boot (the commands are in its help text; only the 2021.07 sandbox has run them), and that the
+  card's Linux then lists no `mmcblk` for the eMMC.
 * **MCUs** (see "MCU firmware"): the toolhead's bootloader and application offset (Katapult? stock?) and a read of `SCB->VTOR` on both
   boards, both read-only through klippy's `debug_read` or a Katapult handshake. The UART assignment itself is settled by the live
   `klippy.log` (`/dev/ttyS0` = mainboard, `/dev/ttyS2` = toolhead) and is still confirmed by `eitri-mcuflash plan`, which binds boards by chip.

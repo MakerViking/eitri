@@ -253,7 +253,8 @@ ensure_parent() { # make the parent directory of $1 (a path below $DATA), owned 
 is_empty_dir() { [ -d "$1" ] && [ ! -L "$1" ] && [ -z "$(ls -A "$1" 2>/dev/null)" ]; }
 
 installed_commit() { # installed_commit DIR -> HEAD commit, or nothing
-	if command -v git >/dev/null 2>&1; then git -c safe.directory='*' -C "$1" rev-parse HEAD 2>/dev/null || true; fi
+	# Run as root over the service user's clone: no fsmonitor program and no hooks from the clone's own config.
+	if command -v git >/dev/null 2>&1; then git -c core.fsmonitor= -c core.hooksPath=/dev/null -c safe.directory='*' -C "$1" rev-parse HEAD 2>/dev/null || true; fi
 }
 
 recorded() { # recorded KEY -> value from the marker of the installed seed

@@ -17,6 +17,7 @@ import subprocess
 import tarfile
 from typing import Any, Dict, Iterable, List, Optional
 
+from eitri_mcuflash import privs
 from eitri_mcuflash.errors import FlashError
 from eitri_mcuflash.events import EventSink
 from eitri_mcuflash.fsutil import atomic_write, fsync_dir
@@ -233,7 +234,8 @@ class UpstreamMode:
         git_dir = os.path.join(self.paths.klipper, ".git")
         if not os.path.isdir(git_dir):
             raise FlashError("%s is not a git clone, so there is nothing to follow upstream" % self.paths.klipper, code="no_clone")
-        res = self.runner(["git", "-C", self.paths.klipper, "status", "--porcelain"])
+        # git status reads the clone's own config (core.fsmonitor, hooks): hardened, and as the service user when root.
+        res = self.runner(privs.git_argv(self.paths.klipper, "status", "--porcelain"))
         if res.returncode == 0 and res.output.strip():
             self.events.warn("the Klipper tree has local modifications; Moonraker will refuse to update it until they are cleaned up")
 

@@ -444,6 +444,17 @@ def setup_scenario(boot: Boot, ports: dict[str, int], run_dir: Path, report_dir:
     step("klipper, moonraker and klarity are active after Apply (they were skipped before)", ok, out)
     time.sleep(40)          # klippy connects, moonraker finds it, klarity opens (or waits for) its port
 
+    # --- root never runs the service user's files, and the eitri account's sudo rule cannot widen eitri-update ---
+    out, _ = boot.cmd("sudo -u eitri sudo -n /usr/bin/eitri-update --data-root /tmp/fake status; echo rc=$?", 60)
+    step("eitri-update refuses trust-affecting options through the eitri account's sudo rule",
+         re.search(r"rc=2\b", out) is not None and "refusing --data-root through sudo" in out, out)
+    out, _ = boot.cmd("sudo python3 -I -c 'import subprocess as s; from eitri_mcuflash import privs as p; "
+                      "r = lambda a: s.run(a, stdout=s.PIPE, stderr=s.STDOUT, universal_newlines=True); "
+                      "print(r(p.as_service_user([\"id\"])).stdout); "
+                      "g = r(p.git_argv(\"/data/firmware/klipper\", \"status\", \"--porcelain\")); print(\"git-rc=%d\" % g.returncode)'", 60)
+    step("root's helpers run /data commands as eitri (uid, gid, dialout) and git in the clone as its owner",
+         re.search(r"uid=1000\(eitri\) gid=1000\(eitri\)", out) is not None and "dialout" in out and "git-rc=0" in out, out)
+
     # --- optional root access, off by default: add a key, log in with it over SSH, take it away again ---
     key = run_dir / "id_smoke"
     for f in (key, key.with_suffix(".pub")):

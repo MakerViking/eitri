@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from typing import List, Optional
 
+from eitri_mcuflash import privs
 from eitri_mcuflash.errors import FlashError
 from eitri_mcuflash.events import EventSink
 from eitri_mcuflash.proc import Runner, run
@@ -82,8 +84,47 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: Optional[List[str]] = None, *, runner: Runner = run, opener=fetch._open, updater_factory=None) -> int:
+# The eitri account may run eitri-update as root through sudo (etc/sudoers.d/eitri, needed for switch-flavor from the
+# screen and for updates from a shell).  That account also runs the network-facing services, so through sudo nothing may
+# change WHAT is trusted or WHERE root writes: no other config, manifest, keys, data root, plain http, downgrade, or
+# event log.  Root itself (systemd units, a root shell with the SUDO_* variables unset) keeps every option.
+DEFAULT_DATA_ROOT = "/data"
+DEFAULT_EVENTS_FILE = "/data/eitri/logs/update.jsonl"
+
+
+def invoked_through_sudo(environ=None) -> bool:
+    env = os.environ if environ is None else environ
+    return privs.is_root() and any(env.get(k) for k in ("SUDO_UID", "SUDO_USER", "SUDO_COMMAND"))
+
+
+def sudo_refusals(args) -> List[str]:
+    """The options of *args* that a sudo caller may not use (empty: allowed)."""
+    bad = []
+    if args.config != CONF_PATH:
+        bad.append("--config")
+    if args.manifest_url:
+        bad.append("--manifest-url")
+    if args.key_dir:
+        bad.append("--key-dir")
+    if args.data_root != DEFAULT_DATA_ROOT:
+        bad.append("--data-root")
+    if args.allow_insecure:
+        bad.append("--allow-insecure")
+    if args.events_file not in (None, DEFAULT_EVENTS_FILE):
+        bad.append("--events-file (only %s)" % DEFAULT_EVENTS_FILE)
+    if getattr(args, "allow_downgrade", False):
+        bad.append("--allow-downgrade")
+    return bad
+
+
+def main(argv: Optional[List[str]] = None, *, runner: Runner = run, opener=fetch._open, updater_factory=None, environ=None) -> int:
     args = build_parser().parse_args(argv)
+    if invoked_through_sudo(environ):
+        bad = sudo_refusals(args)
+        if bad:
+            sys.stderr.write("eitri-update: refusing %s through sudo: these options change what is trusted or where root "
+                             "writes. Run them as root itself (a root shell without the SUDO_* variables).\n" % ", ".join(bad))
+            return 2
     events = EventSink(component="update", json_out=sys.stdout if args.json else None,
                        human_out=None if args.json else sys.stderr, events_file=args.events_file)
     cfg = Config.load(args.config)

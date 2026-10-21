@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """boot.cmd executed by a real U-Boot hush interpreter (see ubootsim.py)."""
 import os
+import re
+import shutil
 
 import pytest
 
@@ -129,3 +131,114 @@ def test_script_text_has_no_unshimmed_surprises():
     text = open(os.path.join(ubootsim.BOOT_DIR, "boot.cmd")).read()
     # the only commands that leave U-Boot are these two, both last-resort paths
     assert text.count("booti ") == 2 and text.count("\nsysboot ") == 1
+
+
+# --- what the two files may set (env import whitelist) --------------------------------------------------------------------
+
+def test_a_hand_edited_boot_env_cannot_redirect_writes_or_run_commands(tmp_path):
+    """boot.env is imported with ${eitri_keys} only: eitri_dev (where fatwrite writes), eitri_save (what `run` executes)
+    and eitri_hide_emmc in it are ignored."""
+    sim = BootSim(tmp_path, env(), extra_boot_env="eitri_dev=host 7:1\neitri_save=echo INJECTED-SAVE\neitri_hide_emmc=1\n"
+                                                  "eitri_keys=eitri_mode\nbootcmd=echo INJECTED-BOOTCMD\n",
+                  dtb=ubootsim.make_dtb(tmp_path), probe_fdt=True)
+    out, after = sim.boot()
+    assert "INJECTED" not in out
+    assert after["eitri_tries"] == "2" and after["eitri_state_A"] == "unknown"   # written to the real boot partition, all keys
+    assert "BOOTI" in out and "FDT-PROBE emmc=[okay]" in out and "eMMC controller" not in out
+
+
+def test_a_hand_edited_layout_env_cannot_redirect_writes_either(tmp_path):
+    out, after = BootSim(tmp_path, env(), extra_layout_env="eitri_dev=host 7:1\neitri_save=echo INJECTED-SAVE\n").boot()
+    assert "INJECTED" not in out and after["eitri_tries"] == "2" and "BOOTI" in out
+
+
+def _imports(text):
+    return [line.split()[5:] for line in text.splitlines() if line.strip().startswith("env import")]
+
+
+def test_boot_scr_imports_only_the_documented_variables():
+    from eitri_update.bootenv import BOOT_SCR_STATE_KEYS, LAYOUT_KEYS
+    text = open(os.path.join(ubootsim.BOOT_DIR, "boot.cmd")).read()
+    imports = _imports(text)
+    assert len(imports) == 3 and all(imports), "every env import names its variables"
+    assert all(len(line.split()) <= 16 for line in text.splitlines() if line.strip().startswith("env "))  # CONFIG_SYS_MAXARGS
+    assert set(imports[0] + imports[1]) == set(LAYOUT_KEYS) and len(imports[0] + imports[1]) == len(LAYOUT_KEYS)
+    assert imports[2] == ["${eitri_keys}"]
+    keys = re.search(r'^setenv eitri_keys "([^"]*)"$', text, re.M).group(1).split()
+    assert tuple(keys) == BOOT_SCR_STATE_KEYS
+
+
+def _written_keys(path, target):
+    """The variables a shell script writes into eitri/<target> (kv_write / kv_set / printf ... >layout.env)."""
+    text = open(path).read().replace("\\\n", " ")
+    keys = set()
+    for line in text.splitlines():
+        if target not in line or line.lstrip().startswith("#"):
+            continue
+        if re.search(r"\bkv_set\b", line):
+            m = re.search(r"kv_set\s+\S*%s\S*\s+(\w+)" % re.escape(target), line)
+            if m:
+                keys.add(m.group(1))
+        if re.search(r"\bkv_write\b|printf ", line):
+            keys |= set(re.findall(r'"(eitri_\w+)=', line))
+    return keys
+
+
+def test_every_writer_of_the_two_files_stays_within_the_imported_lists():
+    from eitri_update.bootenv import BOOT_SCR_STATE_KEYS, LAYOUT_KEYS, STATE_KEYS
+    repo = os.path.abspath(os.path.join(ubootsim.BOOT_DIR, "..", ".."))
+    writers = [os.path.join(repo, p) for p in ("installer/install.sh", "installer/stage2/stage2.sh", "installer/revert.sh",
+                                               "os/bench/mk-sd-bench.sh")]
+    layout, state = set(), set()
+    for path in writers:
+        layout |= _written_keys(path, "layout.env")
+        state |= _written_keys(path, "boot.env")
+    assert layout and layout <= set(LAYOUT_KEYS), layout - set(LAYOUT_KEYS)
+    assert state and state <= set(BOOT_SCR_STATE_KEYS), state - set(BOOT_SCR_STATE_KEYS)
+    assert set(STATE_KEYS) <= set(BOOT_SCR_STATE_KEYS)
+    assert "eitri_hide_emmc" in _written_keys(writers[3], "layout.env")             # the bench card, and only the bench card
+    assert not any("eitri_hide_emmc" in _written_keys(p, "layout.env") for p in writers[:3])
+
+
+# --- the bench card's eMMC hiding (eitri_hide_emmc=1 in layout.env) -------------------------------------------------------
+
+needs_dtc = pytest.mark.skipif(not shutil.which("dtc"), reason="dtc not installed")
+
+
+@needs_dtc
+def test_in_place_install_hands_linux_the_device_tree_unchanged(tmp_path):
+    """On a converted eMMC the eMMC IS the boot disk: its controller must stay enabled."""
+    out, after = BootSim(tmp_path, env(), dtb=ubootsim.make_dtb(tmp_path), probe_fdt=True).boot()
+    assert "BOOTI" in out and "FDT-PROBE emmc=[okay] sd=[okay] model=[eitri-test-board]" in out, out
+    assert "eMMC controller" not in out and "fdt" not in out.lower().replace("fdt-probe", "")
+
+
+@needs_dtc
+def test_bench_card_disables_the_emmc_controller_before_booti(tmp_path):
+    out, after = BootSim(tmp_path, env(eitri_hide_emmc="1"), dtb=ubootsim.make_dtb(tmp_path), probe_fdt=True).boot()
+    assert "Eitri: eMMC controller /mmc@ff520000 disabled for Linux" in out, out
+    assert "FDT-PROBE emmc=[disabled] sd=[okay] model=[eitri-test-board]" in out, out
+    assert out.index("disabled for Linux") < out.index("BOOTI") and after["eitri_tries"] == "2"
+
+
+@needs_dtc
+def test_bench_card_does_not_boot_a_device_tree_it_cannot_hide_the_emmc_in(tmp_path):
+    out, after = BootSim(tmp_path, env(eitri_hide_emmc="1"), dtb=ubootsim.make_dtb(tmp_path, emmc=False), probe_fdt=True).boot()
+    assert "cannot hide the eMMC from Linux, not booting Eitri" in out and "BOOTI" not in out and "SYSBOOT" in out
+
+
+def test_bench_card_does_not_boot_a_blob_that_is_no_device_tree(tmp_path):
+    out, after = BootSim(tmp_path, env(eitri_hide_emmc="1")).boot()           # the slot's "dtb" is text
+    assert "cannot hide the eMMC from Linux" in out and "BOOTI" not in out and "SYSBOOT" in out
+
+
+def test_bench_card_never_starts_the_installer_environment(tmp_path):
+    out, after = BootSim(tmp_path, env(eitri_mode="stage2", eitri_s2_tries="3", eitri_hide_emmc="1")).boot()
+    assert "not started from a card that hides the eMMC" in out and "BOOTI" not in out and "SYSBOOT" in out
+    assert after["eitri_s2_tries"] == "3"                 # nothing spent, nothing written
+
+
+def test_hide_flag_in_boot_env_does_not_count(tmp_path):
+    out, _ = BootSim(tmp_path, env(eitri_mode="stage2", eitri_s2_tries="3"), extra_boot_env="eitri_hide_emmc=1\n",
+                     booti_returns=False).boot()
+    assert "BOOTI bootargs=[console=tty1 rdinit=/init eitri.op=convert]" in out

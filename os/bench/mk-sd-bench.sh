@@ -15,6 +15,11 @@
 # environment sets fdtfile=rockchip/rk3328-roc-cc.dtb; the image's rootfs carries that name as a link to
 # rk3328-eitri-plus4.dtb, so nothing about the stock environment has to change.
 #
+# The card's layout.env sets eitri_hide_emmc=1: boot.scr then disables the eMMC controller (/mmc@ff520000, Linux's
+# mmc1) in the device tree it hands to the kernel (`fdt set /mmc@ff520000 status disabled`, the stock U-Boot has the
+# fdt command), so the running Eitri has no eMMC block device at all; if that edit fails it does not boot Eitri.
+# The build checks that the rootfs's device tree has that node. The in-place eMMC install never sets the variable.
+#
 # When Eitri does not boot (slot out of attempts, nothing loadable) boot.scr ends with a sysboot of
 # /extlinux/extlinux.conf.stock, which does not exist on the card: the script fails, distro_bootcmd moves on to mmc0
 # and the untouched stock system on the eMMC boots. Pulling the card does the same.
@@ -81,7 +86,7 @@ while [ $# -gt 0 ]; do
 	--headroom-mib) HEADROOM_MIB=${2:?}; shift 2 ;;
 	--disk-id) DISK_ID=${2:?}; shift 2 ;;
 	--stock-backup) STOCK_BACKUP=${2:?}; shift 2 ;;
-	-h | --help) sed -n '3,42p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	-h | --help) sed -n '3,47p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) die "unknown option: $1" ;;
 	esac
 done
@@ -93,7 +98,7 @@ DISK_ID=$(printf '%s' "$DISK_ID" | tr 'A-F' 'a-f')
 printf '%s\n' "$DISK_ID" | grep -Eqx '[0-9a-f]{8}' || die "--disk-id must be 8 hex digits"
 [ "$DISK_ID" != 00000000 ] || die "--disk-id must not be 0"
 
-for tool in sfdisk mkfs.vfat mcopy mmd mtype mdir mke2fs debugfs dumpe2fs blkid fakeroot python3 sha256sum truncate dd awk cmp; do
+for tool in sfdisk mkfs.vfat mcopy mmd mtype mdir mke2fs debugfs dumpe2fs blkid fakeroot python3 sha256sum truncate dd awk cmp fdtget; do
 	command -v "$tool" >/dev/null 2>&1 || die "$tool not found"
 done
 export MTOOLS_SKIP_CHECK=1
@@ -133,6 +138,7 @@ rtype() { debugfs -R "stat $1" "$ROOTFS" 2>/dev/null | sed -nE 's/.*Type: ([a-z]
 [ "$(rtype /boot/Image)" = regular ] || die "$ROOTFS has no /boot/Image"
 # boot.cmd loads /boot/dtb/${fdtfile}; the stock environment's fdtfile is rockchip/rk3328-roc-cc.dtb.
 FDTFILE=rockchip/rk3328-roc-cc.dtb
+DTB_PATH=/boot/dtb/$FDTFILE
 case "$(rtype "/boot/dtb/$FDTFILE")" in
 regular) ;;
 symlink)
@@ -140,9 +146,22 @@ symlink)
 	resolved=$(python3 -I -c 'import os, sys; print(os.path.normpath(os.path.join(os.path.dirname(sys.argv[1]), sys.argv[2])))' "/boot/dtb/$FDTFILE" "$target")
 	[ "$(rtype "$resolved")" = regular ] || die "/boot/dtb/$FDTFILE in $ROOTFS points at $target, which is not a file"
 	log "/boot/dtb/$FDTFILE -> $target ($resolved)"
+	DTB_PATH=$resolved
 	;;
 *) die "$ROOTFS has no /boot/dtb/$FDTFILE (the stock U-Boot's fdtfile)" ;;
 esac
+# boot.scr hides the eMMC by disabling /mmc@ff520000 in that device tree (eitri_hide_emmc=1); without the node it would
+# refuse to boot. Check that the node is there and is the eMMC: the RK3328's third dw-mshc, non-removable, Linux's mmc1.
+EMMC_NODE=/mmc@ff520000
+debugfs -R "dump $DTB_PATH $work/board.dtb" "$ROOTFS" >/dev/null 2>&1 || true
+[ -s "$work/board.dtb" ] || die "could not read /boot/dtb/$FDTFILE from $ROOTFS"
+fdtget "$work/board.dtb" "$EMMC_NODE" compatible 2>/dev/null | grep -q 'dw-mshc' ||
+	die "the device tree in $ROOTFS has no eMMC controller $EMMC_NODE; boot.scr could not hide the eMMC"
+[ "$(fdtget -t x "$work/board.dtb" "$EMMC_NODE" reg 2>/dev/null)" = "0 ff520000 0 4000" ] || die "$EMMC_NODE has an unexpected reg"
+fdtget "$work/board.dtb" "$EMMC_NODE" non-removable >/dev/null 2>&1 || die "$EMMC_NODE is not marked non-removable (not the eMMC?)"
+[ "$(fdtget "$work/board.dtb" /aliases mmc1 2>/dev/null)" = "$EMMC_NODE" ] || die "mmc1 in $ROOTFS's device tree is not $EMMC_NODE"
+[ "$(fdtget "$work/board.dtb" /aliases mmc0 2>/dev/null)" = /mmc@ff500000 ] || die "mmc0 in $ROOTFS's device tree is not the SD slot"
+log "device tree: eMMC controller $EMMC_NODE (mmc1), hidden from Linux on this card"
 
 # The image must carry the device-safety fixes of this tree: these are the files that decide which disk the
 # running system writes to. An older rootfs.ext4 could repartition or write the wrong disk.
@@ -237,14 +256,16 @@ python3 -I "$REPO/installer/boot/mkscr.py" "$REPO/installer/boot/boot.cmd" "$wor
 python3 -I "$REPO/installer/boot/mkscr.py" --check "$work/boot.scr" | cmp -s - "$REPO/installer/boot/boot.cmd" ||
 	die "boot.scr does not hold boot.cmd byte for byte"
 printf '%s\n' "eitri_part_A=5" "eitri_part_B=6" "eitri_partuuid_A=$(PU 5)" "eitri_partuuid_B=$(PU 6)" \
-	"eitri_cmdline=$CMDLINE" >"$work/layout.env"
+	"eitri_cmdline=$CMDLINE" "eitri_hide_emmc=1" >"$work/layout.env"
 printf '%s\n' "eitri_mode=eitri" "eitri_slot=A" "eitri_tries=3" "eitri_state_A=unknown" "eitri_state_B=unknown" >"$work/boot.env"
 cat >"$work/README.txt" <<EOF
 Eitri bench microSD card (os/bench/mk-sd-bench.sh). Developers only.
 
 The printer's stock U-Boot scans the microSD slot first and runs boot.scr from this
 partition. It boots Eitri from this card (rootfs slot A = partition 5) and never writes
-the eMMC. Pull the card to return to the stock system.
+the eMMC. Pull the card to return to the stock system. Linux on this card does not
+see the eMMC at all: boot.scr disables its controller in the device tree
+(eitri_hide_emmc=1 in eitri/layout.env).
 
 eitri/boot.env   boot state (eitri_mode, eitri_slot, eitri_tries, eitri_state_A/B).
                  Three failed boots of a slot and it is skipped: the card's boot.scr then

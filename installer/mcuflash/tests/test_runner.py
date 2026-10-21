@@ -52,7 +52,7 @@ class Rig:
 
     def runner(self, argv, **kw):
         self.calls.append(list(argv))
-        if argv[:2] == ["git", "-C"]:
+        if "git" in argv:
             return RunResult(0, self.host_version + "\n")
         if argv[0] == "systemctl":
             return RunResult(0, "")

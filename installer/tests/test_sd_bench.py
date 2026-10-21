@@ -5,8 +5,9 @@ The stock eMMC U-Boot of the printer runs `distro_bootcmd` with boot_targets="mm
 The sandbox build has the same distro scripts with boot_targets="host1 host0", so `run distro_bootcmd` with the card
 bound as host 1 and a stand-in for the stock eMMC as host 0 replays the printer's boot order: devnum=1 for the card,
 partition chosen by `part list -bootable`, /boot.scr found by scan_dev_for_scripts, then the card's own layout.env,
-boot.env and rootfs slot.  booti has no sandbox implementation; it is replaced by an echo of the kernel arguments plus
-`crc32` over the loaded kernel and device tree, which proves what was loaded from where.
+boot.env and rootfs slot.  booti has no sandbox implementation; it is replaced by an echo of the kernel arguments,
+`crc32` over the loaded kernel and an `fdt get` of the device tree the kernel would get: the card's boot.scr must have
+disabled the eMMC controller (/mmc@ff520000) in it, so Linux on the card never sees the eMMC.
 
 Two images:
   * a synthetic one built by mk-sd-bench.sh in the test (small fake rootfs), always run when the sandbox exists;
@@ -40,7 +41,7 @@ FDTFILE = "rockchip/rk3328-roc-cc.dtb"  # the stock U-Boot environment's fdtfile
 STOCK_ADDRS = {"kernel_addr_r": "0x02080000", "fdt_addr_r": "0x01f00000", "ramdisk_addr_r": "0x06000000",
                "pxefile_addr_r": "0x00600000", "scriptaddr": "0x00500000"}
 
-TOOLS = ("sfdisk", "mkfs.vfat", "mke2fs", "mcopy", "mtype", "mmd", "mdir", "debugfs", "dumpe2fs", "blkid", "fakeroot")
+TOOLS = ("sfdisk", "mkfs.vfat", "mke2fs", "mcopy", "mtype", "mmd", "mdir", "debugfs", "dumpe2fs", "blkid", "fakeroot", "dtc", "fdtget")
 pytestmark = pytest.mark.skipif(not (ubootsim.available() and all(shutil.which(t) for t in TOOLS)),
                                 reason="U-Boot sandbox binary (EITRI_UBOOT_SANDBOX) or image tools missing")
 
@@ -90,7 +91,7 @@ def fake_emmc(path):
 class CardBoot:
     """A writable copy of the card, its generated boot.scr checked and then shimmed for the sandbox."""
 
-    def __init__(self, tmp, image, copy_sectors=None, kernel=b"", dtb=b"", shim_sysboot=False):
+    def __init__(self, tmp, image, copy_sectors=None, kernel=b"", shim_sysboot=False):
         self.tmp = str(tmp)
         self.card = os.path.join(self.tmp, "card.img")
         if copy_sectors:
@@ -116,9 +117,10 @@ class CardBoot:
         text = mkscr.check(generated).decode()
         with open(BOOT_CMD) as fh:
             assert text == fh.read(), "the card's boot.scr is not installer/boot/boot.cmd"
-        # booti -> print the arguments and checksum exactly the bytes that were loaded.
+        # booti -> print the arguments, checksum exactly the kernel bytes that were loaded, and show what the device tree
+        # handed to the kernel says about the eMMC and SD controllers (boot.scr may have edited it in place).
         text = re.sub(r"(?m)^(\s*)booti \$\{kernel_addr_r\} - \$\{fdt_addr_r\}$",
-                      r"\1echo BOOTI bootargs=[${bootargs}]; crc32 ${kernel_addr_r} %x; crc32 ${fdt_addr_r} %x" % (len(kernel), len(dtb)),
+                      lambda m: "%secho BOOTI bootargs=[${bootargs}]; crc32 ${kernel_addr_r} %x; %s" % (m.group(1), len(kernel), ubootsim.FDT_PROBE),
                       text)
         if shim_sysboot:
             text = re.sub(r"(?m)^sysboot ", "echo SYSBOOT: ", text)
@@ -153,16 +155,19 @@ def crc_line(addr, data):
     return "%08x ... %08x ==> %08x" % (a, a + len(data) - 1, zlib.crc32(data) & 0xFFFFFFFF)
 
 
-def check_eitri_boot(out, after, partuuid_a, layout, kernel, dtb):
+def check_eitri_boot(out, after, partuuid_a, layout, kernel, model):
     # The stock scan picked the card first, partition 1 by its bootable flag, and ran its boot.scr.
     assert "Scanning host 1:1..." in out and "Found U-Boot script /boot.scr" in out, out
     assert out.index("Scanning host 1:1") < out.index("## Executing script")
     assert "Eitri: booting slot A (partition 5, 2 attempt(s) left after this one)" in out, out
     want = "BOOTI bootargs=[root=PARTUUID=%s ro rootwait rootfstype=ext4 eitri.slot=A %s]" % (partuuid_a, layout["eitri_cmdline"])
     assert want in out, out
-    # The kernel and the device tree came from the card's rootfs slot A, through the stock fdtfile name.
+    # The kernel and the device tree came from the card's rootfs slot A, through the stock fdtfile name; the device
+    # tree that the kernel gets has the eMMC controller disabled (Linux never sees the eMMC) and the SD slot enabled.
     assert crc_line(STOCK_ADDRS["kernel_addr_r"], kernel) in out, out
-    assert crc_line(STOCK_ADDRS["fdt_addr_r"], dtb) in out, out
+    assert "Eitri: eMMC controller /mmc@ff520000 disabled for Linux" in out, out
+    assert "FDT-PROBE emmc=[disabled] sd=[okay] model=[%s]" % model in out, out
+    assert out.index("disabled for Linux") < out.index("BOOTI")
     # The attempt was spent on the card's own FAT partition before the kernel would have started.
     assert after["eitri_tries"] == "2" and after["eitri_slot"] == "A" and after["eitri_mode"] == "eitri"
 
@@ -178,12 +183,11 @@ def check_falls_back_to_the_emmc(out):
 # --- synthetic image -----------------------------------------------------------------------------------------------------
 
 KERNEL = b"ARM64-KERNEL-IMAGE " * 4000
-DTB = b"\xd0\x0d\xfe\xed EITRI DTB " * 300
+MODEL = "eitri-bench-synthetic"
 
 
-@pytest.fixture(scope="module")
-def synthetic(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("sdbench")
+def build_synthetic(tmp, emmc=True):
+    """mk-sd-bench.sh over a small fake rootfs; returns (exit status, output, image, rootfs)."""
     root = tmp / "root"
     files = {
         "usr/libexec/eitri/grow-data": OVERLAY + "/usr/libexec/eitri/grow-data",
@@ -202,7 +206,7 @@ def synthetic(tmp_path_factory):
         shutil.copyfile(src, str(root / dest))
     os.makedirs(str(root / "boot" / "dtb" / "rockchip"))
     (root / "boot" / "Image").write_bytes(KERNEL)
-    (root / "boot" / "rk3328-eitri-plus4.dtb").write_bytes(DTB)
+    (root / "boot" / "rk3328-eitri-plus4.dtb").write_bytes(ubootsim.make_dtb(tmp, model=MODEL, emmc=emmc))
     os.symlink("../../rk3328-eitri-plus4.dtb", str(root / "boot" / "dtb" / "rockchip" / "rk3328-roc-cc.dtb"))
     rootfs = tmp / "rootfs.ext4"
     sh("mke2fs", "-q", "-t", "ext4", "-L", "rootfs", "-d", root, rootfs, "12M")
@@ -210,8 +214,20 @@ def synthetic(tmp_path_factory):
     res = subprocess.run(["bash", BUILDER, "--rootfs", str(rootfs), "--no-seed", "--root-mib", "16", "--boot-mib", "16",
                           "--headroom-mib", "8", "--output", str(img)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          env=dict(ENV, TMPDIR=str(tmp)))
-    assert res.returncode == 0, res.stdout.decode()
+    return res.returncode, res.stdout.decode(), img, rootfs
+
+
+@pytest.fixture(scope="module")
+def synthetic(tmp_path_factory):
+    code, out, img, rootfs = build_synthetic(tmp_path_factory.mktemp("sdbench"))
+    assert code == 0, out
     return img, rootfs
+
+
+def test_builder_refuses_a_rootfs_whose_device_tree_has_no_emmc_node_to_disable(tmp_path):
+    code, out, img, _ = build_synthetic(tmp_path, emmc=False)
+    assert code != 0 and "no eMMC controller /mmc@ff520000" in out, out
+    assert not os.path.exists(str(img))
 
 
 def test_builder_writes_the_in_place_layout_with_its_own_ids(synthetic):
@@ -239,6 +255,7 @@ def test_builder_writes_the_in_place_layout_with_its_own_ids(synthetic):
     words = layout["eitri_cmdline"].split()
     assert "eitri.data=PARTUUID=%s-07" % DISK_ID in words and "eitri.bootfs=PARTUUID=%s-01" % DISK_ID in words
     assert "eitri.growdata=1" in words and not any("mmcblk" in w or "console=ttyS" in w for w in words)
+    assert layout["eitri_hide_emmc"] == "1"                 # boot.scr disables the eMMC controller for Linux
     assert kv(fat_read(str(img), p1, "/eitri/boot.env")) == {
         "eitri_mode": "eitri", "eitri_slot": "A", "eitri_tries": "3", "eitri_state_A": "unknown", "eitri_state_B": "unknown"}
     assert fat_read(str(img), p1, "/extlinux/extlinux.conf") is None
@@ -270,15 +287,15 @@ def test_data_partition_carries_the_rauc_override_for_this_card_only(synthetic, 
 
 def test_stock_uboot_boots_the_synthetic_card_from_the_sd_slot(synthetic, tmp_path):
     img, _ = synthetic
-    boot = CardBoot(tmp_path, str(img), kernel=KERNEL, dtb=DTB, shim_sysboot=True)
+    boot = CardBoot(tmp_path, str(img), kernel=KERNEL, shim_sysboot=True)
     out, after = boot.boot()
     layout = kv(fat_read(boot.card, boot.p1, "/eitri/layout.env"))
-    check_eitri_boot(out, after, DISK_ID + "-05", layout, KERNEL, DTB)
+    check_eitri_boot(out, after, DISK_ID + "-05", layout, KERNEL, MODEL)
 
 
 def test_a_card_that_cannot_boot_hands_over_to_the_stock_emmc(synthetic, tmp_path):
     img, _ = synthetic
-    boot = CardBoot(tmp_path, str(img), kernel=KERNEL, dtb=DTB)       # real sysboot: extlinux.conf.stock is not on the card
+    boot = CardBoot(tmp_path, str(img), kernel=KERNEL)       # real sysboot: extlinux.conf.stock is not on the card
     boot.set_state(eitri_tries="0")                                    # slot A out of attempts, B never good
     out, after = boot.boot()
     assert "no bootable slot left" in out and after["eitri_state_A"] == "bad"
@@ -287,7 +304,7 @@ def test_a_card_that_cannot_boot_hands_over_to_the_stock_emmc(synthetic, tmp_pat
 
 def test_eitri_mode_stock_makes_the_card_step_aside(synthetic, tmp_path):
     img, _ = synthetic
-    boot = CardBoot(tmp_path, str(img), kernel=KERNEL, dtb=DTB)
+    boot = CardBoot(tmp_path, str(img), kernel=KERNEL)
     boot.set_state(eitri_mode="stock")
     out, after = boot.boot()
     check_falls_back_to_the_emmc(out)
@@ -323,8 +340,11 @@ def test_stock_uboot_boots_the_generated_bench_image_from_the_sd_slot(tmp_path):
     dtb = debugfs_dump(REAL_ROOTFS, "/boot/rk3328-eitri-plus4.dtb", str(tmp_path / "board.dtb"))
     assert kernel[56:60] == b"ARM\x64" and dtb[:4] == b"\xd0\x0d\xfe\xed"
 
-    boot = CardBoot(tmp_path, REAL_IMG, copy_sectors=parts[5][0] + parts[5][1], kernel=kernel, dtb=dtb, shim_sysboot=True)
+    model = sh("fdtget", str(tmp_path / "board.dtb"), "/", "model").stdout.decode().strip()
+    assert sh("fdtget", str(tmp_path / "board.dtb"), "/mmc@ff520000", "status").stdout.decode().strip() == "okay"
+
+    boot = CardBoot(tmp_path, REAL_IMG, copy_sectors=parts[5][0] + parts[5][1], kernel=kernel, shim_sysboot=True)
     layout = kv(fat_read(boot.card, boot.p1, "/eitri/layout.env"))
-    assert layout["eitri_partuuid_A"] == "%s-05" % label and layout["eitri_part_A"] == "5"
+    assert layout["eitri_partuuid_A"] == "%s-05" % label and layout["eitri_part_A"] == "5" and layout["eitri_hide_emmc"] == "1"
     out, after = boot.boot()
-    check_eitri_boot(out, after, "%s-05" % label, layout, kernel, dtb)
+    check_eitri_boot(out, after, "%s-05" % label, layout, kernel, model)

@@ -3,7 +3,11 @@
 #
 #   - the two on-device update tools, without a password (they do the boot-slot and RAUC work;
 #     unit control, reboot, host name and networking go through polkit, see
-#     usr/share/polkit-1/rules.d/50-eitri.rules);
+#     usr/share/polkit-1/rules.d/50-eitri.rules). Through sudo, eitri-update refuses every option that
+#     changes what is trusted or where root writes (--config, --manifest-url, --key-dir, --data-root,
+#     --allow-insecure, --allow-downgrade, another --events-file), and it never runs anything from
+#     /data as root: overlay-install.sh, spi_flash.py, firmware builds and git in the service user's
+#     trees run as the service user (eitri_mcuflash/privs.py);
 #   - optional shell access (decision 4): the configurator adds an SSH key or sets a password through
 #     eitri-access, one fixed command line per rule (sudo matches the arguments exactly, so there is no
 #     way to add others). The key or password is read from stdin and validated by the tool;

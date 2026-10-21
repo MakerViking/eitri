@@ -29,6 +29,7 @@ from .methods import (
     choose_method,
     make_method,
 )
+from .privs import git_argv
 from .proc import run
 from .probe import (
     BUSY,
@@ -292,7 +293,7 @@ class Flasher:
             return
         name, add = bp.board.name, bp.checks.append
         if bp.build:                                     # building on the device: the clone's HEAD is what gets built
-            res = self.ctx.runner(["git", "-C", self.ctx.klipper_dir, "rev-parse", "HEAD"])
+            res = self.ctx.runner(git_argv(self.ctx.klipper_dir, "rev-parse", "HEAD"))
             have = res.output.strip().lower() if res.returncode == 0 else ""
         elif bp.artifact is not None:
             have = bp.artifact.source_commit.lower()

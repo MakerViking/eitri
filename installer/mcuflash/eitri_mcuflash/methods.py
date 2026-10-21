@@ -24,6 +24,7 @@ from .events import EventSink
 from .firmware import DEFAULT_KLIPPER_DIR, FirmwareArtifact, extract_embedded_dictionary_raw
 from .katapult_proto import KatapultClient
 from .klipper_proto import SERIAL_BOOTLOADER_REQUEST
+from .privs import as_owner_of
 from .probe import KATAPULT, PortProbe
 from .proc import Runner, run
 from .registry import BoardDef, Registry
@@ -279,8 +280,12 @@ class SdcardSerialMethod:
                     fd, tmp = tempfile.mkstemp(prefix="klipper-", suffix=".dict", dir=self.ctx.work_dir)
                     with os.fdopen(fd, "wb") as fh:
                         fh.write(raw)
+                    os.chmod(tmp, 0o644)                 # read by spi_flash.py, which runs as the clone's owner
                     argv += ["-d", tmp]
             argv += [self.port, board_type, image_path]
+            # spi_flash.py (and the fatfs.so it builds, and the venv's python) come from the service user's trees on /data:
+            # never run as root.  The clone's owner (eitri: dialout) can open the serial port.
+            argv = as_owner_of(self.ctx.klipper_dir, argv)
             tail: List[str] = []
 
             def on_line(line: str) -> None:

@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from eitri_mcuflash import privs
 from eitri_mcuflash.errors import FlashError
 from eitri_mcuflash.events import EventSink
 from eitri_mcuflash.proc import Runner, run
@@ -594,7 +595,10 @@ class Updater:
         if not os.path.exists(cmd[0]):
             self.events.warn("%s not found; the extras are not re-linked" % cmd[0])
             return
-        res = self.runner(cmd)
+        # The script, the clone it links into (and whose git it runs) and printer_data belong to the service user on
+        # /data: run as root it would run whatever that user put there as root.  Everything it changes is the service
+        # user's, so it runs as that user.
+        res = self.runner(privs.as_service_user(cmd))
         if res.returncode != 0:
             raise FlashError("linking the Klipper extras failed:\n" + "\n".join(res.output.strip().splitlines()[-6:]), code="overlay", step="seed",
                              recovery="The previous Klipper tree is restored automatically.")

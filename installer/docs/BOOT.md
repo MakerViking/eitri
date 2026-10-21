@@ -17,6 +17,7 @@ complete undo (`revert.sh --hard`).
 | `eitri_partuuid_A`, `eitri_partuuid_B` | `6a783df4-05`, `6a783df4-06` |
 | `eitri_cmdline` | `console=tty1 loglevel=4 panic=10 net.ifnames=0` |
 | `eitri_s2_kernel/fdt/initrd/args` | stock `/Image`, stock dtb, `/eitri/stage2/initramfs.cpio.gz`, `…eitri.op=convert` |
+| `eitri_hide_emmc` | bench microSD card only (`os/bench/mk-sd-bench.sh`): `1` = disable the eMMC controller `/mmc@ff520000` in the device tree before `booti` (`fdt addr/resize/set`); no Eitri boot if that fails, and stage 2 is never started. The in-place install never writes it. |
 
 `/eitri/boot.env` - the mutable state, rewritten by U-Boot (`env export` + `fatwrite`) and by `eitri-bootctl`:
 
@@ -30,6 +31,12 @@ complete undo (`revert.sh --hard`).
 
 Only six variables are exported because U-Boot's command line is limited to 16 arguments (found the hard way in
 the sandbox test: a longer `env export` list silently prints usage).
+
+Both files are imported with an explicit variable list (`env import -t ADDR SIZE var...`): `boot.env` with the six
+state variables (`${eitri_keys}`), `layout.env` with the table above (two imports, to stay under 16 arguments). A
+hand-edited file cannot set anything else, in particular not `eitri_dev` (where `fatwrite` writes) or `eitri_save`
+(what `run` executes). The lists are `BOOT_SCR_STATE_KEYS` and `LAYOUT_KEYS` in `eitri-update/eitri_update/bootenv.py`;
+`tests/test_boot_script.py` checks that `boot.cmd` and every writer of the files agree with them.
 
 ## State machine
 

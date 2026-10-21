@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional
 
 from .errors import FlashError
 from .fsutil import sha256_file
+from .privs import as_owner_of, git_argv, hand_to_owner_of
 from .proc import Runner, run
 
 FLAVORS = ("klipper", "kalico")
@@ -152,7 +153,7 @@ def versions_match(host_version: str, mcu_version: str) -> bool:
 
 
 def host_version(klipper_dir: str = DEFAULT_KLIPPER_DIR, runner: Runner = run) -> str:
-    res = runner(["git", "-C", klipper_dir, "describe", "--always", "--tags", "--long", "--dirty"])
+    res = runner(git_argv(klipper_dir, "describe", "--always", "--tags", "--long", "--dirty"))
     if res.returncode != 0:
         raise FlashError("cannot determine the host Klipper version in %s: %s" % (klipper_dir, res.output.strip()), code="host_version")
     return res.output.strip().splitlines()[-1]
@@ -270,17 +271,20 @@ def build_artifact(
     os.makedirs(out_dir)
     kconfig = out_dir + ".config"
     shutil.copyfile(config_file, kconfig)
+    # The clone (its Makefile, scripts, git config) belongs to the service user: run as root, make would run whatever
+    # it says as root.  So the build runs as the clone's owner, in an output directory handed to it.
+    hand_to_owner_of(klipper_dir, out_dir, kconfig)
     base = ["make", "-C", klipper_dir, "OUT=%s/" % out_dir, "KCONFIG_CONFIG=%s" % kconfig]
     for target in (["olddefconfig"], ["-j%d" % jobs]):
-        res = runner(base + target, on_line=on_line, env={"PATH": search_path})
+        res = runner(as_owner_of(klipper_dir, base + target, keep_env={"PATH": search_path}), on_line=on_line, env={"PATH": search_path})
         if res.returncode != 0:
             tail = "\n".join(res.output.strip().splitlines()[-12:])
             raise FlashError(
                 "firmware build failed (make %s):\n%s" % (" ".join(target), tail), code="build_failed", board=board
             )
     built = os.path.join(out_dir, "klipper.bin")
-    if not os.path.isfile(built):
-        raise FlashError("build finished but %s is missing" % built, code="build_failed", board=board)
+    if os.path.islink(built) or not os.path.isfile(built):
+        raise FlashError("build finished but %s is missing (or not a plain file)" % built, code="build_failed", board=board)
     blob = open(built, "rb").read()
     embedded = extract_embedded_dictionary(blob) or {}
     mcu = str((embedded.get("config") or {}).get("MCU", ""))

@@ -7,13 +7,15 @@
 # U-Boot (2021.07-armbian) tries extlinux first, then boot.scr.  Everything it
 # needs is in the distro-boot environment that stock U-Boot already provides
 # (devtype, devnum, distro_bootpart, *_addr_r) and a handful of standard commands
-# (load, ext4load, env import/export, fatwrite, booti, sysboot).
+# (load, ext4load, env import/export, fatwrite, booti, sysboot; fdt on the bench card).
 #
 # Two key=value text files on the vfat partition:
 #   /eitri/layout.env  written once by the installer, never rewritten by U-Boot:
 #       eitri_part_A/B, eitri_partuuid_A/B  partition number and PARTUUID of each slot
 #       eitri_cmdline                       extra kernel arguments
 #       eitri_s2_kernel/fdt/initrd/args     the one-shot RAM installer
+#       eitri_hide_emmc=1                   only on the bench microSD card (os/bench/mk-sd-bench.sh): the eMMC
+#                                           controller is disabled in the device tree handed to Linux
 #   /eitri/boot.env    the mutable state, rewritten by U-Boot and by eitri-bootctl:
 #       eitri_mode     eitri | stage2 | stock
 #       eitri_slot     A | B               rootfs slot to boot
@@ -22,6 +24,9 @@
 #       eitri_s2_tries 3 2 1 0     RAM-installer starts left while eitri_mode=stage2 (absent otherwise)
 #   (Only these six state variables are exported: U-Boot's command line is limited
 #   to 16 arguments, and `env export -t ADDR` plus a longer list would exceed it.)
+#   Both files are imported with an explicit variable list: nothing else in them is taken over, so a hand-edited
+#   file cannot set eitri_dev, eitri_save, eitri_keys or anything of U-Boot's own (where fatwrite goes, what runs).
+#   (Without -d, a listed variable that the file lacks keeps the value it had before the import.)
 #
 # Safety rules:
 #  * Every path that does not end in a successful `booti` falls through to the
@@ -45,11 +50,23 @@ setenv eitri_mode stock
 setenv eitri_keys "eitri_mode eitri_slot eitri_tries eitri_state_A eitri_state_B eitri_s2_tries"
 setenv eitri_save 'env export -t ${eitri_buf} ${eitri_keys} && fatwrite ${eitri_dev} ${eitri_buf} /eitri/boot.env ${filesize}'
 
+# Only layout.env may switch the eMMC hiding on.
+setenv eitri_hide_emmc
+# Two imports for layout.env so that no command line exceeds 16 arguments.
 if load ${eitri_dev} ${eitri_buf} /eitri/layout.env; then
-    env import -t ${eitri_buf} ${filesize}
+    env import -t ${eitri_buf} ${filesize} eitri_part_A eitri_part_B eitri_partuuid_A eitri_partuuid_B eitri_cmdline eitri_hide_emmc
+    env import -t ${eitri_buf} ${filesize} eitri_s2_kernel eitri_s2_fdt eitri_s2_initrd eitri_s2_args
 fi
 if load ${eitri_dev} ${eitri_buf} /eitri/boot.env; then
-    env import -t ${eitri_buf} ${filesize}
+    env import -t ${eitri_buf} ${filesize} ${eitri_keys}
+fi
+
+if test "${eitri_hide_emmc}" = "1"; then
+    if test "${eitri_mode}" = "stage2"; then
+        # The RAM installer converts the eMMC; a card that hides the eMMC never starts it.
+        echo "Eitri: the installer environment is not started from a card that hides the eMMC"
+        setenv eitri_mode stock
+    fi
 fi
 
 if test "${eitri_mode}" = "stage2"; then
@@ -126,8 +143,26 @@ elif test "${eitri_mode}" = "eitri"; then
             echo "Eitri: booting slot ${eitri_slot} (partition ${eitri_part}, ${eitri_tries} attempt(s) left after this one)"
             if ext4load ${devtype} ${devnum}:${eitri_part} ${kernel_addr_r} /boot/Image; then
                 if ext4load ${devtype} ${devnum}:${eitri_part} ${fdt_addr_r} /boot/dtb/${fdtfile}; then
-                    setenv bootargs "root=PARTUUID=${eitri_partuuid} ro rootwait rootfstype=ext4 eitri.slot=${eitri_slot} ${eitri_cmdline}"
-                    booti ${kernel_addr_r} - ${fdt_addr_r}
+                    setenv eitri_fdt_ok 1
+                    if test "${eitri_hide_emmc}" = "1"; then
+                        # Bench card: Linux must not see the eMMC at all. Disable its controller (mmc1 alias,
+                        # /mmc@ff520000) in the loaded device tree; if that fails, do not start this kernel.
+                        setenv eitri_fdt_ok 0
+                        if fdt addr ${fdt_addr_r}; then
+                            if fdt resize; then
+                                if fdt set /mmc@ff520000 status disabled; then
+                                    setenv eitri_fdt_ok 1
+                                    echo "Eitri: eMMC controller /mmc@ff520000 disabled for Linux"
+                                fi
+                            fi
+                        fi
+                    fi
+                    if test "${eitri_fdt_ok}" = "1"; then
+                        setenv bootargs "root=PARTUUID=${eitri_partuuid} ro rootwait rootfstype=ext4 eitri.slot=${eitri_slot} ${eitri_cmdline}"
+                        booti ${kernel_addr_r} - ${fdt_addr_r}
+                    else
+                        echo "Eitri: cannot hide the eMMC from Linux, not booting Eitri"
+                    fi
                 fi
             fi
             echo "Eitri: slot ${eitri_slot} could not be loaded"
