@@ -683,3 +683,34 @@ PRINT_START BED=60 HOTEND=210 MESH=skip SOAK=0
 """)
     ok(res)
     assert _said(res, "QD_PRIME_LINE: no room in front of the print; skipped")
+
+
+# --- the printer as shipped: both boards on QIDI's Klipper v0.12 firmware ---------------------------
+
+STOCK = kh.pathlib.Path(__file__).parent / "fixtures" / "stock-dicts"
+STOCK_DICTS = (STOCK / "toolhead-qidi-v0.12.dict", STOCK / "mainboard-qidi-v0.12.dict")
+
+
+def test_stock_firmware_runs_the_eitri_config(env_factory):
+    """The whole config, with the v0.12 accelerometer driver, against the real stock dictionaries."""
+    env = env_factory(dicts=STOCK_DICTS, adxl_stock="true")
+    res = env.run("""
+PRINT_START BED=60 HOTEND=210 SOAK=0
+G1 X100 Y100 F6000
+PRINT_END
+""")
+    ok(res)
+    assert "accel_chip = qd_adxl345_stock" in res.log
+
+
+def test_stock_firmware_rejects_klippers_own_adxl345(env_factory):
+    """Why qd_adxl345_stock exists: current Klipper's [adxl345] cannot talk to the v0.12 toolhead."""
+    env = env_factory(dicts=STOCK_DICTS, adxl_stock="false")
+    res = env.run("G4 P10")
+    assert "query_adxl345" in res.log and "mismatch" in res.log, res.log[-2000:]
+
+
+def test_v012_accelerometer_driver_refuses_current_firmware(env_factory):
+    env = env_factory(adxl_stock="true")      # generic dictionary = current firmware
+    res = env.run("G4 P10")
+    assert "qd_adxl345_stock: MCU 'mcu' does not run Klipper v0.12 firmware" in res.log, res.log[-2000:]

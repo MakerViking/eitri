@@ -457,9 +457,6 @@ async def cal_shaper(request: web.Request) -> web.Response:
     ctx = ctx_of(request)
     if opts.validate(ctx.state.data["options"])["accelerometer"] == "none":
         return jerr(409, "No accelerometer is configured. Enable one in Options to calibrate the input shaper.")
-    if layer.toolhead_is_stock(ctx.settings):
-        return jerr(409, "The toolhead still runs its stock firmware, whose accelerometer protocol this Klipper does not speak, "
-                         "so the ADXL345 is left out of printer.cfg and input shaper calibration is unavailable for now.")
     return started(ctx.jobs.start("calibrate.shaper", ctx.calibrator.shaper))
 
 

@@ -9,6 +9,7 @@ review; it never invents Klipper configuration of its own.
 from __future__ import annotations
 
 import importlib.util
+import re
 import tomllib
 from pathlib import Path
 from types import ModuleType
@@ -56,19 +57,29 @@ def _renderer(layer: Path) -> ModuleType:
 INSTALL_ENV = "state/install.env"
 
 
-def toolhead_is_stock(settings: Settings) -> bool:
+#: Klipper v0.12 version strings as QIDI's stock firmware reports them, e.g. v0.12.0-65-g96ab9069-dirty-20240301_100458-mkspi.
+STOCK_FIRMWARE = re.compile(r"^v0\.12\.")
+
+
+def toolhead_is_stock(settings: Settings, detect: dict | None = None) -> bool:
     """True while the toolhead still runs the firmware it shipped with (Klipper v0.12, no bootloader to reflash it over
-    serial).  Its ADXL345 speaks the old accelerometer protocol, which current Klipper and Kalico no longer understand, so
-    the accelerometer stays out of printer.cfg (the rest of the toolhead is compatible: the batch suite passes with the stock
-    dictionary)."""
+    serial).  Its ADXL345 speaks the old accelerometer protocol, so printer.cfg uses [qd_adxl345_stock] instead of
+    [adxl345] (the rest of the toolhead is compatible: the batch suite runs against the stock dictionaries).
+
+    The install record decides when it is readable; otherwise the firmware version detection found on the toolhead.
+    (Stage 2 of releases up to 0.0.0.dev0 wrote the record root-only, which the configurator cannot read.)"""
     try:
         text = (settings.eitri_dir / INSTALL_ENV).read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return False
-    for line in text.splitlines():
-        key, sep, value = line.partition("=")
-        if sep and key.strip() == "toolhead_firmware":
-            return value.strip() == "stock"
+        text = None
+    if text is not None:
+        for line in text.splitlines():
+            key, sep, value = line.partition("=")
+            if sep and key.strip() == "toolhead_firmware":
+                return value.strip() == "stock"
+    for board in (detect or {}).get("boards", []):
+        if board.get("role") == "toolhead":
+            return bool(STOCK_FIRMWARE.match(str(board.get("version") or "")))
     return False
 
 
@@ -86,7 +97,8 @@ def variables(settings: Settings, layer: Path, options: dict[str, Any], detect: 
     values["printer_data"] = str(settings.printer_data)
     values["chamber_enabled"] = bool(options["chamber_heater"] and options["chamber_ack"])
     values["plr_enabled"] = bool(options["power_loss_recovery"])
-    values["adxl_enabled"] = options["accelerometer"] == "adxl345" and not toolhead_is_stock(settings)
+    values["adxl_enabled"] = options["accelerometer"] == "adxl345"
+    values["adxl_stock"] = toolhead_is_stock(settings, detect)
     user = settings.config_dir / USER_VARS
     if user.is_file():
         try:

@@ -66,7 +66,8 @@ class Result:
 class Env:
     """A configured, overlay-installed clone ready to run G-code."""
 
-    def __init__(self, clone, flavor, tmp, chamber=False, **render_vars):
+    def __init__(self, clone, flavor, tmp, chamber=False, dicts=None, **render_vars):
+        # dicts: (toolhead, mainboard) dictionary files; default one generic dictionary for both.
         self.clone = clone
         self.flavor = flavor
         self.tmp = tmp
@@ -74,6 +75,7 @@ class Env:
         self.gcodes = self.pd / "gcodes"
         self.gcodes.mkdir(parents=True)
         self.dict = dictionary(flavor)
+        self.dicts = tuple(dicts) if dicts else (self.dict, self.dict)
         _install_chelper(flavor, clone)
         res = subprocess.run(
             ["bash", str(SCRIPTS / "overlay-install.sh"), "--klipper-dir",
@@ -127,7 +129,7 @@ class Env:
         gfile = self.tmp / "in.gcode"
         cmd = [PYTHON, "-B", "klippy/klippy.py", str(self.cfg_path),
                "-i", str(gfile), "-o", str(self.tmp / "mcu.out"),
-               "-d", str(self.dict), "-d", "U_1=%s" % self.dict,
+               "-d", str(self.dicts[0]), "-d", "U_1=%s" % self.dicts[1],
                "-l", str(log)]
         envvars = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
         if gfile.exists():

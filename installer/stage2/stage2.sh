@@ -409,6 +409,8 @@ s2_make_data() {
     "stock_uuid=$(cfg stock_fs_uuid)" "stock_soc=$(cfg stock_soc)" "bundle_version=$(kv_get "$PAYLOAD/payload.env" version)" \
     "seed_version=$(kv_get "$M_DATA/eitri/state/seed-installed.env" SEED_VERSION)" "seed_sha256=$SEED_SHA" \
     "mcu_flash=$(cfg mcu_mode)" "toolhead_firmware=$th" "backup_sha256=$(cfg backup_sha256)"
+  # No secrets in it, and the configurator (user eitri) reads toolhead_firmware: world-readable, root-owned.
+  chmod 0644 "$M_DATA/eitri/state/install.env"
   sync
   umount "$M_DATA"
   kv_set "$M_BOOT/eitri/stage2.state" phase data_written

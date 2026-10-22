@@ -76,10 +76,11 @@ def test_calibration_marks_persist_in_state(srv):
     assert srv.put("/api/state", {"calibration": {"mesh": "maybe"}})[0] == 422
 
 
-def test_shaper_is_refused_while_the_toolhead_runs_stock_firmware(srv):
-    # The in-place installer's stage 2 records toolhead_firmware=stock when it left the MCU boards alone (--mcu skip).
+def test_shaper_runs_while_the_toolhead_runs_stock_firmware(srv):
+    # The in-place installer's stage 2 records toolhead_firmware=stock when it left the MCU boards alone (--mcu skip);
+    # printer.cfg then carries [qd_adxl345_stock], so input shaper calibration works as with a flashed toolhead.
     env = srv.settings.eitri_dir / "state" / "install.env"
     env.parent.mkdir(parents=True, exist_ok=True)
     env.write_text("mcu_flash=skip\ntoolhead_firmware=stock\n")
     st, b = srv.post("/api/calibrate/shaper")
-    assert st == 409 and "stock firmware" in b["error"]
+    assert st != 409, b

@@ -37,6 +37,9 @@ chamber_enabled = false
 # Both are fitted/enabled on a stock printer; the configurator can turn them off.
 plr_enabled = true
 adxl_enabled = true
+# The toolhead runs QIDI's stock v0.12 firmware: its ADXL345 needs [qd_adxl345_stock].
+# The configurator sets this from the install record or the detected firmware.
+adxl_stock = false
 
 # --- motion limits -------------------------------------------------------------
 max_velocity = 600

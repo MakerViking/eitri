@@ -212,7 +212,14 @@ event_delay: 3.0
 pause_delay: 0.5
 
 #@if adxl_enabled
+#@if adxl_stock
+# The toolhead still runs QIDI's stock firmware (Klipper v0.12), whose ADXL345
+# commands predate current Klipper's; extras/qd_adxl345_stock.py speaks them.
+# After the toolhead is flashed, Klipper's own adxl345 module is used again.
+[qd_adxl345_stock]
+#@else
 [adxl345]
+#@endif
 cs_pin: PA4
 spi_software_sclk_pin: PA5
 spi_software_mosi_pin: PA7
@@ -220,7 +227,11 @@ spi_software_miso_pin: PA6
 axes_map: -x, z, -y
 
 [resonance_tester]
+#@if adxl_stock
+accel_chip: qd_adxl345_stock
+#@else
 accel_chip: adxl345
+#@endif
 accel_per_hz: 150
 probe_points:
     150, 150, 10

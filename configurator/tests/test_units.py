@@ -83,25 +83,38 @@ def test_printer_cfg_comes_from_the_klipper_layer_and_follows_options(tmp_path):
     assert sections.count("[heater_generic chamber]") == sections.count("[verify_heater chamber]") == 1
 
 
-def test_a_stock_toolhead_keeps_the_adxl345_out_of_printer_cfg(tmp_path):
+STOCK_VERSION = "v0.12.0-65-g96ab9069-dirty-20240301_100458-mkspi"
+
+
+def test_a_stock_toolhead_gets_the_v012_accelerometer_driver(tmp_path):
     # Stage 2 of the in-place install writes toolhead_firmware=stock when the MCUs were not flashed (--mcu skip): the stock
-    # v0.12 toolhead firmware answers the old ADXL345 protocol, so [adxl345] / [resonance_tester] must not be rendered.
+    # v0.12 toolhead firmware answers the old ADXL345 protocol, so printer.cfg uses [qd_adxl345_stock] instead of [adxl345].
     s = Settings(data_dir=tmp_path)
     lock = load(s.release_lock)
     env = s.eitri_dir / "state" / "install.env"
     env.parent.mkdir(parents=True)
 
-    def cfg():
-        ctx = render.build_context(flavor="klipper", options=opts.validate({}), detect=None, lock=lock)
+    def cfg(detect=None):
+        ctx = render.build_context(flavor="klipper", options=opts.validate({}), detect=detect, lock=lock)
         return render.render_all(s, ctx)["printer.cfg"]
 
     env.write_text("installed_at=x\nmcu_flash=skip\ntoolhead_firmware=stock\n")
     stock = cfg()
-    assert "[adxl345]" not in stock and "[resonance_tester]" not in stock and "[mcu]\n" in stock
+    assert "[qd_adxl345_stock]" in stock and "[adxl345]" not in stock and "[mcu]\n" in stock
+    assert "accel_chip: qd_adxl345_stock" in stock
     env.write_text("mcu_flash=auto\ntoolhead_firmware=eitri\n")
-    assert "[adxl345]" in cfg()
+    flashed = cfg()
+    assert "[adxl345]" in flashed and "[qd_adxl345_stock]" not in flashed and "accel_chip: adxl345" in flashed
+    # Without a readable record (stage 2 used to write it root-only) the detected firmware version decides.
     env.unlink()
     assert "[adxl345]" in cfg()
+    detected = {"boards": [{"role": "toolhead", "port": "/dev/ttyS2", "version": STOCK_VERSION}]}
+    assert "[qd_adxl345_stock]" in cfg(detected)
+    detected["boards"][0]["version"] = "v0.13.0-813-ga08fc79fc"
+    assert "[adxl345]" in cfg(detected)
+    # The record wins over detection.
+    env.write_text("toolhead_firmware=eitri\n")
+    assert "[adxl345]" in cfg({"boards": [{"role": "toolhead", "port": "/dev/ttyS2", "version": STOCK_VERSION}]})
 
 
 def test_user_vars_override_layer_defaults(tmp_path):
