@@ -50,7 +50,7 @@ class Config:
     moonraker_url: str = "http://127.0.0.1:7125"
     health_timeout: float = 120.0
     mcu_firmware_root: str = "/data/eitri/mcu/firmware"
-    mcu_state_dir: str = "/data/eitri/mcu"
+    mcu_state_dir: str = "/data/eitri/mcu/state"
     min_sequence_file: str = "/usr/share/eitri/min-manifest-sequence"
     seed_tool: Optional[str] = None                   # eitri-seed-install; None = /usr/libexec/eitri/eitri-seed-install
     overlay_command: Optional[List[str]] = None       # None = the layer's own overlay-install.sh on /data

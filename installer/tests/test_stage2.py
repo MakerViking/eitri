@@ -159,7 +159,7 @@ def test_convert_success_end_to_end(rig):
     wifi = data + "/eitri/migrate/network/wpa_supplicant-wlan0.conf"
     assert stat.S_IMODE(os.stat(wifi).st_mode) == 0o600
     assert os.path.isfile(data + "/eitri/mcu/firmware/klipper/manifest.json")
-    assert os.path.isdir(data + "/eitri/mcu/backup/20261021T100000Z-toolhead")
+    assert os.path.isdir(data + "/eitri/mcu/state/backup/20261021T100000Z-toolhead")  # flasher state is the service user's, under mcu/state
     assert os.path.exists(data + "/eitri/state/backup.env")
     inst = dict(l.split("=", 1) for l in open(data + "/eitri/state/install.env").read().splitlines())
     assert inst["flavor"] == "klipper" and inst["stock_soc"] == "1.7.1" and inst["mcu_flash"] == "auto" and inst["bundle_version"] == "2026.10.0"

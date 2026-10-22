@@ -396,7 +396,8 @@ s2_make_data() {
     s2_log "this release carries no MCU firmware: both MCU boards keep their stock firmware"
   fi
   if [[ -d "$M_STOCK/var/lib/eitri-install/mcu" ]]; then
-    cp -a "$M_STOCK/var/lib/eitri-install/mcu/." "$M_DATA/eitri/mcu/" || s2_log "warning: could not copy the stock MCU backups"
+    mkdir -p "$M_DATA/eitri/mcu/state"
+    cp -a "$M_STOCK/var/lib/eitri-install/mcu/." "$M_DATA/eitri/mcu/state/" || s2_log "warning: could not copy the stock MCU backups"
   fi
   s2_migrate_from_stock
   s2_rauc_override

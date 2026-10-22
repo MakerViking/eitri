@@ -48,7 +48,7 @@ METHOD_BOOTLOADER = {"katapult": "katapult", "sdcard-serial": "sdcard-serial", "
 def common_args(settings: Settings) -> list[str]:
     """Paths the CLI would otherwise default to /data for: keep it inside our data dir."""
     return [
-        "--state-dir", str(settings.eitri_dir / "mcu"),
+        "--state-dir", str(settings.eitri_dir / "mcu" / "state"),
         "--firmware-root", str(settings.eitri_dir / "mcu" / "firmware"),
         "--klipper-dir", str(settings.data_dir / "firmware" / "klipper"),
         "--printer-cfg", str(settings.config_dir / "printer.cfg"),

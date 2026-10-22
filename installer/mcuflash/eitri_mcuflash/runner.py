@@ -68,7 +68,7 @@ class Options:
     ports: List[str] = field(default_factory=list)
     assign: Dict[str, str] = field(default_factory=dict)
     printer_cfgs: List[str] = field(default_factory=list)
-    state_dir: str = "/data/eitri/mcu"
+    state_dir: str = "/data/eitri/mcu/state"
     stop_services: List[str] = field(default_factory=list)
     roundtrip: bool = True
     stock_bins: Dict[str, str] = field(default_factory=dict)

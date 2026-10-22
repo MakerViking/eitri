@@ -87,6 +87,15 @@ dir "$OWNER" 0755 \
 	"$DATA/eitri/configurator" "$DATA/eitri/home"
 chmod 0750 "$DATA/eitri/home"
 
+# MCU firmware: root delivers the signed firmware into mcu/firmware (eitri-update, stage 2); the flasher's backups and
+# board map live in mcu/state, which the service user owns (the configurator runs eitri-mcuflash as that user). The
+# parent stays root's, so that account cannot swap firmware/ for a link and steer what root writes there.
+dir "" 0755 "$DATA/eitri/mcu" "$DATA/eitri/mcu/firmware"
+dir "$OWNER" 0755 "$DATA/eitri/mcu/state"
+if [ "$(ls -ldn "$DATA/eitri/mcu/state" | awk '{print $3}')" = 0 ]; then
+	chown "$OWNER" "$DATA/eitri/mcu/state" 2>/dev/null || log "could not chown $DATA/eitri/mcu/state"
+fi
+
 # Parent directories of the seed's components belong to the service user (eitri-update's upstream mode
 # and the configurator write below them). A root-run installer (mkdir -p) creates them as root; fix only
 # those, only when they are root-owned, and never recurse.

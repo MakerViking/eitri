@@ -135,7 +135,7 @@ def main(argv: Optional[List[str]] = None, *, runner: Runner = run, opener=fetch
     if args.key_dir:
         cfg.key_paths = list(args.key_dir)
     cfg.mcu_firmware_root = cfg.eitri_root + "/mcu/firmware"
-    cfg.mcu_state_dir = cfg.eitri_root + "/mcu"
+    cfg.mcu_state_dir = cfg.eitri_root + "/mcu/state"
     updater = updater_factory(cfg, events) if updater_factory else Updater(cfg, events, runner=runner, opener=opener)
     try:
         if args.cmd == "check":

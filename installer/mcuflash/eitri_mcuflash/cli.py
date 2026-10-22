@@ -32,7 +32,9 @@ from .guidance import recovery_steps
 from .transport import open_transport
 
 CONFIRM_PHRASE = "FLASH"
-DEFAULT_STATE_DIR = "/data/eitri/mcu"
+# The service user's directory (backups, board map); its parent /data/eitri/mcu and the delivered firmware/ next to it
+# stay root's, so the account that runs the web-facing programs cannot redirect what root writes or flashes.
+DEFAULT_STATE_DIR = "/data/eitri/mcu/state"
 DEFAULT_FLAVOR_FILE = "/data/eitri/flavor"
 
 
