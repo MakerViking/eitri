@@ -236,7 +236,11 @@ probe_points:
 [stepper_x]
 step_pin: U_1:PB4
 dir_pin: !U_1:PB3
-enable_pin: !U_1:PB5
+# No enable_pin: on the X-7 board this pin does not switch the X/Y TMC2240s
+# off (measured 2026-10-22: IOIN drv_enn read 0 = enabled while Klipper had the
+# motor off, so both drivers held 1.07 A at standstill and reached ~85 C).
+# Without it Klipper uses the drivers' own off switch (toff=0 over SPI).
+# enable_pin: !U_1:PB5
 microsteps: 32
 rotation_distance: @@xy_rotation_distance@@
 full_steps_per_rotation: 200
@@ -252,7 +256,11 @@ step_pulse_duration: 0.0000001
 [stepper_y]
 step_pin: U_1:PC14
 dir_pin: !U_1:PC13
-enable_pin: !U_1:PC15
+# No enable_pin: on the X-7 board this pin does not switch the X/Y TMC2240s
+# off (measured 2026-10-22: IOIN drv_enn read 0 = enabled while Klipper had the
+# motor off, so both drivers held 1.07 A at standstill and reached ~85 C).
+# Without it Klipper uses the drivers' own off switch (toff=0 over SPI).
+# enable_pin: !U_1:PC15
 microsteps: 32
 rotation_distance: @@xy_rotation_distance@@
 full_steps_per_rotation: 200
@@ -467,7 +475,44 @@ fan_speed: 1.0
 off_below: 0
 idle_timeout: 60
 idle_speed: 1.0
+#@else
+# Chamber heater disabled: its two thermistors are still read, so the chamber
+# temperature stays visible (read-only; nothing can heat the chamber).
+[temperature_sensor chamber]
+sensor_type: NTC 100K MGB18-104F39050L32
+sensor_pin: U_1:PA1
+min_temp: -100
+max_temp: 70
+
+[temperature_sensor Chamber_Thermal_Protection_Sensor]
+sensor_type: NTC 100K MGB18-104F39050L32
+sensor_pin: U_1:PC2
+min_temp: -100
+max_temp: @@chamber_backstop_max_temp@@
 #@endif
+
+# Board temperatures. [mcu] is the toolhead (GD32, shown as [temperature_sensor GD32]) and
+# [mcu U_1] the mainboard (STM32F401); stock showed neither the host nor the mainboard.
+[temperature_sensor host]
+sensor_type: temperature_host
+min_temp: 0
+max_temp: 100
+
+[temperature_sensor mainboard]
+sensor_type: temperature_mcu
+sensor_mcu: U_1
+min_temp: 0
+max_temp: 100
+
+# Hide the "MCU has deprecated code" banner while the boards still run QIDI's
+# stock firmware (each message stays in klippy.log). extras/qd_stock_mcu.py
+[qd_stock_mcu]
+
+# X/Y driver temperatures: Fluidd/Mainsail show the TMC2240s' built-in sensor,
+# but Klipper only reads it while a motor is enabled. [qd_tmc_driver] keeps it
+# reported all the time (and provides the sensor type the board fan uses).
+# extras/qd_tmc_driver.py
+[qd_tmc_driver]
 
 #####################################################################
 # Fans, lights and misc outputs
@@ -489,18 +534,49 @@ hardware_pwm: False
 kick_start_time: 0.100
 off_below: 0.0
 
-[controller_fan board_fan]
+# Mainboard fan, driven by the X driver temperature (the hotter of the two
+# TMC2240s; [qd_tmc_driver] above reads it also while the motors are off)
+# instead of running at 100% whenever a motor or heater is on. While a bed (or
+# chamber) heater is on, _QD_BOARD_FAN_FLOOR keeps it at 40% or more for the
+# mainboard's heater switches, which the driver sensor does not see.
+[temperature_fan board_fan]
 pin: U_1:PC4
 max_power: 1.0
 shutdown_speed: 1.0
 cycle_time: 0.01
-fan_speed: 1.0
+kick_start_time: 0.5
+off_below: 0.25
+sensor_type: qd_tmc_driver
+tmc: tmc2240 stepper_x
+min_temp: -20
+max_temp: 120
+target_temp: 50
+# Klipper divides these by 255: Kp 40 = full speed about 6 C above target.
+control: pid
+pid_Kp: 40
+pid_Ki: 0.2
+pid_Kd: 0.1
+min_speed: 0.0
+max_speed: 1.0
+
+[gcode_macro _QD_BOARD_FAN_FLOOR_STATE]
+variable_floor: -1
+gcode:
+
+[delayed_gcode _QD_BOARD_FAN_FLOOR]
+initial_duration: 5
+gcode:
 #@if chamber_enabled
-heater: chamber
+  {% set heating = printer.heater_bed.target > 0 or printer["heater_generic chamber"].target > 0 %}
 #@else
-heater: heater_bed
+  {% set heating = printer.heater_bed.target > 0 %}
 #@endif
-stepper: stepper_x, stepper_y
+  {% set floor = 0.4 if heating else 0.0 %}
+  {% if floor != printer["gcode_macro _QD_BOARD_FAN_FLOOR_STATE"].floor %}
+    SET_TEMPERATURE_FAN_TARGET TEMPERATURE_FAN=board_fan MIN_SPEED={floor}
+    SET_GCODE_VARIABLE MACRO=_QD_BOARD_FAN_FLOOR_STATE VARIABLE=floor VALUE={floor}
+  {% endif %}
+  UPDATE_DELAYED_GCODE ID=_QD_BOARD_FAN_FLOOR DURATION=5
 
 [output_pin caselight]
 pin: U_1:PC7

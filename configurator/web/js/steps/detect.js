@@ -117,6 +117,15 @@ export async function enter(ctx) {
 
   function setActions() {
     const ready = !!result && result.flash_ready;
+    // Flashing being blocked must not block setup: boards that answer keep the firmware they run now
+    // (the flash step then offers its skip), and the blockers stay listed above for later.
+    const found = !!result && (result.boards || []).some((b) => b && b.port);
+    if (!scanning && result && !ready && found) {
+      return ctx.actions.set({
+        next: { label: 'Continue without flashing', disabled: false, icon: 'arrowRight', onClick: null },
+        note: 'The boards keep the firmware they run now. Flashing can be done later.',
+      });
+    }
     ctx.actions.set({
       next: { disabled: scanning || !ready },
       note: scanning ? h('span', null, h('span', { class: 'dot live' }), 'Probing serial ports...') : result && !ready ? 'Resolve the issue above to continue.' : result ? 'Hardware confirmed.' : null,

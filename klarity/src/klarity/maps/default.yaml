@@ -83,7 +83,13 @@ meta:
     - automatic page changes driven by printer state (the stock host forces pages on events)
 
 screen:
-  init: []   # the stock host sends only `logo.version=0010701` then `page 3`; Klarity always sends bkcmd/sendme
+  # The stock host's start-up handshake (notes/screen-map/serial.md, init step 6). Without it the .tft's own
+  # timeout shows its "system starts abnormally, restart" page (page 1) and stays there.
+  # The value is QIDI's release (1.7.3 -> 0010703) and must match the .tft on the panel, which compares it
+  # and otherwise shows "UI version doesn't match firmware". 1.7.3 is the latest .tft QIDI's updater installs.
+  init:
+  - logo.version=0010703
+  - page 3
 
 pages:
   # ----------------------------------------------------------------------
