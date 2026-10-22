@@ -305,6 +305,20 @@ def cmd_make_venv(a) -> None:
         "include-system-site-packages = false\n"
         f"prompt = {Path(a.dest).name}\n"
     )
+    # A minimal bin/activate. uv does not write one, but Moonraker's update
+    # manager verifies $venv/bin/activate exists before it loads (app_deploy.py),
+    # so without it the whole update_manager component fails to load.
+    (root / "bin" / "activate").write_text(
+        f"# Minimal venv activate for {abs_root} (uv builds none; Moonraker checks it exists).\n"
+        "deactivate () {\n"
+        '    [ -n "${_OLD_VIRTUAL_PATH:-}" ] && PATH="$_OLD_VIRTUAL_PATH" && export PATH\n'
+        "    unset VIRTUAL_ENV _OLD_VIRTUAL_PATH\n"
+        '    [ "${1:-}" = nondestructive ] || unset -f deactivate\n'
+        "}\n"
+        "deactivate nondestructive\n"
+        f'VIRTUAL_ENV="{abs_root}"; export VIRTUAL_ENV\n'
+        '_OLD_VIRTUAL_PATH="$PATH"; PATH="$VIRTUAL_ENV/bin:$PATH"; export PATH\n'
+    )
     env = uv_env()
     common = [os.environ.get("UV", "uv"), "pip", "install", "--no-config", "--python-platform", PLATFORM, "--python-version", PYTHON_MM,
               "--target", site, "--no-deps", "--link-mode", "copy"]

@@ -25,7 +25,14 @@ polkit.addRule(function(action, subject) {
     if (action.id === "org.freedesktop.systemd1.manage-units" ||
         action.id === "org.freedesktop.systemd1.manage-unit-files") {
         var unit = action.lookup("unit");
-        if (unit !== undefined && units.indexOf(unit) >= 0) {
+        // Moonraker probes this permission once at startup with no unit (an
+        // empty details dict); without this the probe is denied and it disables
+        // all service control. A real start/stop/restart always carries the unit
+        // (systemd adds it), so the whitelist below still bounds what can be done.
+        if (unit === undefined) {
+            return polkit.Result.YES;
+        }
+        if (units.indexOf(unit) >= 0) {
             return polkit.Result.YES;
         }
         return polkit.Result.NOT_HANDLED;
@@ -36,7 +43,8 @@ polkit.addRule(function(action, subject) {
 
     // Reboot and shut down from the web UI and the touchscreen.
     if (action.id.indexOf("org.freedesktop.login1.reboot") === 0 ||
-        action.id.indexOf("org.freedesktop.login1.power-off") === 0) {
+        action.id.indexOf("org.freedesktop.login1.power-off") === 0 ||
+        action.id.indexOf("org.freedesktop.login1.halt") === 0) {
         return polkit.Result.YES;
     }
 
