@@ -10,24 +10,32 @@
 #
 # Why tune at all: UVC auto-exposure may lengthen exposure and lower the frame
 # rate when the scene is dark. Disabling the frame-rate-dropping controls keeps
-# the sensor at the requested rate; exposure then auto-adjusts within that rate.
+# the sensor at the requested rate where the camera has them. The X-Plus 4's
+# stock camera (HD Camera, 1bcf:0b09) has neither: its auto-exposure holds 24 fps
+# at 1080p whatever the flicker setting (measured 2026-10-22), and a fixed
+# exposure of 30 ms gives 29-30 fps. So the default is a fixed exposure that is
+# flicker-free for the mains frequency the camera is set to: 30 ms at 50 Hz
+# (three mains half-cycles), 33.3 ms at 60 Hz (four); raise gain to brighten.
 #
 # Environment (all optional, normally set from camera.env):
 #   EITRI_CAMERA_DEVICE          camera node          (default /dev/eitri-cam)
 #   EITRI_CAMERA_WAIT_SECONDS    wait budget          (default 20)
-#   EITRI_CAMERA_EXPOSURE_MODE   auto | manual        (default auto)
+#   EITRI_CAMERA_EXPOSURE_MODE   auto | manual        (default manual)
 #   EITRI_CAMERA_EXPOSURE_ABS    manual exposure, in 100 us units (manual only).
 #                                At 30 fps keep it <= 333 or the frame rate drops.
+#                                Default: 300 at 50 Hz mains, 333 otherwise.
 #   EITRI_CAMERA_POWER_LINE      off | 50 | 60 | auto (default: leave unchanged)
+#   EITRI_CAMERA_CTRLS           extra controls, applied last: "gain=4 sharpness=3"
 #   EITRI_CAMERA_V4L2CTL         v4l2-ctl binary      (default v4l2-ctl)
 
 set -u
 
 DEVICE="${EITRI_CAMERA_DEVICE:-/dev/eitri-cam}"
 WAIT_SECONDS="${EITRI_CAMERA_WAIT_SECONDS:-20}"
-EXPOSURE_MODE="${EITRI_CAMERA_EXPOSURE_MODE:-auto}"
+EXPOSURE_MODE="${EITRI_CAMERA_EXPOSURE_MODE:-manual}"
 EXPOSURE_ABS="${EITRI_CAMERA_EXPOSURE_ABS:-}"
 POWER_LINE="${EITRI_CAMERA_POWER_LINE:-}"
+EXTRA_CTRLS="${EITRI_CAMERA_CTRLS:-}"
 V4L2CTL="${EITRI_CAMERA_V4L2CTL:-v4l2-ctl}"
 
 # Longest exposure that still lets a 30 fps sensor hold its rate: 1/30 s in 100 us units.
@@ -89,6 +97,32 @@ set_ctrl() {
     return 0
 }
 
+# set_ctrl_any VALUE NAME...: set the first of several names the device exposes
+# (uvcvideo renamed controls across kernels, e.g. exposure_auto -> auto_exposure).
+set_ctrl_any() {
+    value=$1
+    shift
+    for name in "$@"; do
+        if has_control "$name"; then
+            set_ctrl "$name" "$value"
+            return 0
+        fi
+    done
+    log "skip $*: none exposed by this device"
+    return 0
+}
+
+# Print the mains frequency the camera's flicker filter is set to (50, 60 or empty).
+power_line_hz() {
+    for name in power_line_frequency; do
+        has_control "$name" || continue
+        case $("$V4L2CTL" -d "$DEVICE" --get-ctrl="$name" 2>/dev/null | sed -n 's/^[^:]*: *//p') in
+            1) echo 50 ;;
+            2) echo 60 ;;
+        esac
+    done
+}
+
 cmd_tune() {
     if [ ! -e "$DEVICE" ]; then
         log "no camera node at $DEVICE; nothing to tune"
@@ -109,6 +143,25 @@ cmd_tune() {
     set_ctrl exposure_auto_priority 0
     set_ctrl exposure_dynamic_framerate 0
 
+    # The flicker setting first: the default exposure follows it.
+    case "$POWER_LINE" in
+        '')
+            ;;
+        off) set_ctrl power_line_frequency 0 ;;
+        50) set_ctrl power_line_frequency 1 ;;
+        60) set_ctrl power_line_frequency 2 ;;
+        auto) set_ctrl power_line_frequency 3 ;;
+        *) log "warning: unknown EITRI_CAMERA_POWER_LINE '$POWER_LINE' (want off|50|60|auto); ignored" ;;
+    esac
+
+    if [ "$EXPOSURE_MODE" = manual ] && [ -z "$EXPOSURE_ABS" ]; then
+        if [ "$(power_line_hz)" = 50 ]; then
+            EXPOSURE_ABS=300
+        else
+            EXPOSURE_ABS=333
+        fi
+    fi
+
     case "$EXPOSURE_MODE" in
         auto)
             ;;
@@ -121,9 +174,9 @@ cmd_tune() {
                     if [ "$EXPOSURE_ABS" -gt "$MAX_EXPOSURE_30FPS" ]; then
                         log "warning: exposure $EXPOSURE_ABS exceeds 1/30 s; frame rate will drop below 30 fps"
                     fi
-                    # Menu value 1 = Manual Mode on UVC; must be set before exposure_absolute.
-                    set_ctrl exposure_auto 1
-                    set_ctrl exposure_absolute "$EXPOSURE_ABS"
+                    # Menu value 1 = Manual Mode on UVC; must be set before the exposure time.
+                    set_ctrl_any 1 auto_exposure exposure_auto
+                    set_ctrl_any "$EXPOSURE_ABS" exposure_time_absolute exposure_absolute
                     ;;
             esac
             ;;
@@ -132,15 +185,12 @@ cmd_tune() {
             ;;
     esac
 
-    case "$POWER_LINE" in
-        '')
-            ;;
-        off) set_ctrl power_line_frequency 0 ;;
-        50) set_ctrl power_line_frequency 1 ;;
-        60) set_ctrl power_line_frequency 2 ;;
-        auto) set_ctrl power_line_frequency 3 ;;
-        *) log "warning: unknown EITRI_CAMERA_POWER_LINE '$POWER_LINE' (want off|50|60|auto); ignored" ;;
-    esac
+    for pair in $EXTRA_CTRLS; do
+        case "$pair" in
+            [a-z]*=*[0-9]*) set_ctrl "${pair%%=*}" "${pair#*=}" ;;
+            *) log "warning: ignoring '$pair' in EITRI_CAMERA_CTRLS (want name=value)" ;;
+        esac
+    done
 
     return 0
 }

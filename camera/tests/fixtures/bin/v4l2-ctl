@@ -76,6 +76,10 @@ case "$action" in
     get)
         name=${ctrl_arg}
         value=$(state_get "$name") || value=""
+        if [ -z "$value" ] && [ -n "${FAKE_V4L2_CONTROLS:-}" ]; then
+            # Like the real tool: a control never set reads its current value from the device.
+            value=$(sed -n "s/^[[:space:]]*$name 0x[0-9a-f]* (.*[[:space:]]value=\([-0-9]*\).*/\1/p" "$FAKE_V4L2_CONTROLS" | head -n 1)
+        fi
         if [ -z "$value" ]; then
             echo "VIDIOC_G_EXT_CTRLS: failed: Invalid argument" >&2
             exit 1
