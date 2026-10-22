@@ -56,7 +56,8 @@ while (($#)); do
 done
 log() { printf 'mk-dev-bundle: %s\n' "$*" >&2; }
 die() { log "$*"; exit 1; }
-[[ "$FLAVOR" == klipper || "$FLAVOR" == kalico ]] || die "--flavor must be klipper or kalico"
+[[ "$FLAVOR" == klipper || "$FLAVOR" == kalico || "$FLAVOR" == both ]] || die "--flavor must be klipper, kalico or both"
+case "$FLAVOR" in both) FLAVORS=(klipper kalico);; *) FLAVORS=("$FLAVOR");; esac
 [[ -n "$KEY" && -r "$KEY" ]] || die "--key FILE (a passwordless minisign secret key) is required"
 [[ -n "$PUB" ]] || PUB="${KEY%.key}.pub"
 [[ -r "$PUB" ]] || die "public key $PUB not found (--pubkey)"
@@ -71,13 +72,21 @@ trap 'rm -rf "$WORK"' EXIT
 rm -f "$OUT"/install.json "$OUT"/install.json.minisig "$OUT"/rootfs.img.zst "$OUT"/stage2-initramfs.cpio.gz "$OUT"/zstd-aarch64 \
       "$OUT"/data-seed-* "$OUT"/eitri-dev.pub "$OUT"/eitri-installer.tar.gz "$OUT"/SHA256SUMS "$OUT"/BUILD-INFO.txt "$OUT"/rootfs.check.txt
 
-# --- the data seed: the release version is the seed's -------------------------------------------------------
-seeds=("$SEED_DIR"/data-seed-*-"$FLAVOR".tar.zst)
-[[ ${#seeds[@]} == 1 && -r "${seeds[0]}" ]] || die "need exactly one data-seed-*-$FLAVOR.tar.zst in $SEED_DIR (found ${#seeds[@]})"
-SEED="${seeds[0]}"; SEED_MAN="${SEED%.tar.zst}.manifest.json"
-[[ -r "$SEED_MAN" ]] || die "$SEED_MAN is missing"
-VERSION="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$SEED_MAN")"
-log "version $VERSION ($FLAVOR seed $(basename "$SEED"))"
+SEED_FILES=()
+# --- the data seed(s): the release version is the seed's (all flavors must share it) ------------------------
+VERSION=""; SEED_JSON="["
+for fl in "${FLAVORS[@]}"; do
+  s=("$SEED_DIR"/data-seed-*-"$fl".tar.zst)
+  [[ ${#s[@]} == 1 && -r "${s[0]}" ]] || die "need exactly one data-seed-*-$fl.tar.zst in $SEED_DIR (found ${#s[@]})"
+  m="${s[0]%.tar.zst}.manifest.json"; [[ -r "$m" ]] || die "$m is missing"
+  v="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$m")"
+  [[ -z "$VERSION" || "$VERSION" == "$v" ]] || die "seed versions differ: $VERSION vs $v ($fl)"
+  VERSION="$v"
+  SEED_JSON="$SEED_JSON{\"flavor\":\"$fl\",\"seed\":\"$(basename "${s[0]}")\",\"man\":\"$(basename "$m")\"},"
+  SEED_FILES+=("${s[0]}" "$m")
+  log "version $VERSION ($fl seed $(basename "${s[0]}"))"
+done
+SEED_JSON="${SEED_JSON%,}]"
 
 # --- slot A: the conservative-feature rootfs ----------------------------------------------------------------
 # U-Boot 2021.07 (the stock boot loader) loads /boot/Image and the device tree from this file system with ext4load.
@@ -126,13 +135,14 @@ if [[ -z "$STAGE2_DIR" ]]; then
   "$HERE/mk-stage2-initramfs.sh" --br-out "$BR_OUT" --out "$STAGE2_DIR" >&2
 fi
 cp "$STAGE2_DIR/stage2-initramfs.cpio.gz" "$STAGE2_DIR/zstd-aarch64" "$OUT/"
-cp "$SEED" "$SEED_MAN" "$OUT/"
+cp "${SEED_FILES[@]}" "$OUT/"
 cp "$PUB" "$OUT/eitri-dev.pub"
 
 # --- install.json ------------------------------------------------------------------------------------------
-python3 -I - "$OUT" "$VERSION" "$FLAVOR" "$(basename "$SEED")" "$(basename "$SEED_MAN")" "$RAW_SIZE" "$RAW_SHA" "$ROOT_MIB" "$DATA_MIN_MIB" <<'PY'
+python3 -I - "$OUT" "$VERSION" "$SEED_JSON" "$RAW_SIZE" "$RAW_SHA" "$ROOT_MIB" "$DATA_MIN_MIB" <<'PY'
 import hashlib, json, os, sys
-out, version, flavor, seed, seed_man, raw_size, raw_sha, root_mib, data_min_mib = sys.argv[1:]
+out, version, seed_json, raw_size, raw_sha, root_mib, data_min_mib = sys.argv[1:]
+seeds = json.loads(seed_json)
 
 def entry(name, **extra):
     h = hashlib.sha256()
@@ -143,24 +153,29 @@ def entry(name, **extra):
     e.update(extra)
     return e
 
-man = json.load(open(os.path.join(out, seed_man)))
-fw = man["sources"]["firmware"]
+flavors, data_seed, python_abi = {}, {}, None
+for sd in seeds:
+    man = json.load(open(os.path.join(out, sd["man"])))
+    fw = man["sources"]["firmware"]
+    python_abi = man["target"]["python_abi"]
+    flavors[sd["flavor"]] = {"commit": fw["commit"], "describe": fw["describe"]}
+    data_seed[sd["flavor"]] = dict(entry(sd["seed"]), manifest=entry(sd["man"]))
 doc = {
     "schema": 1,
     "version": version,
     "channel": "dev",
     "dev": True,
     "comment": "DEVELOPMENT bundle signed with a local development key; not an Eitri release",
-    "target": {"compatible": "firefly,roc-rk3328-cc", "python_abi": man["target"]["python_abi"]},
+    "target": {"compatible": "firefly,roc-rk3328-cc", "python_abi": python_abi},
     "stock": {"soc": ["1.7.1", "1.7.3"]},
     "layout": {"root_mib": int(root_mib), "data_min_mib": int(data_min_mib)},
     "kernel_cmdline": "console=tty1 loglevel=4 panic=10 net.ifnames=0",
     "mcu_policy": "keep-stock",
-    "flavors": {flavor: {"commit": fw["commit"], "describe": fw["describe"]}},
+    "flavors": flavors,
     "files": {
         "rootfs": entry("rootfs.img.zst", raw_size=int(raw_size), raw_sha256=raw_sha),
         "stage2_initramfs": entry("stage2-initramfs.cpio.gz"),
-        "data_seed": {flavor: dict(entry(seed), manifest=entry(seed_man))},
+        "data_seed": data_seed,
         "zstd": entry("zstd-aarch64"),
     },
 }
@@ -169,7 +184,7 @@ with open(os.path.join(out, "install.json"), "w") as fh:
     fh.write("\n")
 PY
 minisign -S -s "$KEY" -m "$OUT/install.json" -x "$OUT/install.json.minisig" \
-  -t "Eitri DEV bundle $VERSION ($FLAVOR), $(date -u +%Y-%m-%dT%H:%M:%SZ), development key - not a release" >/dev/null
+  -t "Eitri DEV bundle $VERSION (${FLAVORS[*]}), $(date -u +%Y-%m-%dT%H:%M:%SZ), development key - not a release" >/dev/null
 
 # --- the installer itself (dereferenced: bin/eitri-seed-install is a link into seed/) ------------------------
 tar -C "$REPO" -h --exclude='__pycache__' --exclude='.pytest_cache' --exclude='.ruff_cache' --exclude='installer/tests' --exclude='installer/*/tests' \
@@ -179,17 +194,20 @@ tar -C "$REPO" -h --exclude='__pycache__' --exclude='.pytest_cache' --exclude='.
 python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); from eitri_update.minisign import main; sys.exit(main(sys.argv[2:]))' \
   "$INSTALLER/eitri-update" verify "$OUT/install.json" --sig "$OUT/install.json.minisig" --pubkey "$OUT/eitri-dev.pub" >/dev/null ||
   die "the signature does not verify with $PUB"
-python3 -I "$INSTALLER/tools/prepare_payload.py" plan --install-json "$OUT/install.json" --flavor "$FLAVOR" --base-url "file://$OUT/" --out-dir "$WORK/plan"
-mkdir -p "$WORK/stage"
-for f in rootfs.img.zst stage2-initramfs.cpio.gz "$(basename "$SEED")" "$(basename "$SEED_MAN")"; do ln "$OUT/$f" "$WORK/stage/$f" 2>/dev/null || cp "$OUT/$f" "$WORK/stage/$f"; done
-python3 -I "$INSTALLER/tools/prepare_payload.py" finalize --install-json "$OUT/install.json" --flavor "$FLAVOR" --dir "$WORK/stage"
-grep -q '^mcu_firmware_file=$' "$WORK/stage/payload.env" || die "payload.env should name no MCU firmware"
+for fl in "${FLAVORS[@]}"; do
+  rm -rf "$WORK/plan" "$WORK/stage"; mkdir -p "$WORK/stage"
+  python3 -I "$INSTALLER/tools/prepare_payload.py" plan --install-json "$OUT/install.json" --flavor "$fl" --base-url "file://$OUT/" --out-dir "$WORK/plan"
+  mapfile -t sfiles < <(cd "$OUT" && ls rootfs.img.zst stage2-initramfs.cpio.gz data-seed-*-"$fl".tar.zst data-seed-*-"$fl".manifest.json)
+  for f in "${sfiles[@]}"; do ln "$OUT/$f" "$WORK/stage/$f" 2>/dev/null || cp "$OUT/$f" "$WORK/stage/$f"; done
+  python3 -I "$INSTALLER/tools/prepare_payload.py" finalize --install-json "$OUT/install.json" --flavor "$fl" --dir "$WORK/stage"
+  grep -q '^mcu_firmware_file=$' "$WORK/stage/payload.env" || die "payload.env should name no MCU firmware ($fl)"
+done
 
 ( cd "$OUT" && sha256sum install.json install.json.minisig rootfs.img.zst stage2-initramfs.cpio.gz data-seed-* zstd-aarch64 eitri-dev.pub \
     eitri-installer.tar.gz >SHA256SUMS )
 {
   echo "Eitri DEVELOPMENT bundle - signed with a local development key, NOT an Eitri release."
-  echo "version:   $VERSION   flavor: $FLAVOR   mcu_policy: keep-stock (no MCU firmware; both boards keep their stock firmware)"
+  echo "version:   $VERSION   flavor: ${FLAVORS[*]}   mcu_policy: keep-stock (no MCU firmware; both boards keep their stock firmware)"
   echo "built:     $(date -u +%Y-%m-%dT%H:%M:%SZ) on $(hostname) from $(git -C "$REPO" describe --always --dirty 2>/dev/null || echo unknown)"
   echo "rootfs:    $ROOTFS ($RAW_SIZE B, sha256 $RAW_SHA)"
   sed 's/^/           /' "$OUT/rootfs.check.txt"

@@ -657,6 +657,20 @@ def test_a_release_without_mcu_firmware_installs_with_both_boards_stock(printer,
     assert not [l for l in printer.calls() if l.split()[:1] and l.split()[0] in ("probe", "plan", "backup", "flash")]
 
 
+def test_kalico_can_be_chosen_at_install_time(printer, tmp_path):
+    # The bundle offers both flavors (printerfix builds a seed per flavor); picking kalico must stage the kalico seed.
+    keep_stock_bundle(printer)
+    stub = _ok_stub(tmp_path)
+    path, digest = make_backup_file(printer)
+    r = printer.install("--flavor", "kalico", "--i-have-a-backup", "--yes", "--backup-file", path, "--backup-sha256", digest,
+                        "--confirm", "CONVERT", EITRI_MCUFLASH=str(stub))
+    assert r.returncode == 0, r.stdout
+    penv = dict(l.split("=", 1) for l in open(os.path.join(printer.state, "payload", "payload.env")).read().splitlines())
+    assert penv["data_seed_file"] == "data-seed-2026.10.0-kalico.tar.zst", penv
+    assert os.path.isfile(os.path.join(printer.state, "payload", penv["data_seed_file"]))
+    assert "flavor=kalico" in open(os.path.join(printer.state, "stage2.conf")).read()
+
+
 def test_a_release_without_mcu_firmware_refuses_mcu_auto(printer):
     keep_stock_bundle(printer)
     for mode in ("auto", "manual"):
