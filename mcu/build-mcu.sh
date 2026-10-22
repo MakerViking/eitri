@@ -12,7 +12,8 @@
 #                                                                  toolchain, writes nothing outside W. What CI runs
 #                                                                  while a board is unresolved.
 #   mcu/build-mcu.sh --flavor both --version V --out O --work W \
-#                    --toolchain DIR [--seed-manifest M]...            the real build (needs every board RESOLVED)
+#                    --toolchain DIR [--seed-manifest M]... [--board B]...   the real build of the selected boards (default
+#                                                                  both); every selected board must be RESOLVED
 #
 # SAFETY: the real build runs `mcutool.py gate` first and stops (exit 3) while any board's flash parameters are
 # unresolved (mcu/params.json). A firmware linked for the wrong application offset or the wrong crystal does not boot.
@@ -28,7 +29,7 @@ log() { printf 'build-mcu: %s\n' "$*" >&2; }
 die() { printf 'build-mcu: error: %s\n' "$*" >&2; exit "${2:-1}"; }
 usage() { sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
-FLAVOR_ARG=both; VERSION=""; OUT=""; WORK=""; TOOLCHAIN=""; SEED_MANIFESTS=(); CHECK_ONLY=0; JOBS=""
+FLAVOR_ARG=both; VERSION=""; OUT=""; WORK=""; TOOLCHAIN=""; SEED_MANIFESTS=(); CHECK_ONLY=0; JOBS=""; BOARDS=()
 TC_VERSION=""; TC_SHA256=""; TC_NAME="Arm GNU Toolchain arm-none-eabi"
 declare -A SOURCES=() DESCRIBES=()
 while [ $# -gt 0 ]; do
@@ -44,6 +45,7 @@ while [ $# -gt 0 ]; do
         --source) SOURCES["${2%%=*}"]="${2#*=}"; shift 2;;          # FLAVOR=DIR: a clone that has the pinned commit and tags
         --describe) DESCRIBES["${2%%=*}"]="${2#*=}"; shift 2;;      # FLAVOR=STRING: expected `git describe`
         --jobs) JOBS="$2"; shift 2;;
+        --board) case "$2" in mainboard|toolhead) BOARDS+=("$2");; *) die "--board must be mainboard or toolhead" 2;; esac; shift 2;;
         --check-only) CHECK_ONLY=1; shift;;
         -h|--help) usage;;
         *) die "unknown argument $1" 2;;
@@ -51,14 +53,17 @@ while [ $# -gt 0 ]; do
 done
 case "$FLAVOR_ARG" in both) FLAVORS=(klipper kalico);; klipper|kalico) FLAVORS=("$FLAVOR_ARG");; *) die "--flavor must be klipper, kalico or both" 2;; esac
 [ -n "$WORK" ] || die "--work DIR is required" 2
+[ "${#BOARDS[@]}" -gt 0 ] || BOARDS=(mainboard toolhead)
+GATE_ARGS=(); for b in "${BOARDS[@]}"; do GATE_ARGS+=(--board "$b"); done
 mkdir -p "$WORK"; WORK="$(cd -- "$WORK" && pwd -P)"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
 
 # --- the gate -------------------------------------------------------------------------------------------------
 if [ "$CHECK_ONLY" -eq 0 ]; then
-    "${TOOL[@]}" gate || die "not building: a board's flash parameters are unresolved (see above)" 3
+    "${TOOL[@]}" gate "${GATE_ARGS[@]}" || die "not building: a board's flash parameters are unresolved (see above)" 3
     [ -n "$VERSION" ] && [ -n "$OUT" ] && [ -n "$TOOLCHAIN" ] || die "--version, --out and --toolchain are required for a real build" 2
     [ -x "$TOOLCHAIN/bin/arm-none-eabi-gcc" ] || die "no arm-none-eabi-gcc in $TOOLCHAIN/bin (mcu/fetch-toolchain.sh installs the pinned one)"
+    TOOLCHAIN="$(cd -- "$TOOLCHAIN" && pwd -P)"     # PATH must survive make -C into the tree
     [ -n "$TC_VERSION" ] || TC_VERSION="$("${TOOL[@]}" lock mcu.toolchain version 2>/dev/null)" || die "no toolchain version: pass --toolchain-version or pin [mcu.toolchain] in release.lock"
     [ -n "$TC_SHA256" ] || TC_SHA256="$("${TOOL[@]}" lock mcu.toolchain sha256 2>/dev/null)" || die "no toolchain sha256: pass --toolchain-sha256 or pin [mcu.toolchain] in release.lock"
     mkdir -p "$OUT"; OUT="$(cd -- "$OUT" && pwd -P)"
@@ -121,7 +126,7 @@ for flavor in "${FLAVORS[@]}"; do
     export PATH="$TOOLCHAIN/bin:$PATH" SOURCE_DATE_EPOCH="$EPOCH"
     GCC_VERSION="$(arm-none-eabi-gcc --version | head -n1)"
     build_args=()
-    for board in mainboard toolhead; do
+    for board in "${BOARDS[@]}"; do
         case "$board" in mainboard) cfg=mainboard-stm32f401.config;; toolhead) cfg=toolhead-stm32f103.config;; esac
         bdir="$WORK/build/$flavor/$board"
         rm -rf "$bdir" "$bdir.config"; mkdir -p "$bdir"

@@ -39,7 +39,7 @@ def test_the_mainboard_is_settled_and_the_toolhead_is_not():
 def test_go_flag_agrees_with_the_board_states():
     problems = mcutool.gate(PARAMS)
     assert PARAMS["go"] is (not problems)
-    assert any("toolhead" in p and "Katapult or the stock factory bootloader" in p for p in problems)
+    assert any("toolhead" in p and "Katapult install over SWD" in p for p in problems)
     assert mcutool.gate(PARAMS, ["mainboard"]) == []
 
 

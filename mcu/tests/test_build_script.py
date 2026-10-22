@@ -16,7 +16,7 @@ def test_a_real_build_is_refused_while_the_toolhead_is_unresolved(tmp_path):
     res = run("--flavor", "both", "--version", "0.0.0.dev0", "--out", str(tmp_path / "out"), "--work", str(tmp_path / "w"),
               "--toolchain", str(tmp_path / "no-toolchain"))
     assert res.returncode == 3, res.stderr
-    assert "unresolved: toolhead" in res.stderr and "Katapult or the stock factory bootloader" in res.stderr
+    assert "unresolved: toolhead" in res.stderr and "Katapult install over SWD" in res.stderr
     assert not (tmp_path / "out").exists() and not (tmp_path / "w" / "src").exists()      # nothing fetched, nothing built
 
 

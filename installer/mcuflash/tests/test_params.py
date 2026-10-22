@@ -58,7 +58,7 @@ def test_unresolved_toolhead_is_refused_and_nothing_is_touched(tmp_path):
     plan = rig.plan()
     block = checks(plan, "parameters", "toolhead", BLOCK)
     assert plan.blocked and block
-    assert "unresolved" in block[0].detail and "Open question" in block[0].detail and "Katapult or the stock factory bootloader" in block[0].detail
+    assert "unresolved" in block[0].detail and "Open question" in block[0].detail and "no bootloader" in block[0].detail
     assert checks(plan, "parameters", "mainboard", "ok")          # the settled board is not what blocks
     code, data = rig.flasher.execute(plan, apply=True)
     assert code == EX_BLOCKED

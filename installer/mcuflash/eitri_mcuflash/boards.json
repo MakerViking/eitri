@@ -6,10 +6,19 @@
       "label": "Toolhead board (extruder, hotend, probe)",
       "serial_hint": "/dev/ttyS2",
       "app_baud": 500000,
-      "mcu_candidates": ["stm32f103*"],
-      "stock_cfg_owns": ["extruder"],
-      "methods": ["katapult"],
-      "katapult_bauds": [250000, 500000],
+      "mcu_candidates": [
+        "stm32f103*"
+      ],
+      "stock_cfg_owns": [
+        "extruder"
+      ],
+      "methods": [
+        "katapult"
+      ],
+      "katapult_bauds": [
+        250000,
+        500000
+      ],
       "allow_katapult": true,
       "expect_config": {
         "MCU": "stm32f103xe",
@@ -19,16 +28,14 @@
       },
       "parameters": {
         "status": "unresolved",
-        "confidence": "unsure",
+        "confidence": "certain",
         "resolved_by": "katapult",
         "app_offset": null,
         "app_offset_if_katapult": "0x08002000",
-        "clock_ref": "8 MHz external crystal (STM32_CLOCK_REF_8M); HSE is certain, 8 MHz is likely",
+        "clock_ref": "8 MHz external crystal (STM32_CLOCK_REF_8M), measured (RCC_CFGR HSE x9)",
         "serial": "USART1 remapped PB7/PB6",
         "open_questions": [
-          "Does this printer's toolhead run Katapult or the stock factory bootloader? A firmware built for the wrong application offset does not boot, and only an ST-Link can recover a board whose bootloader is missing or unknown.",
-          "If it runs Katapult: its application offset (0x08002000 for the community 8 KiB build) must be read from the live bootloader, and its baud rate (250000 or 500000) is compile-time.",
-          "If it runs the stock bootloader: nothing documents a serial flash protocol for it, and the stock application offset is unknown (0x08008000 is only inferred from the Q2 toolhead)."
+          "The toolhead has no bootloader (measured 2026-10-22: SCB->VTOR 0x08000000, the application starts at the flash base), so it cannot be written over serial. Install Katapult once over SWD with an ST-Link (docs/RECOVERY.md); after that this board is written at 0x08002000 while Katapult answers. Until then it keeps its stock firmware, which the current host drives."
         ]
       },
       "order": 1,
@@ -38,9 +45,19 @@
       "label": "Mainboard (X/Y/Z steppers, bed, chamber)",
       "serial_hint": "/dev/ttyS0",
       "app_baud": 500000,
-      "mcu_candidates": ["stm32f401*"],
-      "stock_cfg_owns": ["stepper_x", "stepper_y", "stepper_z", "heater_bed"],
-      "methods": ["sdcard-serial", "sdcard-file"],
+      "mcu_candidates": [
+        "stm32f401*"
+      ],
+      "stock_cfg_owns": [
+        "stepper_x",
+        "stepper_y",
+        "stepper_z",
+        "heater_bed"
+      ],
+      "methods": [
+        "sdcard-serial",
+        "sdcard-file"
+      ],
       "katapult_bauds": [],
       "allow_katapult": false,
       "expect_config": {
@@ -56,31 +73,58 @@
       },
       "parameters": {
         "status": "resolved",
-        "confidence": "likely",
+        "confidence": "certain",
         "resolved_by": null,
         "app_offset": "0x08008000",
         "app_offset_if_katapult": null,
-        "clock_ref": "8 MHz external crystal (STM32_CLOCK_REF_8M)",
+        "clock_ref": "8 MHz external crystal (STM32_CLOCK_REF_8M), measured (RCC_PLLCFGR M=4 N=168 P=4)",
         "serial": "USART1 PA10/PA9",
-        "open_questions": [
-          "A direct read of the stock board's SCB->VTOR is still missing; 0x08008000 is derived from community images that boot on this board (mcu/README.md).",
-          "The HSE crystal frequency (8 MHz) is inferred; a mismatch would bring the board up at the wrong baud rate and it would not connect (recoverable through the SD bootloader)."
-        ]
+        "open_questions": []
       },
       "order": 2,
       "recovery": "Copy the stock qd_mcu.bin to the root of a FAT32 microSD card, insert it in the mainboard slot (case must be opened) and press the mainboard RESET button; the board's stock SD bootloader (at 0x08000000, which Eitri never writes) flashes it on its own."
     }
   },
   "chips": {
-    "stm32f103x8": { "flash_kib": 64, "flash_base": "0x08000000" },
-    "stm32f103xb": { "flash_kib": 128, "flash_base": "0x08000000" },
-    "stm32f103xc": { "flash_kib": 256, "flash_base": "0x08000000" },
-    "stm32f103xd": { "flash_kib": 384, "flash_base": "0x08000000" },
-    "stm32f103xe": { "flash_kib": 512, "flash_base": "0x08000000" },
-    "stm32f103xg": { "flash_kib": 1024, "flash_base": "0x08000000" },
-    "stm32f401xb": { "flash_kib": 128, "flash_base": "0x08000000" },
-    "stm32f401xc": { "flash_kib": 256, "flash_base": "0x08000000" },
-    "stm32f401xd": { "flash_kib": 384, "flash_base": "0x08000000" },
-    "stm32f401xe": { "flash_kib": 512, "flash_base": "0x08000000" }
+    "stm32f103x8": {
+      "flash_kib": 64,
+      "flash_base": "0x08000000"
+    },
+    "stm32f103xb": {
+      "flash_kib": 128,
+      "flash_base": "0x08000000"
+    },
+    "stm32f103xc": {
+      "flash_kib": 256,
+      "flash_base": "0x08000000"
+    },
+    "stm32f103xd": {
+      "flash_kib": 384,
+      "flash_base": "0x08000000"
+    },
+    "stm32f103xe": {
+      "flash_kib": 512,
+      "flash_base": "0x08000000"
+    },
+    "stm32f103xg": {
+      "flash_kib": 1024,
+      "flash_base": "0x08000000"
+    },
+    "stm32f401xb": {
+      "flash_kib": 128,
+      "flash_base": "0x08000000"
+    },
+    "stm32f401xc": {
+      "flash_kib": 256,
+      "flash_base": "0x08000000"
+    },
+    "stm32f401xd": {
+      "flash_kib": 384,
+      "flash_base": "0x08000000"
+    },
+    "stm32f401xe": {
+      "flash_kib": 512,
+      "flash_base": "0x08000000"
+    }
   }
 }

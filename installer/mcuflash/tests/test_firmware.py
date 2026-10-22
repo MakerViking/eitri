@@ -108,6 +108,12 @@ def test_application_address_comes_from_the_embedded_defconfig():
     assert fw.dictionary_app_address({"kconfig": "CONFIG_STM32_FLASH_START_0000=y\n"}) == 0x08000000
     assert fw.dictionary_app_address({"kconfig": "CONFIG_FLASH_APPLICATION_ADDRESS=0x8010000\n"}) == 0x08010000
     assert fw.dictionary_app_address({"kconfig": "CONFIG_MACH_STM32=y\n"}) is None
+    # The default offset is left out of the minimal defconfig (as in a real build for the X-Plus 4 mainboard).
+    real = "CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_STM32=y\nCONFIG_MACH_STM32F401=y\nCONFIG_STM32_SERIAL_USART1=y\n"
+    assert fw.dictionary_app_address({"kconfig": real}) == 0x08008000
+    assert fw.dictionary_app_address({"kconfig": "CONFIG_MACH_STM32F103=y\n"}) == 0x08002000
+    assert fw.dictionary_app_address({"kconfig": "CONFIG_MACH_STM32F103=y\nCONFIG_STM32_FLASH_START_0000=y\n"}) == 0x08000000
+    assert fw.dictionary_app_address({"kconfig": "CONFIG_MACH_STM32H743=y\n"}) is None
     assert fw.dictionary_app_address({}) is None and fw.dictionary_app_address(None) is None
 
 

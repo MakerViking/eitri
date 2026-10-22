@@ -113,7 +113,13 @@ def vector_table_problem(blob: bytes, app_offset: int, *, flash_base: int = 0x08
 
 _APP_ADDR = re.compile(r"^CONFIG_FLASH_APPLICATION_ADDRESS=(0x[0-9a-fA-F]+)\s*$", re.M)
 _FLASH_START = re.compile(r"^CONFIG_STM32_FLASH_START_([0-9A-Fa-f]+)=y\s*$", re.M)
+_MACH = re.compile(r"^CONFIG_(MACH_STM32[A-Z0-9]+)=y\s*$", re.M)
 STM32_FLASH_BASE = 0x08000000
+# The minimal defconfig leaves out a choice that equals its default, and Klipper's "Bootloader offset" choice
+# (src/stm32/Kconfig) has no explicit default, so the first option visible for the chip is taken: the 8 KiB
+# bootloader on an STM32F1, the 32 KiB one on an STM32F4. Only the X-Plus 4's two chips are listed; any other
+# chip without an explicit offset stays unknown.
+_DEFAULT_FLASH_START = {"MACH_STM32F401": 0x8000, "MACH_STM32F103": 0x2000}
 
 
 def dictionary_app_address(doc: Optional[Dict[str, Any]]) -> Optional[int]:
@@ -133,6 +139,9 @@ def dictionary_app_address(doc: Optional[Dict[str, Any]]) -> Optional[int]:
     m = _FLASH_START.search(kc)
     if m:
         return STM32_FLASH_BASE + int(m.group(1), 16)
+    for mach in _MACH.findall(kc):
+        if mach in _DEFAULT_FLASH_START:
+            return STM32_FLASH_BASE + _DEFAULT_FLASH_START[mach]
     return None
 
 

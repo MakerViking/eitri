@@ -283,14 +283,18 @@ def package(*, flavor: str, version: str, describe: str, commit: str, epoch: int
     live = live or load_live()
     if flavor not in FLAVORS:
         raise McuError("unknown flavor %r" % flavor)
-    if set(builds) != set(BOARDS):
-        raise McuError("a bundle needs both boards, got %s" % ", ".join(sorted(builds)))
-    problems = gate(params, BOARDS)
+    built = [name for name in BOARDS if name in builds]
+    if not built or set(builds) - set(BOARDS):
+        raise McuError("a bundle needs one or both of %s, got %s" % (", ".join(BOARDS), ", ".join(sorted(builds)) or "none"))
+    problems = gate(params, built)
     if problems:
         raise McuError("refusing to build a release bundle:\n  " + "\n  ".join(problems))
+    # A board left out is named with the reason, so a consumer never mistakes it for a lost file.
+    omitted = {name: (params["boards"][name].get("open_questions") or ["not built"])[0]
+               for name in BOARDS if name not in builds}
     files: Dict[str, bytes] = {}
     boards: Dict[str, Any] = {}
-    for name in BOARDS:
+    for name in built:
         bp = params["boards"][name]
         bdir = Path(builds[name])
         blob = (bdir / "klipper.bin").read_bytes()
@@ -312,7 +316,7 @@ def package(*, flavor: str, version: str, describe: str, commit: str, epoch: int
             "firmware_describe": describe, "toolchain": toolchain.get("version", ""),
         }
     inner = {"schema": 1, "flavor": flavor, "version": version, "source": {"commit": commit, "describe": describe, "origin": origin},
-             "toolchain": toolchain, "boards": boards}
+             "toolchain": toolchain, "boards": boards, "omitted": omitted}
     files["%s/manifest.json" % flavor] = (json.dumps(inner, indent=2, sort_keys=True) + "\n").encode()
     archive = _zstd(_tar_bytes(files, epoch))
     outdir = Path(out)
@@ -352,7 +356,8 @@ def verify_bundle(archive: os.PathLike, *, params: Optional[Dict[str, Any]] = No
     for name in BOARDS:
         entry = (inner.get("boards") or {}).get(name)
         if not entry:
-            problems.append("bundle has no %s board" % name)
+            if not (inner.get("omitted") or {}).get(name):
+                problems.append("bundle has no %s board and does not say why" % name)
             continue
         blob = members.get("%s/%s" % (flavor, entry["file"]))
         if blob is None:
