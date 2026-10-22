@@ -644,3 +644,42 @@ def test_power_loss_resume_keeps_a_homed_z(env_factory):
     head = (env.gcodes / ".plr" / "resume-a.gcode").read_text()
     assert "SET_KINEMATIC_POSITION" not in head
     assert "Z is already homed" in res.log
+
+
+SQUARE = "EXCLUDE_OBJECT_DEFINE NAME=part CENTER=150,150 POLYGON=[[120,130],[180,130],[180,170],[120,170]]"
+
+
+def _said(res, text):
+    # At a line start: the log also holds the config, i.e. the macro's own source.
+    return re.search(r"^" + re.escape(text), res.log, re.M) is not None
+
+
+def test_prime_line_in_front_of_the_print(env_factory):
+    """QD_PRIME_LINE runs during PRINT_START and lays its line prime_gap in
+    front of the labelled objects, starting at their left edge."""
+    env = env_factory()
+    res = env.run(SQUARE + """
+PRINT_START BED=60 HOTEND=210 MESH=skip SOAK=0
+QD_PRIME_LINE
+GET_POSITION
+""")
+    ok(res)
+    assert not _said(res, "QD_PRIME_LINE: no labelled objects")
+    # Ends at x0 + prime_len (120 + 40), y = 130 - 5, z = 0.3 + 2
+    assert re.search(r"^toolhead: X:160\.0+ Y:125\.0+ Z:2\.30*", res.log, re.M), res.log[-2000:]
+
+
+def test_prime_line_skipped_without_objects(env_factory):
+    env = env_factory()
+    res = env.run("PRINT_START BED=60 HOTEND=210 MESH=skip SOAK=0")
+    ok(res)
+    assert _said(res, "QD_PRIME_LINE: no labelled objects in this file; skipped")
+
+
+def test_prime_line_skipped_when_print_touches_the_front(env_factory):
+    env = env_factory()
+    res = env.run("""EXCLUDE_OBJECT_DEFINE NAME=front CENTER=150,10 POLYGON=[[120,3],[180,3],[180,20],[120,20]]
+PRINT_START BED=60 HOTEND=210 MESH=skip SOAK=0
+""")
+    ok(res)
+    assert _said(res, "QD_PRIME_LINE: no room in front of the print; skipped")
