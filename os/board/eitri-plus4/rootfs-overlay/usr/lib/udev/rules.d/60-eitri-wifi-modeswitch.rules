@@ -1,0 +1,8 @@
+# The RTL8710BU WiFi dongle (and its RTL8xxxU siblings) ships as a fake CD-ROM so
+# it can carry Windows drivers: it enumerates as 0bda:1a2b with a USB Mass-Storage
+# interface and no radio. A SCSI eject makes it re-enumerate as the real WiFi
+# device (0bda:b711 here), which the in-tree rtl8xxxu driver binds. usb_modeswitch
+# -K sends that eject over raw USB (there is no usb-storage in this image, so no
+# /dev/sr0 to eject the usual way). The device database is not needed for one known
+# dongle; this one explicit rule is the whole mechanism.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0bda", ATTR{idProduct}=="1a2b", RUN+="/usr/sbin/usb_modeswitch -K -v 0bda -p 1a2b"
