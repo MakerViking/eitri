@@ -91,7 +91,9 @@ chmod 0750 "$DATA/eitri/home"
 # and the configurator write below them). A root-run installer (mkdir -p) creates them as root; fix only
 # those, only when they are root-owned, and never recurse.
 for parent in "$DATA/firmware" "$DATA/venv" "$DATA/eitri/klarity"; do
-	if [ -d "$parent" ] && [ "$(stat -c %u "$parent")" = 0 ]; then
+	# (ls -ldn, not stat: the image's BusyBox has no stat applet - the rehearsal of the in-place install caught
+	# "stat: command not found" here, which left the seed's parents owned by root)
+	if [ -d "$parent" ] && [ "$(ls -ldn "$parent" | awk '{print $3}')" = 0 ]; then
 		chown "$OWNER" "$parent" 2>/dev/null || log "could not chown $parent"
 	fi
 done

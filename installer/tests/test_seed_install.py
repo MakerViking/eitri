@@ -42,10 +42,12 @@ def replace_seed(printer, flavor="klipper", **kw):
 def test_the_dry_run_plans_to_fetch_the_seed_and_its_manifest_but_fetches_nothing(printer):
     r = printer.install("--flavor", "kalico")
     assert r.returncode == 0, r.stdout
-    tsv = open(os.path.join(printer.state, "bundle", "downloads.tsv")).read()
-    assert "data-seed-2026.10.0-kalico.tar.zst" in tsv and "data-seed-2026.10.0-kalico.manifest.json" in tsv
-    assert "klipper.tar.zst" not in tsv                                           # only the flavor that was asked for
-    assert not os.path.exists(os.path.join(printer.state, "payload"))
+    out = r.stdout
+    assert "would stage data-seed-2026.10.0-kalico.manifest.json" in out and "would stage data-seed-2026.10.0-kalico.tar.zst" in out
+    assert out.index("kalico.manifest.json") < out.index("kalico.tar.zst")       # the small signed manifest first
+    assert "klipper.tar.zst" not in out                                           # only the flavor that was asked for
+    assert "all 5 files of the local bundle verified in place" in out             # --bundle-dir: checked where it lies
+    assert not os.path.exists(printer.state)                                      # and nothing was written on the printer
 
 
 def test_a_real_run_verifies_the_seed_before_arming(printer):

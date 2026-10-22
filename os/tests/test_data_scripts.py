@@ -415,3 +415,19 @@ def test_mark_good_accepts_a_configurator_that_retired_after_setup(stubs, cmdlin
     stubs["results"].write_text("eitri-configurator.service=success\n")
     stubs["inactive"].write_text("eitri-configurator.service\nnginx.service\n")
     assert check().returncode != 0, "every other unit must still be active"
+
+
+def test_data_init_needs_no_stat_applet(data_env, tmp_path):
+    # The image's BusyBox has no stat; the first boot of a converted copy of the real eMMC logged "stat: command not found"
+    # from data-init (and left the seed's parent directories owned by root).
+    stub = tmp_path / "nostat"
+    stub.mkdir()
+    (stub / "stat").write_text("#!/bin/sh\necho 'stat: command not found' >&2\nexit 127\n")
+    (stub / "stat").chmod(0o755)
+    env = dict(data_env, PATH=f"{stub}:{data_env['PATH']}")
+    data = Path(env["EITRI_DATA"])
+    (data / "firmware").mkdir(parents=True)
+    Path(env["EITRI_CONFIGURATOR_SRC"]).mkdir()
+    result = run([LIBEXEC / "data-init"], env=env)
+    assert result.returncode == 0, result.stderr
+    assert "stat" not in result.stderr, result.stderr

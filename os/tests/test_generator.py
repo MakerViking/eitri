@@ -77,6 +77,17 @@ def test_explicit_devices_override_the_derived_ones(tmp_path, cmdline):
     assert "What=/dev/disk/by-partuuid/6a783df4-01" in boot and "Where=/boot" in boot
 
 
+def test_the_boot_partition_names_a_built_in_charset(tmp_path, cmdline):
+    # The kernel's FAT default iocharset is "ascii", which is not built (NLS_ASCII off): a vfat mount without iocharset= fails
+    # ("IO charset ascii not found", seen when the rehearsal booted slot A of a converted copy of the real eMMC). Then
+    # /boot/firmware is missing, the boot counter is never reset and the printer falls back to stock after three boots.
+    out, _ = generate(tmp_path, "root=PARTUUID=6a783df4-05 eitri.bootfs=PARTUUID=6a783df4-01", cmdline)
+    boot = (out / "boot-firmware.mount").read_text()
+    assert "iocharset=iso8859-1" in boot
+    kcfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "board", "eitri-plus4", "linux.fragment")
+    assert "CONFIG_NLS_ISO8859_1=n" not in open(kcfg).read()
+
+
 def test_explicit_device_wins_over_the_disk(tmp_path, cmdline):
     out, _ = generate(tmp_path, "eitri.disk=/dev/mmcblk1 eitri.data=/dev/mmcblk1p7", cmdline)
     assert "What=/dev/mmcblk1p7" in (out / "data.mount").read_text()

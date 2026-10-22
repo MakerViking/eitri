@@ -23,6 +23,7 @@ A directory on an https server (or a USB stick: `--bundle-dir`). File URLs are r
   "stock":  { "soc": ["1.7.1"] },                             // tested stock firmware; others only warn
   "layout": { "root_mib": 2048, "data_min_mib": 4096 },       // rootfs slot size, minimum /data
   "kernel_cmdline": "console=tty1 loglevel=4 panic=10 net.ifnames=0",
+  "mcu_policy": "flash",                                      // optional: "flash" (default) or "keep-stock" (see below)
   "flavors": { "klipper": {"describe": "v0.13.0-813-ga08fc79fc", "commit": "<40 hex>"},     // the host firmware the MCU images
                "kalico":  {"describe": "v2026.10.00-0-g3526de3bf", "commit": "<40 hex>"} },  // are built from; the seed must carry it
   "files": {
@@ -31,25 +32,51 @@ A directory on an https server (or a USB stick: `--bundle-dir`). File URLs are r
     "data_seed":    { "klipper": { "url": "data-seed-2026.10.0-klipper.tar.zst", "sha256": "…", "size": 0,
                                    "manifest": { "url": "data-seed-2026.10.0-klipper.manifest.json", "sha256": "…", "size": 0 } },
                       "kalico":  { … } },
-    "mcu_firmware": { "klipper": { "url": "…", "sha256": "…", "size": 0 }, "kalico": { … } }
+    "mcu_firmware": { "klipper": { "url": "…", "sha256": "…", "size": 0 }, "kalico": { … } },   // omitted with keep-stock
+    "zstd":         { "url": "zstd-aarch64", "sha256": "…", "size": 0 }                       // optional, see below
   }
 }
 ```
+
+`mcu_policy: "keep-stock"` declares a release that carries **no MCU firmware**: both boards keep the firmware they shipped with
+(the first in-place install: the toolhead has no bootloader and stays on its stock Klipper v0.12 firmware, which the current host
+drives; the mainboard is flashed later from the setup wizard). `files.mcu_firmware` may then be absent, and `install.sh` accepts only
+`--mcu skip` (its default): no MCU is probed, reset or written. Stage 2 records `toolhead_firmware=stock` in
+`/data/eitri/state/install.env`, and the configurator leaves the ADXL345 (`[adxl345]`, `[resonance_tester]`) out of `printer.cfg`
+while that is so (the stock firmware answers the old accelerometer protocol). A release without MCU firmware that does not say
+`keep-stock` is refused.
+
+`files.zstd` (optional): a **static** aarch64 `zstd`. The stock system (Debian 10) has no zstd, but stage 1 must look into the data
+seed (a `.tar.zst`) before anything is changed. When `zstd` is not on the stock system's `PATH`, `install.sh` fetches this file into
+its work directory (a scratch directory in a dry run), checks its signed size and SHA-256, and puts it first on `PATH`; nothing is
+installed on the stock system.
+
+A **development** bundle sets `"channel": "dev"` (and `"dev": true`) and is signed with a local key; `install.sh` warns about it.
+`installer/tools/mk-dev-bundle.sh` builds one from this PC's outputs (`installer/tools/mk-stage2-initramfs.sh` builds the stage-2
+userland and the static zstd from the Buildroot output).
 
 `kernel_cmdline` **must not** put a console on `ttyS2` (or `ttyS0`): those are the MCU UARTs.
 
 ### `rootfs.img.zst`
 Raw ext4 image (zstd), written verbatim to partition 5 (slot A) and mounted **read-only** at runtime.
 * Must contain `/boot/Image` (uncompressed arm64 kernel) and `/boot/dtb/rockchip/rk3328-roc-cc.dtb`:
-  `boot.scr` loads both with U-Boot's `ext4load`, so create the filesystem conservatively
-  (`mke2fs -t ext4 -b 4096 -O ^64bit,^orphan_file,^metadata_csum_seed`; U-Boot 2021.07 predates newer features).
+  `boot.scr` loads both with U-Boot's `ext4load`, so the filesystem is created conservatively: the OS image's
+  `BR2_TARGET_ROOTFS_EXT2_MKFS_OPTIONS` switch off `64bit`, `has_journal`, `metadata_csum_seed`, `orphan_file`, `huge_file` and
+  `inline_data` (U-Boot 2021.07 predates the newer features and cannot read `inline_data` at all; RAUC updates write the same image
+  into slot B, so the flash-once image uses the same options). `mk-dev-bundle.sh` refuses an image with any of them and, when a
+  U-Boot 2021.07 sandbox build is available, reads the kernel and device tree back through U-Boot's own ext4 driver;
+  `tests/test_inplace_rootfs.py` does the same on every test run.
 * Mounts `/data` by label `eitri-data` and never refers to partition numbers (the flash-once image and the
   in-place layout number partitions differently). Root is given as `root=PARTUUID=… ro` by `boot.scr`; the
   booted slot is `eitri.slot=A|B` on the kernel command line.
 * Image size ≤ `layout.root_mib`; `raw_sha256`/`raw_size` describe the decompressed bytes.
 
 ### `stage2-initramfs.cpio.gz`
-The RAM installer's userland, run on the **stock 5.16 kernel** (so the kernel is a known quantity). Requirements:
+The RAM installer's userland, run on the **stock 5.16 kernel** (so the kernel is a known quantity). Built by
+`installer/tools/mk-stage2-initramfs.sh` from the Buildroot output (bash, BusyBox with httpd/nc/stat and xz-module support,
+util-linux, e2fsprogs plus a debugfs built from the same tree, zstd, glibc; about 4 MiB). The stock kernel's modules are `.ko.xz`
+and it cannot decompress them itself (that came in 5.17), so BusyBox's `insmod` must; the FAT default iocharset (iso8859-1) is
+one of those modules, and stage 2 falls back to the built-in `iocharset=ascii` if it cannot be loaded. Requirements:
 * `/init` mounts nothing it does not need and ends with `exec /usr/lib/eitri/stage2.sh` (the installer appends
   that script, `eitri-common.sh`, `layout.sh`, `stage2.conf` and the stock vfat/USB modules as a second archive).
 * Tools: `bash` (not just ash), busybox with `mount umount dd sync awk sed tr tee mktemp seq sleep udhcpc httpd

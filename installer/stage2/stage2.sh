@@ -47,6 +47,7 @@ EITRI_COMPONENT=stage2
 DRY_RUN=0
 EITRI_EVENTS_FILE=""
 
+S2_MAIN_PID=$$
 S2_LOG="$S2_ROOT/run/eitri-stage2.log"
 S2_WWW="$S2_ROOT/www"
 M_BOOT="$S2_ROOT/mnt/boot"
@@ -78,8 +79,18 @@ part_dev() {
 # ---------------------------------------------------------------------------
 s2_fail_early() { s2_status failed 0 "setup" "$1"; s2_finish_failed "$1"; }
 
+s2_in_subshell() { [[ "${BASHPID:-$$}" != "$S2_MAIN_PID" ]]; }
+
 s2_finish_failed() {
   local why="$1"
+  # Only the main shell ends stage 2.  A failure inside a subshell ($(...), a pipeline, the background network job) hands
+  # its reason to the main shell and exits: the main shell then fails at that command and reports it.  (With errtrace the
+  # ERR trap runs in subshells too; before this guard a failing udhcpc in the background job rebooted the printer 90 s
+  # into the conversion - found by the rehearsal on a copy of the real eMMC, which has no network.)
+  if s2_in_subshell; then
+    printf '%s\n' "$why" >"$WORK/.subshell-failure" 2>/dev/null || true
+    exit 1
+  fi
   # Leave a note where stock userspace will find it, make sure the next boot is stock.
   if mountpoint -q "$M_BOOT" 2>/dev/null || [[ -d "$M_BOOT/eitri" ]]; then
     kv_set "$M_BOOT/eitri/boot.env" eitri_mode stock || true
@@ -103,8 +114,11 @@ s2_reboot_after() {
 
 trap 's2_on_error $LINENO' ERR
 s2_on_error() {
+  if s2_in_subshell; then exit 1; fi
   trap - ERR
-  s2_finish_failed "unexpected error at stage2.sh line $1 (see $S2_LOG)"
+  local why="unexpected error at stage2.sh line $1 (see $S2_LOG)"
+  if [[ -s "$WORK/.subshell-failure" ]]; then why="$(cat "$WORK/.subshell-failure") (stage2.sh line $1)"; fi
+  s2_finish_failed "$why"
 }
 
 # ---------------------------------------------------------------------------
@@ -122,7 +136,7 @@ s2_init() {
   s2_status running 0 "init" "stage 2 started"
   if [[ "${S2_NO_NET:-0}" != 1 ]]; then
     # Networking is only for the status page and (restore) streaming; never fatal.
-    if command -v udhcpc >/dev/null; then (ip link set eth0 up 2>/dev/null; udhcpc -b -q -i eth0 -t 5 >/dev/null 2>&1) & fi
+    if command -v udhcpc >/dev/null; then ( trap - ERR; set +eE; ip link set eth0 up 2>/dev/null; udhcpc -b -q -i eth0 -t 5 >/dev/null 2>&1 ) & fi
     if command -v httpd >/dev/null; then httpd -p 8099 -h "$S2_WWW" 2>/dev/null || true; fi
   fi
 }
@@ -132,7 +146,8 @@ s2_load_modules() {
   local list="$S2_ROOT/etc/eitri/modules.list" ko
   [[ -r "$list" ]] || return 0
   while IFS= read -r ko; do
-    [[ -n "$ko" ]] && insmod "$S2_ROOT/$ko" 2>>"$S2_LOG" || true
+    [[ -n "$ko" ]] || continue
+    if insmod "$S2_ROOT/$ko" 2>>"$S2_LOG"; then s2_log "module loaded: $ko"; else s2_log "module not loaded: $ko"; fi
   done <"$list"
 }
 
@@ -142,6 +157,16 @@ s2_require_tools() {
     command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
   done
   [[ -z "$missing" ]] || s2_fail_early "the installer environment lacks:$missing"
+}
+
+# FAT mounts on the stock kernel (5.16.20-rockchip64): its default iocharset, iso8859-1, is a module that the kernel cannot
+# load by itself (xz-compressed .ko.xz, no in-kernel decompression before 5.17); stage 1 appends it and s2_load_modules
+# loads it, but should that fail, ascii (built in) reads and writes the plain names this installer uses just as well.
+s2_mount_fat() {   # s2_mount_fat OPTS DEV DIR
+  mount -t vfat -o "$1" "$2" "$3" 2>>"$S2_LOG" || mount -t vfat -o "$1,iocharset=ascii" "$2" "$3" 2>>"$S2_LOG"
+}
+s2_mount_ro_any() {   # s2_mount_ro_any DEV DIR   (a USB stick: FAT32, exFAT or ext4)
+  mount -o ro "$1" "$2" 2>>"$S2_LOG" || mount -t vfat -o ro,iocharset=ascii "$1" "$2" 2>>"$S2_LOG"
 }
 
 s2_wait_device() {
@@ -160,7 +185,7 @@ s2_mount_payload() {
       local spec="${loc#usb:}" uuid path
       uuid="${spec%%:*}"; path="${spec#*:}"
       s2_wait_device "$BY_UUID/$uuid" || s2_fail_early "payload USB stick (UUID $uuid) not found"
-      mount -o ro "$BY_UUID/$uuid" "$M_USB" || s2_fail_early "cannot mount the payload USB stick"
+      s2_mount_ro_any "$BY_UUID/$uuid" "$M_USB" || s2_fail_early "cannot mount the payload USB stick"
       PAYLOAD="$M_USB$path"
       ;;
     dir:*) PAYLOAD="${loc#dir:}" ;;           # tests
@@ -176,7 +201,8 @@ s2_release_payload() {
 
 s2_verify_payload() {
   s2_status running 5 "verify" "re-checking the staged files"
-  ( cd "$PAYLOAD" && sha256sum -c payload.sha256 --quiet ) || s2_fail_early "staged payload does not match its checksums - nothing was changed"
+  # (BusyBox sha256sum has no --quiet; the OK lines go to the log)
+  ( cd "$PAYLOAD" && sha256sum -c payload.sha256 ) >>"$S2_LOG" 2>&1 || s2_fail_early "staged payload does not match its checksums - nothing was changed"
   [[ -r "$PAYLOAD/payload.env" ]] || s2_fail_early "payload.env missing"
   ROOTFS_FILE="$(kv_get "$PAYLOAD/payload.env" rootfs_file)"
   ROOTFS_RAW_SIZE="$(kv_get "$PAYLOAD/payload.env" rootfs_raw_size)"
@@ -187,7 +213,8 @@ s2_verify_payload() {
   ROOT_MIB="$(kv_get "$PAYLOAD/payload.env" root_mib)"
   DATA_MIN_MIB="$(kv_get "$PAYLOAD/payload.env" data_min_mib)"
   local v
-  for v in ROOTFS_FILE ROOTFS_RAW_SIZE ROOTFS_RAW_SHA SEED_FILE SEED_SHA MCU_FW_FILE ROOT_MIB DATA_MIN_MIB; do
+  # MCU_FW_FILE may be empty: a release with mcu_policy keep-stock carries no MCU firmware (both boards stay stock).
+  for v in ROOTFS_FILE ROOTFS_RAW_SIZE ROOTFS_RAW_SHA SEED_FILE SEED_SHA ROOT_MIB DATA_MIN_MIB; do
     [[ -n "${!v}" ]] || s2_fail_early "payload.env lacks $v"
   done
   [[ "$ROOTFS_RAW_SHA" =~ ^[0-9a-f]{64}$ ]] || s2_fail_early "bad rootfs checksum in payload.env"
@@ -206,7 +233,7 @@ s2_check_backup() {
       local uuid path bytes f total=0 files=()
       uuid="$(cfg_req backup_usb_uuid)"; path="$(cfg_req backup_path)"; bytes="$(cfg backup_bytes)" || bytes=""
       s2_wait_device "$BY_UUID/$uuid" || s2_fail_early "the USB stick with the backup (UUID $uuid) is not plugged in. Nothing was changed and the original system will start; plug the stick back in, then run revert.sh --hard --yes followed by install.sh again"
-      mount -o ro "$BY_UUID/$uuid" "$M_USB" || s2_fail_early "cannot mount the backup USB stick - nothing was changed"
+      s2_mount_ro_any "$BY_UUID/$uuid" "$M_USB" || s2_fail_early "cannot mount the backup USB stick - nothing was changed"
       if [[ -f "$M_USB$path" ]]; then files=("$M_USB$path"); else files=("$M_USB$path".part*); fi
       for f in "${files[@]}"; do
         [[ -f "$f" ]] || { umount "$M_USB" 2>/dev/null || true; s2_fail_early "the backup file $path is no longer on the USB stick - nothing was changed"; }
@@ -254,7 +281,7 @@ s2_convert() {
   BOOT_DEV="$(part_dev "$boot_n")"; STOCK_DEV="$(part_dev "$stock_n")"
   s2_wait_device "$STOCK_DEV" || s2_fail_early "stock root device $STOCK_DEV did not appear"
 
-  mount -t vfat -o rw,noatime "$BOOT_DEV" "$M_BOOT" || s2_fail_early "cannot mount $BOOT_DEV"
+  s2_mount_fat rw,noatime "$BOOT_DEV" "$M_BOOT" || s2_fail_early "cannot mount $BOOT_DEV"
   mkdir -p "$M_BOOT/eitri"
   cp -f "$S2_LOG" "$M_BOOT/eitri/stage2.log" 2>/dev/null || true
 
@@ -310,10 +337,10 @@ s2_convert() {
     resize2fs "$STOCK_DEV" "$(kv_get "$plan" p2_size)s" >>"$S2_LOG" 2>&1 || s2_fail_early_boot "resize2fs failed - the stock system was not repartitioned"
     e2fsck -fn "$STOCK_DEV" >>"$S2_LOG" 2>&1 || s2_fail_early_boot "stock filesystem failed its check after shrinking"
     s2_status running 30 "partition" "creating the Eitri partitions"
-    layout_sfdisk_script "$DISK" "$LABEL_ID" "$P1_START" "$P1_SIZE" "$plan" | sfdisk --no-reread "$DISK" >>"$S2_LOG" 2>&1 ||
+    layout_sfdisk_script "$DISK" "$LABEL_ID" "$P1_START" "$P1_SIZE" "$plan" "${PART_PREFIX:-}" | sfdisk --no-reread "$DISK" >>"$S2_LOG" 2>&1 ||
       s2_fail_early_boot "sfdisk failed"
     blockdev --rereadpt "$DISK" >>"$S2_LOG" 2>&1 || partx -u "$DISK" >>"$S2_LOG" 2>&1 || s2_fail_early_boot "the kernel did not accept the new partition table"
-    mount -t vfat -o rw,noatime "$BOOT_DEV" "$M_BOOT" || s2_fail_early "cannot remount $BOOT_DEV"
+    s2_mount_fat rw,noatime "$BOOT_DEV" "$M_BOOT" || s2_fail_early "cannot remount $BOOT_DEV"
     kv_set "$M_BOOT/eitri/stage2.state" phase partitioned
   fi
 
@@ -331,7 +358,7 @@ s2_convert() {
 
 # A failure after the table changed is still "stock boots": record why and stop.
 s2_fail_early_boot() {
-  mountpoint -q "$M_BOOT" 2>/dev/null || mount -t vfat -o rw,noatime "$BOOT_DEV" "$M_BOOT" 2>/dev/null || true
+  mountpoint -q "$M_BOOT" 2>/dev/null || s2_mount_fat rw,noatime "$BOOT_DEV" "$M_BOOT" || true
   s2_fail_early "$1"
 }
 
@@ -361,20 +388,27 @@ s2_make_data() {
   [[ -r "$M_STOCK/var/lib/eitri-install/backup.env" ]] && cp -f "$M_STOCK/var/lib/eitri-install/backup.env" "$M_DATA/eitri/state/backup.env"
   # The release this /data belongs to: eitri-update compares it with the channel (also read by the configurator).
   printf '%s\n' "$(kv_get "$PAYLOAD/payload.env" version)" >"$M_DATA/eitri/release"
-  # MCU firmware that matches this release, and the firmware backups taken from the stock boards (stage 1).
-  zstd -dc "$PAYLOAD/$MCU_FW_FILE" | tar -x -C "$M_DATA/eitri/mcu/firmware" --no-same-owner ||
-    s2_fail_early_boot "unpacking the MCU firmware failed"
+  # MCU firmware that matches this release (if it carries any), and the firmware backups taken from the stock boards (stage 1).
+  if [[ -n "$MCU_FW_FILE" ]]; then
+    zstd -dc "$PAYLOAD/$MCU_FW_FILE" | tar -x -C "$M_DATA/eitri/mcu/firmware" --no-same-owner ||
+      s2_fail_early_boot "unpacking the MCU firmware failed"
+  else
+    s2_log "this release carries no MCU firmware: both MCU boards keep their stock firmware"
+  fi
   if [[ -d "$M_STOCK/var/lib/eitri-install/mcu" ]]; then
     cp -a "$M_STOCK/var/lib/eitri-install/mcu/." "$M_DATA/eitri/mcu/" || s2_log "warning: could not copy the stock MCU backups"
   fi
   s2_migrate_from_stock
   s2_rauc_override
-  # What the first boot should do and where the way back is.
+  # What the first boot should do and where the way back is.  toolhead_firmware=stock: the boards were not flashed (--mcu
+  # skip/manual); the configurator then leaves the ADXL345 out of printer.cfg (the stock v0.12 toolhead firmware speaks an
+  # older accelerometer protocol).  Whoever flashes the toolhead later rewrites the key.
+  local th=stock; [[ "$(cfg mcu_mode)" == auto ]] && th=pending
   kv_write "$M_DATA/eitri/state/install.env" \
     "installed_at=$(_now)" "flavor=$(cfg flavor)" "stock_partuuid=$(cfg stock_partuuid)" "stock_part=$(cfg stock_part)" \
     "stock_uuid=$(cfg stock_fs_uuid)" "stock_soc=$(cfg stock_soc)" "bundle_version=$(kv_get "$PAYLOAD/payload.env" version)" \
     "seed_version=$(kv_get "$M_DATA/eitri/state/seed-installed.env" SEED_VERSION)" "seed_sha256=$SEED_SHA" \
-    "mcu_flash=$(cfg mcu_mode)" "backup_sha256=$(cfg backup_sha256)"
+    "mcu_flash=$(cfg mcu_mode)" "toolhead_firmware=$th" "backup_sha256=$(cfg backup_sha256)"
   sync
   umount "$M_DATA"
   kv_set "$M_BOOT/eitri/stage2.state" phase data_written
@@ -519,7 +553,7 @@ s2_restore() {
       local spec="${src#usb:}" uuid path
       uuid="${spec%%:*}"; path="${spec#*:}"
       s2_wait_device "$BY_UUID/$uuid" || s2_fail_early "backup USB stick (UUID $uuid) not found"
-      mount -o ro "$BY_UUID/$uuid" "$M_USB" || s2_fail_early "cannot mount the backup USB stick"
+      s2_mount_ro_any "$BY_UUID/$uuid" "$M_USB" || s2_fail_early "cannot mount the backup USB stick"
       stream="$M_USB$path"
       # a FAT32 stick holds the image in numbered parts: <name>.part000, .part001, ...
       if [[ -r "$stream" ]]; then IMAGE_FILES=("$stream")

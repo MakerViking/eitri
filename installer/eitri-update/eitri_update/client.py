@@ -395,7 +395,13 @@ class Updater:
         pending = doc.get("pending")
         slot = self.bootctl.current_slot()
         if not pending and self.bootctl.get_state(slot) == "good":
-            self.events.result(True, msg="nothing to verify")
+            # A confirmed slot booted far enough to get here (eitri-verify runs after the OS health gate): give it its boot
+            # attempts back.  U-Boot spends one on EVERY boot, so without this a confirmed slot runs out after three more
+            # boots and the printer falls back - in the in-place layout to the stock system (found by the rehearsal of the
+            # in-place install on a copy of the real eMMC: tries stayed at 2 after the second boot).  A boot that never
+            # reaches this point still counts down and falls back as designed.
+            self.bootctl.set_state(slot, "good")
+            self.events.result(True, msg="slot %s already confirmed; boot attempts restored" % slot)
             return {"pending": False}
         return self._verify_and_commit(pending, slot, start_services)
 

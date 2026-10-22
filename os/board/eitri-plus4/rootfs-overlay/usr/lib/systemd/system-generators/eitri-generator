@@ -144,7 +144,8 @@ Documentation=file:///usr/share/doc/eitri/os/README.md
 What=$bootfs
 Where=$boot_mount
 Type=vfat
-Options=ro,noatime,nodev,nosuid,noexec,umask=0077
+# iocharset: the kernel's FAT default (ascii) is not built in (NLS_ASCII is off), iso8859-1 is; without it the mount fails
+Options=ro,noatime,nodev,nosuid,noexec,umask=0077,iocharset=iso8859-1
 UNIT
 	ln -sf "../$unit" "$wants/$unit"
 fi

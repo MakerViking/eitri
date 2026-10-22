@@ -61,11 +61,11 @@ p7_size=$p7_size
 PLAN
 }
 
-# layout_sfdisk_script DISK LABEL_ID P1_START P1_SIZE PLAN_FILE
+# layout_sfdisk_script DISK LABEL_ID P1_START P1_SIZE PLAN_FILE [PART_PREFIX]
 # PLAN_FILE holds the output of layout_compute.  Keeps p1 and the label-id (so
-# PARTUUID=<id>-01/02 stay valid for the stock system).
+# PARTUUID=<id>-01/02 stay valid for the stock system).  PART_PREFIX: "p" for /dev/mmcblk1p1 (default), "" for /dev/vda1.
 layout_sfdisk_script() {
-  local disk="$1" id="$2" p1s="$3" p1z="$4" plan="$5"
+  local disk="$1" id="$2" p1s="$3" p1z="$4" plan="$5" pp="${6-p}"
   local p2s p2z es ez p5s p5z p6s p6z p7s p7z
   p2s="$(kv_get "$plan" p2_start)"; p2z="$(kv_get "$plan" p2_size)"
   es="$(kv_get "$plan" ext_start)"; ez="$(kv_get "$plan" ext_size)"
@@ -78,12 +78,12 @@ label-id: $id
 device: $disk
 unit: sectors
 
-${disk}p1 : start=$p1s, size=$p1z, type=e
-${disk}p2 : start=$p2s, size=$p2z, type=83
-${disk}p3 : start=$es, size=$ez, type=5
-${disk}p5 : start=$p5s, size=$p5z, type=83
-${disk}p6 : start=$p6s, size=$p6z, type=83
-${disk}p7 : start=$p7s, size=$p7z, type=83
+${disk}${pp}1 : start=$p1s, size=$p1z, type=e
+${disk}${pp}2 : start=$p2s, size=$p2z, type=83
+${disk}${pp}3 : start=$es, size=$ez, type=5
+${disk}${pp}5 : start=$p5s, size=$p5z, type=83
+${disk}${pp}6 : start=$p6s, size=$p6z, type=83
+${disk}${pp}7 : start=$p7s, size=$p7z, type=83
 SCRIPT
 }
 

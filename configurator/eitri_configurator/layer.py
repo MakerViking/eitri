@@ -52,6 +52,26 @@ def _renderer(layer: Path) -> ModuleType:
     return mod
 
 
+#: Written by the in-place installer's stage 2 (``toolhead_firmware=stock`` when the MCU boards were not flashed).
+INSTALL_ENV = "state/install.env"
+
+
+def toolhead_is_stock(settings: Settings) -> bool:
+    """True while the toolhead still runs the firmware it shipped with (Klipper v0.12, no bootloader to reflash it over
+    serial).  Its ADXL345 speaks the old accelerometer protocol, which current Klipper and Kalico no longer understand, so
+    the accelerometer stays out of printer.cfg (the rest of the toolhead is compatible: the batch suite passes with the stock
+    dictionary)."""
+    try:
+        text = (settings.eitri_dir / INSTALL_ENV).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "toolhead_firmware":
+            return value.strip() == "stock"
+    return False
+
+
 def variables(settings: Settings, layer: Path, options: dict[str, Any], detect: dict | None) -> dict[str, Any]:
     """Layer defaults, then what the wizard knows, then the user's own overrides."""
     mod = _renderer(layer)
@@ -66,7 +86,7 @@ def variables(settings: Settings, layer: Path, options: dict[str, Any], detect: 
     values["printer_data"] = str(settings.printer_data)
     values["chamber_enabled"] = bool(options["chamber_heater"] and options["chamber_ack"])
     values["plr_enabled"] = bool(options["power_loss_recovery"])
-    values["adxl_enabled"] = options["accelerometer"] == "adxl345"
+    values["adxl_enabled"] = options["accelerometer"] == "adxl345" and not toolhead_is_stock(settings)
     user = settings.config_dir / USER_VARS
     if user.is_file():
         try:

@@ -83,6 +83,27 @@ def test_printer_cfg_comes_from_the_klipper_layer_and_follows_options(tmp_path):
     assert sections.count("[heater_generic chamber]") == sections.count("[verify_heater chamber]") == 1
 
 
+def test_a_stock_toolhead_keeps_the_adxl345_out_of_printer_cfg(tmp_path):
+    # Stage 2 of the in-place install writes toolhead_firmware=stock when the MCUs were not flashed (--mcu skip): the stock
+    # v0.12 toolhead firmware answers the old ADXL345 protocol, so [adxl345] / [resonance_tester] must not be rendered.
+    s = Settings(data_dir=tmp_path)
+    lock = load(s.release_lock)
+    env = s.eitri_dir / "state" / "install.env"
+    env.parent.mkdir(parents=True)
+
+    def cfg():
+        ctx = render.build_context(flavor="klipper", options=opts.validate({}), detect=None, lock=lock)
+        return render.render_all(s, ctx)["printer.cfg"]
+
+    env.write_text("installed_at=x\nmcu_flash=skip\ntoolhead_firmware=stock\n")
+    stock = cfg()
+    assert "[adxl345]" not in stock and "[resonance_tester]" not in stock and "[mcu]\n" in stock
+    env.write_text("mcu_flash=auto\ntoolhead_firmware=eitri\n")
+    assert "[adxl345]" in cfg()
+    env.unlink()
+    assert "[adxl345]" in cfg()
+
+
 def test_user_vars_override_layer_defaults(tmp_path):
     s = Settings(data_dir=tmp_path)
     s.config_dir.mkdir(parents=True)

@@ -74,3 +74,12 @@ def test_calibration_marks_persist_in_state(srv):
     st, s = srv.put("/api/state", {"calibration": {"mesh": "done", "shaper": "skipped"}})
     assert s["calibration"] == {"mesh": "done", "shaper": "skipped"}
     assert srv.put("/api/state", {"calibration": {"mesh": "maybe"}})[0] == 422
+
+
+def test_shaper_is_refused_while_the_toolhead_runs_stock_firmware(srv):
+    # The in-place installer's stage 2 records toolhead_firmware=stock when it left the MCU boards alone (--mcu skip).
+    env = srv.settings.eitri_dir / "state" / "install.env"
+    env.parent.mkdir(parents=True, exist_ok=True)
+    env.write_text("mcu_flash=skip\ntoolhead_firmware=stock\n")
+    st, b = srv.post("/api/calibrate/shaper")
+    assert st == 409 and "stock firmware" in b["error"]

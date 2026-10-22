@@ -331,6 +331,18 @@ def test_verify_without_pending_and_good_slot_is_a_noop(tmp_path):
     assert not rig.run.calls or all(c[0] != "systemctl" for c in rig.run.calls)
 
 
+def test_every_healthy_boot_of_a_confirmed_slot_restores_its_boot_attempts(tmp_path):
+    # U-Boot's boot.scr spends one attempt on every boot. Seen in the rehearsal on a copy of the real eMMC: after the
+    # commit on the first boot, the second boot left eitri_tries=2, so the fifth boot would have fallen back to stock.
+    rig = Rig(tmp_path)
+    rig.bootctl.update(eitri_slot="A", eitri_state_A="good", eitri_tries="1")
+    assert rig.updater.verify() == {"pending": False}
+    env = rig.boot_env()
+    assert env["eitri_tries"] == "3" and env["eitri_state_A"] == "good" and env["eitri_mode"] == "eitri"
+    assert not rig.run.calls or all(c[0] != "systemctl" for c in rig.run.calls)       # services are not touched
+
+
+
 def test_release_commit_pin_is_passed_to_mcuflash(tmp_path):
     rig = Rig(tmp_path)
     rig.channel.releases[0]["flavors"] = {"klipper": {"commit": "a08fc79fcfa342e5b95ac02a9a8b271f453523e9"}}

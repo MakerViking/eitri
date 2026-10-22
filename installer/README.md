@@ -21,8 +21,11 @@ Both layouts are understood by `eitri-update`, so the same releases update eithe
 ## Using it
 
 ```sh
-# 1. look, don't touch (the default). Safe to run on a printer in use.
+# 1. look, don't touch (the default). Safe to run on a printer in use; creates nothing on the printer.
 sudo ./install.sh --flavor klipper
+#    offline, from a USB stick: also checks every bundle file and the backup image in place, read-only
+sudo ./install.sh --flavor klipper --bundle-dir /mnt/usb/dev-bundle --pubkey /mnt/usb/dev-bundle/eitri-dev.pub \
+     --backup-file /mnt/usb/mmcblk1.img.gz --backup-sha256 <sha256 of that file>
 
 # 2. convert. Both flags are required for real changes; a backup method is required too.
 sudo ./install.sh --flavor klipper --i-have-a-backup --yes --backup-to-usb          # USB stick, 8 GB+
@@ -44,20 +47,23 @@ What a real run does, and where you can still turn back:
    of the unpack rules must pass, all before the CONVERT prompt. The first boot of Eitri then needs no network.
    Offline works: `--bundle-dir` on a USB stick or a directory copied from your PC, or `--seed-file`/`--seed-manifest`
    for just the seed.
-4. **MCU recovery**: each board is reset into its bootloader over the UART, its firmware read back and written
+4. **MCU boards**: by default (`--mcu skip`) **neither board is touched**: no probe, no bootloader reset, no write. Both keep
+   their stock firmware; the toolhead has no bootloader (it cannot be reflashed over serial) and its stock Klipper v0.12 firmware
+   works with the new host, except the ADXL345, which the configurator then leaves out of `printer.cfg`. The mainboard can be
+   flashed later from the setup wizard (`eitri-mcuflash --only mainboard`). A release may carry no MCU firmware at all
+   (`mcu_policy: keep-stock`, docs/BUNDLE.md); then skip is the only mode it accepts.
+   With `--mcu manual|auto`: each board is reset into its bootloader over the UART, its firmware read back and written
    back (round trip), and the copy kept. If a board cannot be proven recoverable the installer stops here.
-   This is the one device write before step 5: the toolhead's application area is erased and the same image written
-   back, so it needs its own consent (`--accept-mcu-roundtrip`, or a prompt on a terminal; `--mcu skip` avoids it).
-   The saved copy is synced to disk before the erase; a power cut in those seconds needs a Katapult re-flash from it
-   (`docs/recovery.md`).
+   That is the one device write before step 5: the toolhead's application area is erased and the same image written
+   back, so it needs its own consent (`--accept-mcu-roundtrip`, or a prompt on a terminal).
 5. **The backup is checked again**, then **you type `CONVERT`.** Nothing irreversible has happened yet.
 6. **Arm stage 2**: boot manager installed, stock boot entry renamed (not deleted), reboot into a one-shot RAM
    installer that shrinks the stock root, creates rootfs A/B and `/data`, writes and verifies Eitri and unpacks the data
    seed onto `/data` (`eitri-seed-install`, which re-checks the digest and refuses anything outside the seed layout). If the power is
    cut during that, the installer starts again by itself (two starts) and resumes; `install.sh --status` explains where
    things stand.
-7. **First boot of Eitri** flashes both MCUs to match the host, health-checks, and only then marks the system good.
-   Three failed boots fall back to the stock system automatically.
+7. **First boot of Eitri** health-checks and only then marks the system good (with `--mcu auto` it would first flash both
+   MCUs to match the host). Three failed boots fall back to the stock system automatically.
 
 The stock system stays in its own partition and keeps booting until you remove it (`revert.sh --reclaim`).
 
@@ -97,7 +103,10 @@ Packaging note: `bin/eitri-seed-install` is a link into `seed/`; a release tarba
 
 Unit and integration tests run against fakes: simulated STM32 boards speaking both wire protocols (also through a
 pty), a real U-Boot 2021.07 sandbox executing `boot.cmd` against a FAT+ext4 disk image, and shimmed block-device
-tools for `install.sh` / `stage2.sh` / `revert.sh`. **Nothing has been run on a real printer.** The list of things
+tools for `install.sh` / `stage2.sh` / `revert.sh`. On top of that, `rehearsal/run-all.sh BACKUP.img.gz` rehearses the whole
+in-place install against a copy of a real printer's eMMC backup: the printer's own stock kernel and Debian under QEMU run stage 1
+and stage 2 on the copy, a U-Boot 2021.07 sandbox runs the boot.scr that stage 1 wrote, then the converted copy is checked,
+fallen back, reverted and booted into Eitri (results: ../STATUS.md). **Only `install.sh --dry-run` has run on a real printer.** The list of things
 that need hardware is in [docs/TESTING.md](docs/TESTING.md); read it before trusting any of this with an eMMC.
 
 License: Apache-2.0. `eitri-update`/`mcuflash` talk to Klipper only over its public wire protocol; the Katapult

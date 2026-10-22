@@ -1,5 +1,8 @@
 #!/bin/sh
-# modprobe --show-depends NAME
+# modprobe --show-depends NAME -> "insmod PATH" for the stock kernel's module under $EITRI_ROOT$FAKE_MODDIR (.ko or .ko.xz)
 [ "$1" = "--show-depends" ] || exit 1
-[ -n "$FAKE_MODDIR" ] && [ -f "$FAKE_MODDIR/$2.ko" ] && echo "insmod $FAKE_MODDIR/$2.ko"
+[ -n "$FAKE_MODDIR" ] || exit 0
+for f in "$EITRI_ROOT$FAKE_MODDIR/$2.ko" "$EITRI_ROOT$FAKE_MODDIR/$2.ko.xz"; do
+  [ -f "$f" ] && echo "insmod ${f#"$EITRI_ROOT"}"
+done
 exit 0

@@ -4,6 +4,6 @@ if [ "$1" = "-U" ]; then [ "$2" = "${FAKE_USB_UUID:-1234-ABCD}" ] && [ -n "$FAKE
 # blkid -s TYPE|UUID -o value DEV
 what=""; for a in "$@"; do case "$a" in TYPE|UUID) what="$a" ;; esac; done
 case "$what" in
-  TYPE) case "$*" in *mmcblk1p1*) echo vfat ;; *mmcblk1p2*) echo ext4 ;; *) echo "${FAKE_USB_FS:-ext4}" ;; esac ;;
+  TYPE) case "$*" in *mmcblk1p1*|*vda1*) echo vfat ;; *mmcblk1p2*|*vda2*) echo ext4 ;; *) echo "${FAKE_USB_FS:-ext4}" ;; esac ;;
   UUID) case "$*" in *mmcblk1p2*) echo 5dcae443-0796-4029-ae6c-bf5bd2a37067 ;; *) echo "${FAKE_USB_UUID:-1234-ABCD}" ;; esac ;;
 esac

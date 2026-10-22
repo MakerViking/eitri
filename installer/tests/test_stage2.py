@@ -163,6 +163,7 @@ def test_convert_success_end_to_end(rig):
     assert os.path.exists(data + "/eitri/state/backup.env")
     inst = dict(l.split("=", 1) for l in open(data + "/eitri/state/install.env").read().splitlines())
     assert inst["flavor"] == "klipper" and inst["stock_soc"] == "1.7.1" and inst["mcu_flash"] == "auto" and inst["bundle_version"] == "2026.10.0"
+    assert inst["toolhead_firmware"] == "pending"                                       # auto: the first boot flashes it
     # the stock system is protected from the Armbian resize service
     link = rig.p("/mnt/stock/etc/systemd/system/armbian-resize-filesystem.service")
     assert os.path.islink(link) and os.readlink(link) == "/dev/null"
@@ -304,4 +305,72 @@ def test_resume_after_an_interrupted_run_reuses_the_partitions(rig):
 def test_missing_tool_is_reported_before_the_disk_is_touched(rig):
     r = rig.run(S2_FAIL_DELAY="0", S2_REQUIRED_TOOLS="sfdisk definitely-not-installed-tool")
     assert r.returncode == 1 and "lacks: definitely-not-installed-tool" in r.stdout
+    assert destructive_calls(rig) == []
+
+
+def test_a_release_without_mcu_firmware_leaves_both_boards_stock(rig):
+    # mcu_policy keep-stock (the first in-place install): no MCU firmware in the payload, --mcu skip. /data gets no firmware
+    # tree and install.env tells the configurator that the toolhead still runs its stock firmware (no ADXL345 in printer.cfg).
+    import json
+    doc = json.load(open(os.path.join(rig.payload, "install.json")))
+    doc["mcu_policy"] = "keep-stock"
+    del doc["files"]["mcu_firmware"]
+    json.dump(doc, open(os.path.join(rig.payload, "install.json"), "w"))
+    os.unlink(os.path.join(rig.payload, "mcu-firmware.tar.zst"))
+    subprocess.run(["python3", os.path.join(INSTALLER, "tools", "prepare_payload.py"), "finalize", "--install-json",
+                    os.path.join(rig.payload, "install.json"), "--flavor", "klipper", "--dir", rig.payload], check=True)
+    rig.write_conf(mcu_mode="skip")
+    r = rig.run()
+    assert r.returncode == 0, r.stdout
+    data = rig.p("/mnt/data")
+    assert os.listdir(data + "/eitri/mcu/firmware") == []
+    inst = dict(l.split("=", 1) for l in open(data + "/eitri/state/install.env").read().splitlines())
+    assert inst["mcu_flash"] == "skip" and inst["toolhead_firmware"] == "stock"
+    assert "keep their stock firmware" in open(rig.p("/run/eitri-stage2.log")).read()
+    assert rig.boot_env()["eitri_mode"] == "eitri"
+
+
+def test_layout_script_names_partitions_with_and_without_p():
+    lib = os.path.join(INSTALLER, "lib")
+    script = ('source %s/eitri-common.sh; source %s/layout.sh; plan=$(mktemp); layout_compute 60620800 557056 59441152 8000000000 2048 4096 >$plan; '
+              'layout_sfdisk_script "$1" 0x6a783df4 32768 524288 $plan "$2"' % (lib, lib))
+    out = subprocess.run(["bash", "-c", script, "x", "/dev/vda", ""], stdout=subprocess.PIPE, universal_newlines=True, check=True).stdout
+    assert "/dev/vda1 : start=32768" in out and "/dev/vda7 :" in out and "vdap" not in out
+    out = subprocess.run(["bash", "-c", script, "x", "/dev/mmcblk1", "p"], stdout=subprocess.PIPE, universal_newlines=True, check=True).stdout
+    assert "/dev/mmcblk1p5 :" in out and "/dev/mmcblk1p2 : start=557056" in out
+
+
+def test_the_boot_partition_mounts_even_without_the_iso8859_1_module(rig):
+    # The stock 5.16 kernel's FAT default iocharset (iso8859-1) is an xz-compressed module; if it cannot be loaded the plain
+    # vfat mount fails ("IO charset iso8859-1 not found", seen in the rehearsal on a copy of the real eMMC). ascii is built in.
+    r = rig.run(FAKE_FAIL_MOUNT="rw,noatime " + rig.disk)
+    assert r.returncode == 0, r.stdout
+    mounts = [c for c in rig.calls() if c.startswith("mount -t vfat")]
+    assert mounts[0] == "mount -t vfat -o rw,noatime %sp1 %s" % (rig.disk, rig.p("/mnt/boot"))
+    assert mounts[1] == "mount -t vfat -o rw,noatime,iocharset=ascii %sp1 %s" % (rig.disk, rig.p("/mnt/boot"))
+    assert rig.boot_env()["eitri_mode"] == "eitri"
+
+
+def test_a_failing_background_network_job_does_not_end_stage_two(rig, tmp_path):
+    # No network on the printer's Ethernet (it runs on Wi-Fi): udhcpc fails in the background job. With errtrace the ERR
+    # trap runs in that subshell; it must not report a failure or reboot (the rehearsal saw it schedule a reboot 90 s in).
+    for name, body in (("udhcpc", "exit 1"), ("ip", "exit 1"), ("httpd", "exit 0")):
+        p = os.path.join(rig.shim_dir, name)
+        with open(p, "w") as fh:
+            fh.write("#!/bin/sh\n%s\n" % body)
+        os.chmod(p, 0o755)
+    r = rig.run(S2_NO_NET="0")
+    assert r.returncode == 0, r.stdout
+    log = open(rig.p("/run/eitri-stage2.log")).read()
+    assert "unexpected error" not in log and "[failed" not in log
+    assert rig.boot_env()["eitri_mode"] == "eitri"
+
+
+def test_a_failure_inside_a_command_substitution_is_reported_by_the_main_shell(rig):
+    # cfg_req runs inside $(...): its message must reach LAST_ERROR through the main shell, which ends stage 2 once.
+    conf = open(rig.p("/etc/eitri/stage2.conf")).read().replace("stock_part=2\n", "")
+    rig.put("/etc/eitri/stage2.conf", conf)
+    r = rig.run(S2_FAIL_DELAY="0")
+    assert r.returncode == 1
+    assert "missing stock_part" in open(rig.p("/run/eitri-stage2.log")).read()
     assert destructive_calls(rig) == []

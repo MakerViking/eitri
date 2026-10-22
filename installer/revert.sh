@@ -40,7 +40,7 @@ source "$INSTALLER_DIR/lib/stage2-build.sh"
 EITRI_COMPONENT=revert
 R="${EITRI_ROOT:-}"
 DISK="${EITRI_DISK:-/dev/mmcblk1}"
-PART_PREFIX="p"
+PART_PREFIX="$([[ "$DISK" =~ [0-9]$ ]] && echo p || true)"     # /dev/mmcblk1p2, /dev/vda2
 BOOT="$(P /boot)"
 # On Eitri the FAT boot partition is mounted at /boot/firmware (the OS image's mount generator); on stock at /boot.
 [[ -e "$(P /boot/firmware)/eitri/boot.env" ]] && BOOT="$(P /boot/firmware)"
@@ -215,7 +215,8 @@ do_to_eitri() {
   boot_rw
   if ! eitri_scr; then
     [[ -r "$BOOT/boot.scr.eitri" ]] && mutate "restore boot.scr" cp -f "$BOOT/boot.scr.eitri" "$BOOT/boot.scr" ||
-      { py "$INSTALLER_DIR/boot/mkscr.py" "$INSTALLER_DIR/boot/boot.cmd" "$STATE_DIR/boot.scr" && mutate "install boot.scr" cp -f "$STATE_DIR/boot.scr" "$BOOT/boot.scr"; }
+      { local scr; scr="$(mktemp "${TMPDIR:-/tmp}/eitri-boot.scr.XXXXXX")" &&
+        py "$INSTALLER_DIR/boot/mkscr.py" "$INSTALLER_DIR/boot/boot.cmd" "$scr" && mutate "install boot.scr" cp -f "$scr" "$BOOT/boot.scr"; rm -f "$scr"; }
   fi
   if [[ -r "$BOOT/extlinux/extlinux.conf" && ! -e "$BOOT/extlinux/extlinux.conf.stock" ]]; then
     mutate "keep the stock entry as extlinux.conf.stock" cp -f "$BOOT/extlinux/extlinux.conf" "$BOOT/extlinux/extlinux.conf.stock"
@@ -332,7 +333,7 @@ main() {
   if [[ "${EUID:-$(id -u)}" != 0 && "${EITRI_ALLOW_NONROOT:-0}" != 1 ]]; then die 10 "run as root (sudo ./revert.sh ...)"; fi
   if ((DRY_RUN)); then _say "${_BLD}DRY RUN${_OFF} ($MODE) - nothing will be changed. Add --yes to do it."; else _say "${_BLD}REVERT: $MODE${_OFF}"; fi
   emit plan "msg=revert $MODE" "data={\"dry_run\":$([[ $DRY_RUN == 1 ]] && echo true || echo false),\"mode\":\"$MODE\"}"
-  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  ((DRY_RUN)) || mkdir -p "$STATE_DIR" 2>/dev/null || true     # a dry run creates nothing
 
   check_installation || die 10 "preconditions not met - nothing was changed"
   case "$MODE" in

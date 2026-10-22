@@ -16,13 +16,16 @@
 #   3  stage              download the signed bundle (system image, data seed, MCU firmware), verify signature +
 #                         checksums, then check the data seed (its manifest, the pinned firmware commit, a rehearsal
 #                         of the unpack rules); works offline from a USB stick or your PC (--bundle-dir, --seed-file)
-#   4  MCU recovery       save a way back for both MCU boards (mainboard: its stock image; toolhead: Katapult read-back
-#                         + round trip, only while Katapult answers: an unresolved toolhead blocks this step).  The round
-#                         trip WRITES to the toolhead (erase + same image back) before step 5: --accept-mcu-roundtrip.
+#   4  MCU recovery       DEFAULT (--mcu skip): both MCU boards keep their stock firmware and are not touched at all
+#                         (no round trip, no bootloader probe).  The toolhead has no bootloader, so it stays stock; the
+#                         mainboard can be flashed later from the setup wizard / eitri-mcuflash.
+#                         With --mcu auto|manual: save a way back for both boards (mainboard: its stock image; toolhead:
+#                         Katapult read-back + round trip, only while Katapult answers: an unresolved toolhead blocks this
+#                         step).  The round trip WRITES to the toolhead before step 5: --accept-mcu-roundtrip.
 #   5  --- you type CONVERT ---
 #   6  arm stage 2        install the boot manager, one-shot RAM installer; reboot
 #      (stage 2, in RAM: shrink the stock root, add rootfs A/B + /data, write + verify, switch)
-#   7  first boot of Eitri flashes the MCUs and confirms the system (eitri-firstboot)
+#   7  first boot of Eitri confirms the system (with --mcu auto it would also flash the MCUs)
 # The stock system stays bootable in its own partition; revert.sh switches back in one reboot.
 #
 # Exit codes: 0 ok | 2 usage | 3 not confirmed | 10 preflight failed | 11 backup problem
@@ -41,7 +44,8 @@ EITRI_COMPONENT=install
 R="${EITRI_ROOT:-}"                                     # test hook: prefix for every system path we read
 STATE_DIR="${EITRI_STATE_DIR:-$R/var/lib/eitri-install}"
 DISK="${EITRI_DISK:-/dev/mmcblk1}"
-PART_PREFIX="p"
+# Partition device names: /dev/mmcblk1p2, but /dev/vda2 or /dev/sda2 for a disk whose name does not end in a digit.
+PART_PREFIX="$([[ "$DISK" =~ [0-9]$ ]] && echo p || true)"
 DEFAULT_BUNDLE_URL="${EITRI_BUNDLE_URL:-https://github.com/eitri-fw/eitri/releases/latest/download/}"
 CONFIRM_PHRASE="CONVERT"
 STOCK_SERVICES=(klipper.service moonraker.service makerbase-client.service QIDILink-client.service webcamd.service)
@@ -51,7 +55,7 @@ I_HAVE_BACKUP=0; ASSUME_YES=0; FORCE_DRY=0
 FLAVOR=""; BUNDLE_URL=""; BUNDLE_DIR=""; PUBKEYS=()
 STAGE_DIR=""; STAGE_USB=""
 BACKUP_MODE=""; BACKUP_TARGET=""; BACKUP_FILE=""; BACKUP_FILE_SHA=""; BACKUP_MAX_AGE_H=72
-MCU_MODE="auto"; PROBE_MCU=0; ACCEPT_NO_MCU_BACKUP=0; STOCK_MCU_BINS=()
+MCU_MODE="skip"; PROBE_MCU=0; ACCEPT_NO_MCU_BACKUP=0; STOCK_MCU_BINS=()
 STATUS_ONLY=0; BACKUP_STREAM=0; STAGE_ONLY=0; MCU_EXTRA=(); ACCEPT_MCU_ROUNDTRIP=0
 SEED_FILE_ARG=""; SEED_MANIFEST_ARG=""
 
@@ -88,7 +92,10 @@ Options
 
   --stock-mcu-bin BOARD=FILE     stock firmware image for a board whose flash cannot be read back (mainboard: qd_mcu.bin)
   --accept-no-mcu-backup         proceed without such an image (you can re-download it from QIDI if needed)
-  --mcu auto|manual|skip         auto (default): flash both MCUs on the first Eitri boot; manual: leave it to the wizard
+  --mcu skip|manual|auto         skip (default): never touch either MCU board, both keep their stock firmware (the toolhead has
+                                 no bootloader; the ADXL345 block is left out of printer.cfg while the toolhead is stock);
+                                 manual: prove recovery now, leave flashing to the wizard; auto: also flash both MCUs on the
+                                 first Eitri boot. A bundle without MCU firmware (mcu_policy keep-stock) only allows skip
   --accept-mcu-roundtrip         consent to the MCU recovery proof, which WRITES to the toolhead board before the CONVERT
                                  prompt: its application area is erased and the same image written back (a few seconds;
                                  a power cut in that window needs a Katapult re-flash from the saved image, see
@@ -158,6 +165,19 @@ parse_args() {
     fi
   fi
   [[ -n "$STAGE_DIR" ]] || STAGE_DIR="$STATE_DIR/payload"
+  WORK_DIR="$STATE_DIR"
+}
+
+# A dry run leaves nothing behind on the printer: everything it has to write (the verified install.json, the layout plan,
+# probe output) goes into a private scratch directory under $TMPDIR (a tmpfs on the stock image) that is removed on exit.
+make_work_dir() {
+  if ((DRY_RUN)); then
+    WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/eitri-dry-run.XXXXXX")" || die 20 "cannot create a scratch directory in ${TMPDIR:-/tmp}"
+    DRY_WORK_DIR="$WORK_DIR"
+  else
+    WORK_DIR="$STATE_DIR"
+    mkdir -p "$STATE_DIR"
+  fi
 }
 
 # ---- small helpers -----------------------------------------------------------------
@@ -322,8 +342,7 @@ plan_layout() {
   local payload="${PAYLOAD_BYTES:-0}" fs_min
   fs_min=$((ROOT_USED + payload + 256 * 1024 * 1024))
   [[ -n "$STAGE_USB" ]] && fs_min=$((ROOT_USED + 256 * 1024 * 1024))
-  local plan="$STATE_DIR/layout.plan" msg
-  mkdir -p "$STATE_DIR"
+  local plan="$WORK_DIR/layout.plan" msg
   if ! msg="$(layout_compute "$(disk_sectors)" "$P2_START" "$P2_SIZE" "$fs_min" "${ROOT_MIB:-2048}" "${DATA_MIN_MIB:-4096}")"; then
     step_fail layout "$(kv_get <(printf '%s\n' "$msg") error)"
     die 10 "$(kv_get <(printf '%s\n' "$msg") error)"
@@ -505,6 +524,21 @@ backup_to_host() {
   step_ok backup "backup stored as $host:$dir/$name"
 }
 
+# Read-only checks of an existing image: not on the disk being converted, the SHA-256 the user gave, and the MBR disk
+# signature of THIS eMMC.  (backup_from_file adds the full gzip test and the checksum of the uncompressed image.)
+check_backup_file_quick() {
+  [[ -r "$BACKUP_FILE" ]] || die 11 "cannot read $BACKUP_FILE"
+  case "$(df --output=source "$BACKUP_FILE" 2>/dev/null | tail -1 | tr -d ' ')" in
+    "$DISK"*) die 11 "$BACKUP_FILE is stored on the disk that is about to be converted; a backup there is not a backup. Copy it to a USB stick or your PC first." ;;
+  esac
+  local gz; gz="$(sha256_of "$BACKUP_FILE")"
+  [[ "$gz" == "${BACKUP_FILE_SHA,,}" ]] || die 11 "checksum of $BACKUP_FILE is $gz, not $BACKUP_FILE_SHA"
+  local live img
+  live="$(dd if="$DISK" bs=1 skip=440 count=4 status=none | od -An -tx1 | tr -d ' \n')"
+  img="$({ gzip -dc "$BACKUP_FILE" 2>/dev/null || true; } | dd bs=1 skip=440 count=4 status=none | od -An -tx1 | tr -d ' \n')"
+  [[ "$live" == "$img" ]] || die 11 "that image comes from a different eMMC (disk signature $img, this printer has $live)"
+}
+
 backup_from_file() {
   [[ -r "$BACKUP_FILE" ]] || die 11 "cannot read $BACKUP_FILE"
   case "$(df --output=source "$BACKUP_FILE" 2>/dev/null | tail -1 | tr -d ' ')" in
@@ -550,7 +584,11 @@ ensure_backup() {
     return 0
   fi
   if ((DRY_RUN)); then
-    if [[ -n "$BACKUP_MODE" ]]; then
+    if [[ "$BACKUP_MODE" == file ]]; then
+      check_backup_file_quick
+      ok "dry run: $BACKUP_FILE has the given SHA-256 and comes from this eMMC (the real run also checks every byte of it)"
+      step_ok backup-check "dry run: backup file checked"
+    elif [[ -n "$BACKUP_MODE" ]]; then
       step_skip backup-check "dry run: would create the backup now ($BACKUP_MODE)"
     else
       pf_warn "no verified backup yet. A real run needs one of --backup-to-usb, --backup-to-host USER@HOST:DIR or --backup-file FILE --backup-sha256 HASH."
@@ -573,7 +611,7 @@ ensure_backup() {
 # ===========================================================================================
 stage_manifest() {
   step_start manifest "Fetching and verifying the Eitri release description"
-  local work="$STATE_DIR/bundle" base="" ij
+  local work="$WORK_DIR/bundle" base="" ij
   mkdir -p "$work"
   ij="$work/install.json"
   if [[ -n "$BUNDLE_DIR" ]]; then
@@ -590,10 +628,21 @@ stage_manifest() {
   py "$INSTALLER_DIR/tools/prepare_payload.py" plan --install-json "$ij" --flavor "$FLAVOR" --base-url "$base" --out-dir "$work" ||
     die 12 "this release cannot be installed on this printer (see the message above)"
   use_local_seed "$work/downloads.tsv"
+  ensure_zstd
   BUNDLE_VERSION="$(kv_get "$work/install.env" version)"
+  if [[ "$(kv_get "$work/install.env" channel)" == dev ]]; then
+    warn "this is a DEVELOPMENT bundle (channel dev, version $BUNDLE_VERSION), signed with a local development key, not an Eitri release key"
+  fi
   PAYLOAD_BYTES="$(kv_get "$work/install.env" payload_bytes)"
   ROOT_MIB="$(kv_get "$work/install.env" root_mib)"; DATA_MIN_MIB="$(kv_get "$work/install.env" data_min_mib)"
   KERNEL_CMDLINE="$(inplace_cmdline "$(kv_get "$work/install.env" kernel_cmdline)" "$LABEL_ID")"
+  MCU_POLICY="$(kv_get "$work/install.env" mcu_policy)"; HAS_MCU_FW="$(kv_get "$work/install.env" has_mcu_firmware)"
+  if [[ "$HAS_MCU_FW" != 1 && "$MCU_MODE" != skip ]]; then
+    die 12 "this release carries no MCU firmware (mcu_policy ${MCU_POLICY:-?}: both boards keep their stock firmware), so --mcu $MCU_MODE cannot work. Use --mcu skip (the default)."
+  fi
+  if [[ "$MCU_MODE" == skip ]]; then
+    _say "  MCU boards: not touched (--mcu skip). Both keep their stock firmware; the mainboard can be flashed later from the setup wizard."
+  fi
   local known; known="$(kv_get "$work/install.env" stock_soc_known)"
   if [[ -n "$known" && "$STOCK_SOC" != unknown && ",$known," != *",$STOCK_SOC,"* ]]; then
     warn "stock firmware V$STOCK_SOC has not been tested with this release (tested: $known). The checks above still apply."
@@ -601,6 +650,24 @@ stage_manifest() {
   _say "  Eitri $BUNDLE_VERSION ($FLAVOR $(kv_get "$work/install.env" flavor_describe)), $(human_bytes "$PAYLOAD_BYTES") to download"
   STAGE_BASE_URL="$base"
   step_ok manifest "Eitri $BUNDLE_VERSION: signature verified"
+}
+
+# The stock system (Debian 10) has no zstd, but the data seed is a .tar.zst that must be looked into before anything is
+# changed.  A release can carry a static aarch64 zstd (files.zstd, signed digest like everything else): it is fetched into
+# the work directory (a scratch directory in a dry run), checked and put first on PATH, for prepare_payload.py and
+# eitri-seed-install.  Nothing is installed on the stock system.
+ensure_zstd() {
+  have_cmd zstd && return 0
+  local env="$WORK_DIR/bundle/install.env" url sha size bin="$WORK_DIR/bin/zstd"
+  url="$(kv_get "$env" zstd_url)"; sha="$(kv_get "$env" zstd_sha256)"; size="$(kv_get "$env" zstd_size)"
+  [[ -n "$url" ]] || die 20 "zstd is not installed on this system and the release does not carry one (apt install zstd, or use a release that includes files.zstd)"
+  mkdir -p "$WORK_DIR/bin"
+  fetch_to "$url" "$bin.part" || die 12 "cannot fetch the release's zstd ($url)"
+  [[ "$(stat -c %s "$bin.part")" == "$size" ]] && verify_sha256 "$bin.part" "$sha" || { rm -f "$bin.part"; die 12 "the release's zstd does not match its signed checksum"; }
+  chmod 0755 "$bin.part" && mv -f "$bin.part" "$bin"
+  "$bin" -V >/dev/null 2>&1 || die 20 "the release's zstd does not run here ($(uname -m)); install zstd (apt install zstd)"
+  PATH="$WORK_DIR/bin:$PATH"; export PATH
+  info "using the release's static zstd ($("$bin" -V 2>&1 | head -1)) - the stock system has none"
 }
 
 # --seed-file / --seed-manifest: read the data seed from these local files instead of fetching it.  Only the *source* of
@@ -636,10 +703,58 @@ rehearse_seed() {
   esac
 }
 
+# Dry run with a local bundle (--bundle-dir, or --seed-file): check every file in place, read-only - its SHA-256 against the
+# signed install.json, the data seed's manifest and its unpack rules (rehearsed into the scratch directory) - so a dry run
+# on the printer proves the offline bundle is complete and intact before the real run copies it.
+dry_check_local_bundle() {
+  local work="$WORK_DIR/bundle" name url sha size path n=0 remote=0 dir="" seed_dirs=()
+  while IFS=$'\t' read -r name url sha size; do
+    [[ -n "$name" ]] || continue
+    if [[ "$url" != file://* ]]; then remote=$((remote + 1)); continue; fi
+    path="${url#file://}"
+    [[ -r "$path" ]] || die 12 "$name is not in the bundle ($path)"
+    [[ "$(stat -c %s "$path")" == "$size" ]] || die 12 "$name has the wrong size (expected $size bytes) - the copy is incomplete"
+    verify_sha256 "$path" "$sha" || die 12 "$name does not match the signed checksum - the copy is damaged"
+    if [[ "$name" == data-seed-* ]]; then seed_dirs+=("$(dirname "$path")/$(basename "$path")=$name"); fi
+    n=$((n + 1))
+  done <"$work/downloads.tsv"
+  if ((remote)); then ok "dry run: $n local file(s) verified, $remote would be downloaded"; step_ok stage "dry run"; return 0; fi
+  # The seed checks read the archive and its manifest under their canonical names from one directory: the bundle directory
+  # itself when the files already carry those names (the usual case), otherwise a copy of just those two in the scratch dir.
+  local e src
+  for e in "${seed_dirs[@]}"; do
+    src="${e%%=*}"
+    if [[ "$(basename "$src")" == "${e#*=}" && ( -z "$dir" || "$dir" == "$(dirname "$src")" ) ]]; then dir="$(dirname "$src")"; else dir=""; break; fi
+  done
+  if [[ -z "$dir" ]]; then
+    dir="$work/seed"; mkdir -p "$dir"
+    for e in "${seed_dirs[@]}"; do cp -f "${e%%=*}" "$dir/${e#*=}"; done
+  fi
+  py "$INSTALLER_DIR/tools/prepare_payload.py" check-seed --install-json "$work/install.json" --flavor "$FLAVOR" --dir "$dir" >"$work/seed.json" ||
+    die 12 "the data seed in the bundle failed its checks (see the message above)"
+  local seedname tool rc=0 sandbox="$WORK_DIR/seed-rehearsal"
+  seedname="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["archive_name"])' "$work/seed.json")"
+  tool="$(seed_tool)" || die 20 "eitri-seed-install is missing from this installer (bin/eitri-seed-install)"
+  mkdir -p "$sandbox"
+  "$tool" --archive "$dir/$seedname" --sha256 "$(awk -F'\t' -v n="$seedname" '$1 == n {print $3}' "$work/downloads.tsv")" --flavor "$FLAVOR" \
+    --data "$sandbox" --mode install --dry-run -q >"$WORK_DIR/seed-check.log" 2>&1 || rc=$?
+  case "$rc" in
+    0 | 5) ;;
+    *) die 12 "the data seed failed its unpack check (exit $rc): $(tail -3 "$WORK_DIR/seed-check.log" | tr '\n' ' ')" ;;
+  esac
+  ok "dry run: all $n files of the local bundle verified in place (SHA-256, data seed manifest and unpack rules); nothing copied"
+  step_ok stage "dry run: local bundle verified"
+}
+
 stage_download() {
-  local work="$STATE_DIR/bundle" ij="$STATE_DIR/bundle/install.json"
+  local work="$WORK_DIR/bundle" ij="$WORK_DIR/bundle/install.json"
   step_start stage "Downloading the Eitri bundle"
-  if ((DRY_RUN)); then step_ok stage "dry run: nothing downloaded"; return 0; fi
+  if ((DRY_RUN)); then
+    local name url sha size
+    while IFS=$'\t' read -r name url sha size; do [[ -n "$name" ]] && _say "    would stage $name ($(human_bytes "$size"))"; done <"$work/downloads.tsv"
+    if [[ -n "$BUNDLE_DIR" || -n "$SEED_FILE_ARG" ]]; then dry_check_local_bundle; else step_ok stage "dry run: nothing downloaded"; fi
+    return 0
+  fi
   if [[ -n "$STAGE_USB" ]]; then
     local dev; dev="$(find_usb_partition "$STAGE_USB")"
     mount_usb "$dev"
@@ -668,10 +783,12 @@ stage_download() {
   py "$INSTALLER_DIR/tools/prepare_payload.py" finalize --install-json "$ij" --flavor "$FLAVOR" --dir "$STAGE_DIR" || die 12 "staged payload failed its final check"
   rehearse_seed
   ok "data seed $(kv_get "$STAGE_DIR/payload.env" data_seed_version) ($FLAVOR): checksum, manifest, pinned firmware and unpack rules verified"
-  # The MCU firmware is also needed right now, for the recovery proof.
-  rm -rf "${STATE_DIR:?}/mcu-fw"; mkdir -p "$STATE_DIR/mcu-fw"
-  have_cmd zstd || die 20 "zstd is needed to unpack the MCU firmware (apt install zstd)"
-  zstd -dc "$STAGE_DIR/mcu-firmware.tar.zst" | tar -x -C "$STATE_DIR/mcu-fw" --no-same-owner
+  # The MCU firmware is also needed right now, for the recovery proof (not with --mcu skip: the boards are not touched).
+  if [[ "$MCU_MODE" != skip ]]; then
+    rm -rf "${STATE_DIR:?}/mcu-fw"; mkdir -p "$STATE_DIR/mcu-fw"
+    have_cmd zstd || die 20 "zstd is needed to unpack the MCU firmware (apt install zstd)"
+    zstd -dc "$STAGE_DIR/mcu-firmware.tar.zst" | tar -x -C "$STATE_DIR/mcu-fw" --no-same-owner
+  fi
   step_ok stage "payload staged in $STAGE_DIR and verified"
 }
 
@@ -681,7 +798,7 @@ stage_download() {
 mcuflash() { "${EITRI_MCUFLASH:-$INSTALLER_DIR/bin/eitri-mcuflash}" "$@"; }
 
 mcu_common_args() {
-  MCU_ARGS=(--json --flavor "$FLAVOR" --firmware-root "$STATE_DIR/mcu-fw" --state-dir "$STATE_DIR/mcu" --no-version-lock
+  MCU_ARGS=(--json --flavor "$FLAVOR" --firmware-root "$WORK_DIR/mcu-fw" --state-dir "$WORK_DIR/mcu" --no-version-lock
             --klipper-dir "$(P /home/mks/klipper)" --klippy-python "$(P /home/mks/klippy-env/bin/python)")
   local b; for b in "${STOCK_MCU_BINS[@]:-}"; do [[ -n "$b" ]] && MCU_ARGS+=(--stock-bin "$b"); done
   ((ACCEPT_NO_MCU_BACKUP)) && MCU_ARGS+=(--accept-no-mcu-backup)
@@ -701,9 +818,9 @@ mcu_recovery() {
     # Read-only: identify what answers on each UART.  The full plan needs the firmware, which a dry run does not download.
     local out rc=0
     out="$(mcuflash probe "${MCU_ARGS[@]}" --stop-services 2>/dev/null)" || rc=$?
-    printf '%s\n' "$out" >"$STATE_DIR/mcu-probe.jsonl"
-    if ((rc == 0)); then step_ok mcu "MCU ports probed (details: $STATE_DIR/mcu-probe.jsonl)"
-    else warn "could not probe the MCUs (see $STATE_DIR/mcu-probe.jsonl); run 'eitri-mcuflash probe' for details"; step_fail mcu "probe failed"; fi
+    printf '%s\n' "$out" >"$WORK_DIR/mcu-probe.jsonl"
+    if ((rc == 0)); then step_ok mcu "MCU ports probed: $(tail -1 "$WORK_DIR/mcu-probe.jsonl" | cut -c1-300)"
+    else warn "could not probe the MCUs: $(tail -1 "$WORK_DIR/mcu-probe.jsonl" | cut -c1-300); run 'eitri-mcuflash probe' for details"; step_fail mcu "probe failed"; fi
     return 0
   fi
   # Real: reset each board into its bootloader, read its firmware back and write it back (round trip), keep the copy.
@@ -860,7 +977,10 @@ reboot_into_stage2() {
 }
 
 # ===========================================================================================
-cleanup() { unquiesce 2>/dev/null || true; umount_usb 2>/dev/null || true; }
+cleanup() {
+  unquiesce 2>/dev/null || true; umount_usb 2>/dev/null || true
+  if [[ -n "${DRY_WORK_DIR:-}" && -d "$DRY_WORK_DIR" ]]; then rm -rf "${DRY_WORK_DIR:?}"; fi
+}
 
 choose_flavor() {
   [[ -n "$FLAVOR" ]] && return 0
@@ -884,7 +1004,7 @@ main() {
   if ((STATUS_ONLY)); then show_status; return; fi
   trap cleanup EXIT
   trap 'err "unexpected failure at install.sh line $LINENO; nothing irreversible has been done unless stage 2 was armed (see --status)"' ERR
-  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  make_work_dir
   if ((DRY_RUN)); then _say "${_BLD}DRY RUN${_OFF} - nothing will be changed. (Real run: add --i-have-a-backup --yes)"; else _say "${_BLD}REAL RUN${_OFF}"; fi
   emit plan "msg=Eitri in-place install" "data={\"dry_run\":$([[ $DRY_RUN == 1 ]] && echo true || echo false)}"
 

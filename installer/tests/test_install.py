@@ -23,10 +23,8 @@ def test_dry_run_is_the_default_and_changes_nothing(printer):
     assert r.returncode == 0, r.stdout
     assert "DRY RUN" in r.stdout and "Dry run finished: nothing was changed" in r.stdout
     after = printer.snapshot()
-    # only our own state directory (checksummed download manifest, layout plan) may appear
-    new = {k for k in after if k not in before}
-    assert all(k.startswith("var/lib/eitri-install/") for k in new), new
-    assert before.items() <= after.items()
+    assert before == after                                                         # not a single file appeared or changed
+    assert not os.path.exists(printer.state)                                       # not even an empty state directory
     assert not any(c.startswith(("systemctl stop", "systemctl mask", "systemctl reboot", "reboot")) for c in printer.calls())
     assert os.path.exists(printer.p("/boot/extlinux/extlinux.conf")) and not os.path.exists(printer.p("/boot/eitri"))
     assert not os.path.exists(os.path.join(printer.state, "payload"))             # nothing downloaded
@@ -221,11 +219,11 @@ def test_existing_boot_script_is_kept_for_revert(printer):
 
 
 def test_real_run_arms_stage_two_and_reboots(printer, tmp_path):
-    moddir = tmp_path / "mods"
-    moddir.mkdir()
-    for m in ("vfat", "fat"):
-        (moddir / (m + ".ko")).write_bytes(b"\x7fELF-" + m.encode())
-    r = real_run(printer, FAKE_MODDIR=str(moddir))
+    # the stock kernel's modules: /lib/modules/<version>/..., xz-compressed like the printer's (5.16.20-rockchip64)
+    moddir = "/lib/modules/5.16.20-rockchip64/kernel/fs"
+    for m in ("vfat", "fat", "nls_iso8859_1"):
+        printer.write(moddir + "/" + m + ".ko.xz", "\x7fELF-" + m)
+    r = real_run(printer, FAKE_MODDIR=moddir)
     assert r.returncode == 0, r.stdout
     boot = printer.p("/boot")
     # the stock entry is still there, renamed, and the original is saved
@@ -261,8 +259,15 @@ def test_real_run_arms_stage_two_and_reboots(printer, tmp_path):
     listing = "".join(subprocess.run("zcat | cpio -it 2>/dev/null", shell=True, input=part, stdout=subprocess.PIPE).stdout.decode()
                       for part in (blob[:len(base)], blob[len(base):]))
     for needed in ("init", "etc/eitri/stage2.conf", "usr/lib/eitri/stage2.sh", "usr/lib/eitri/layout.sh", "usr/lib/eitri/www/index.html", "etc/eitri/modules.list",
-                   "usr/libexec/eitri/eitri-seed-install"):
+                   "usr/libexec/eitri/eitri-seed-install", "usr/lib/eitri/modules/vfat.ko.xz", "usr/lib/eitri/modules/nls_iso8859_1.ko.xz"):
         assert needed in listing, listing
+    # The base is a merged-/usr tree (/lib -> usr/lib): a member named lib/... (or bin/, sbin/, lib64/) in the appended archive
+    # would make the kernel replace that symlink with a directory and stage 2 would panic ("Failed to execute /init").
+    extra = subprocess.run("zcat | cpio -it 2>/dev/null", shell=True, input=blob[len(base):], stdout=subprocess.PIPE).stdout.decode().split()
+    assert not [m for m in extra if m.split("/")[0] in ("lib", "lib64", "bin", "sbin")], extra
+    mods = open(os.path.join(printer.state, "modules.s2.list")).read().split()
+    assert mods == ["/usr/lib/eitri/modules/fat.ko.xz", "/usr/lib/eitri/modules/vfat.ko.xz", "/usr/lib/eitri/modules/nls_iso8859_1.ko.xz"] or \
+        sorted(mods) == sorted(["/usr/lib/eitri/modules/fat.ko.xz", "/usr/lib/eitri/modules/vfat.ko.xz", "/usr/lib/eitri/modules/nls_iso8859_1.ko.xz"]), mods
     s2 = open(os.path.join(printer.state, "stage2.conf")).read()
     assert "operation=convert" in s2 and "payload_loc=stock:/var/lib/eitri-install/payload" in s2 and "stock_fs_uuid=5dcae443-0796-4029-ae6c-bf5bd2a37067" in s2
     # services and reboot
@@ -295,7 +300,7 @@ def test_mcu_recovery_failure_blocks_arming(printer, tmp_path):
     stub.chmod(0o755)
     path, digest = make_backup_file(printer)
     r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--backup-file", path, "--backup-sha256", digest,
-                        "--confirm", "CONVERT", "--accept-mcu-roundtrip", EITRI_MCUFLASH=str(stub))
+                        "--confirm", "CONVERT", "--accept-mcu-roundtrip", "--mcu", "auto", EITRI_MCUFLASH=str(stub))
     assert r.returncode == 13 and "could not be proven recoverable" in r.stdout
     assert not os.path.exists(printer.p("/boot/eitri")) and "systemctl reboot" not in printer.calls()
     logged = [l for l in printer.calls() if l.startswith("backup")][0]
@@ -308,7 +313,7 @@ def test_mcu_recovery_success_passes_stock_binaries_through(printer, tmp_path):
     stub.chmod(0o755)
     path, digest = make_backup_file(printer)
     r = printer.install("--flavor", "kalico", "--i-have-a-backup", "--yes", "--backup-file", path, "--backup-sha256", digest, "--confirm", "CONVERT",
-                        "--stock-mcu-bin", "mainboard=/x/qd_mcu.bin", "--accept-no-mcu-backup", "--accept-mcu-roundtrip", EITRI_MCUFLASH=str(stub))
+                        "--stock-mcu-bin", "mainboard=/x/qd_mcu.bin", "--accept-no-mcu-backup", "--accept-mcu-roundtrip", "--mcu", "auto", EITRI_MCUFLASH=str(stub))
     assert r.returncode == 0, r.stdout
     logged = [l for l in printer.calls() if l.startswith("backup")][0]
     assert "--flavor kalico" in logged and "--stock-bin mainboard=/x/qd_mcu.bin" in logged and "--accept-no-mcu-backup" in logged
@@ -319,14 +324,14 @@ def test_dry_run_probe_mcu_only_probes(printer, tmp_path):
     stub = tmp_path / "mcuflash-stub"
     stub.write_text("#!/bin/sh\necho \"$@\" >>\"$FAKE_LOG\"\necho '{\"type\":\"result\",\"ok\":true}'\n")
     stub.chmod(0o755)
-    r = printer.install("--flavor", "klipper", "--probe-mcu", EITRI_MCUFLASH=str(stub))
+    r = printer.install("--flavor", "klipper", "--probe-mcu", "--mcu", "auto", EITRI_MCUFLASH=str(stub))
     assert r.returncode == 0, r.stdout
     verbs = [l.split()[0] for l in printer.calls() if l.split()[:1] and l.split()[0] in ("probe", "plan", "backup", "flash")]
     assert verbs == ["probe"]                      # a dry run never resets or flashes a board
 
 
 def test_dry_run_without_probe_leaves_klipper_alone(printer):
-    r = printer.install("--flavor", "klipper")
+    r = printer.install("--flavor", "klipper", "--mcu", "auto")
     assert "use --probe-mcu" in r.stdout and not any(c.startswith("probe") for c in printer.calls())
 
 
@@ -403,12 +408,12 @@ def test_the_mcu_roundtrip_needs_explicit_consent_before_any_board_is_written(pr
     stub = _ok_stub(tmp_path)
     path, digest = make_backup_file(printer)
     r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--backup-file", path, "--backup-sha256", digest,
-                        "--confirm", "CONVERT", EITRI_MCUFLASH=str(stub))
+                        "--confirm", "CONVERT", "--mcu", "auto", EITRI_MCUFLASH=str(stub))
     assert r.returncode == 3 and "--accept-mcu-roundtrip" in r.stdout and "ERASES the application" in r.stdout
     assert not [l for l in printer.calls() if l.startswith("backup")]                       # no board was touched
     assert not os.path.exists(os.path.join(printer.state, "payload"))                       # and nothing big was downloaded either
     r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--backup-file", path, "--backup-sha256", digest,
-                        "--confirm", "CONVERT", "--accept-mcu-roundtrip", EITRI_MCUFLASH=str(stub))
+                        "--confirm", "CONVERT", "--accept-mcu-roundtrip", "--mcu", "auto", EITRI_MCUFLASH=str(stub))
     assert r.returncode == 0, r.stdout
     assert [l for l in printer.calls() if l.startswith("backup")]
 
@@ -580,3 +585,152 @@ def test_the_help_says_which_install_path_is_the_user_path():
     assert "This IS the way to put Eitri on a printer" in out
     assert "GPT disk image built by os/ is for bench" in out and "microSD cards and CI only" in out
     assert "--seed-file FILE --seed-manifest FILE" in out and "data seed" in out
+
+
+def all_dirs(root):
+    return sorted(os.path.relpath(d, root) for d, _subdirs, _files in os.walk(root))
+
+
+def test_a_dry_run_creates_no_directory_either(printer, tmp_path):
+    # The real printer's dry run (2026-10-22) left an empty /var/lib/eitri-install/bundle behind. A dry run must not
+    # create anything on the printer, also not with a backup file, --probe-mcu or a failure half-way.
+    path, digest = make_backup_file(printer)
+    stub = _ok_stub(tmp_path)
+    dirs = all_dirs(printer.root)
+    for args in ((), ("--backup-file", path, "--backup-sha256", digest), ("--mcu", "auto", "--probe-mcu")):
+        r = printer.install("--flavor", "klipper", *args, EITRI_MCUFLASH=str(stub), TMPDIR=str(tmp_path))
+        assert r.returncode == 0, r.stdout
+        assert all_dirs(printer.root) == dirs, (args, set(all_dirs(printer.root)) - set(dirs))
+    r = printer.install("--flavor", "klipper", FAKE_DISK_SECTORS="30000000", TMPDIR=str(tmp_path))   # fails at the layout
+    assert r.returncode == 10 and all_dirs(printer.root) == dirs
+    assert not [d for d in os.listdir(str(tmp_path)) if d.startswith("eitri-dry-run.")]           # the scratch dir is gone
+
+
+def test_the_dry_run_checks_a_backup_file_read_only(printer):
+    path, digest = make_backup_file(printer)
+    r = printer.install("--flavor", "klipper", "--backup-file", path, "--backup-sha256", digest)
+    assert r.returncode == 0 and "comes from this eMMC" in r.stdout, r.stdout
+    r = printer.install("--flavor", "klipper", "--backup-file", path, "--backup-sha256", "0" * 64)
+    assert r.returncode == 11 and "checksum of" in r.stdout
+
+
+def test_the_dry_run_finds_a_damaged_local_bundle(printer):
+    with open(os.path.join(printer.bundle, "rootfs.img.zst"), "ab") as fh:
+        fh.write(b"x")
+    r = printer.install("--flavor", "klipper")
+    assert r.returncode == 12 and "rootfs.img.zst has the wrong size" in r.stdout
+
+
+def keep_stock_bundle(printer):
+    """A release that carries no MCU firmware: both boards keep their stock firmware (the first in-place install)."""
+    doc = printer.install_doc
+    doc["mcu_policy"] = "keep-stock"
+    del doc["files"]["mcu_firmware"]
+    os.unlink(os.path.join(printer.bundle, "mcu-firmware.tar.zst"))
+    data = json.dumps(doc).encode()
+    open(os.path.join(printer.bundle, "install.json"), "wb").write(data)
+    open(os.path.join(printer.bundle, "install.json.minisig"), "w").write(printer.signer.sign(data))
+
+
+def test_mcu_skip_is_the_default_and_never_touches_a_board(printer, tmp_path):
+    stub = _ok_stub(tmp_path)
+    path, digest = make_backup_file(printer)
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--backup-file", path, "--backup-sha256", digest,
+                        "--confirm", "CONVERT", EITRI_MCUFLASH=str(stub))                    # no --mcu, no --accept-mcu-roundtrip
+    assert r.returncode == 0, r.stdout
+    assert not [l for l in printer.calls() if l.split()[:1] and l.split()[0] in ("probe", "plan", "backup", "flash")]
+    assert "mcu_mode=skip" in open(os.path.join(printer.state, "stage2.conf")).read()
+    assert not os.path.exists(os.path.join(printer.state, "mcu-fw"))                      # not even unpacked
+
+
+def test_a_release_without_mcu_firmware_installs_with_both_boards_stock(printer, tmp_path):
+    keep_stock_bundle(printer)
+    stub = _ok_stub(tmp_path)
+    r = printer.install("--flavor", "klipper", EITRI_MCUFLASH=str(stub))                    # dry run
+    assert r.returncode == 0 and "would stage mcu-firmware" not in r.stdout, r.stdout
+    path, digest = make_backup_file(printer)
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--backup-file", path, "--backup-sha256", digest,
+                        "--confirm", "CONVERT", EITRI_MCUFLASH=str(stub))
+    assert r.returncode == 0, r.stdout
+    penv = dict(l.split("=", 1) for l in open(os.path.join(printer.state, "payload", "payload.env")).read().splitlines())
+    assert penv["mcu_firmware_file"] == "" and penv["mcu_policy"] == "keep-stock"
+    assert not [l for l in printer.calls() if l.split()[:1] and l.split()[0] in ("probe", "plan", "backup", "flash")]
+
+
+def test_a_release_without_mcu_firmware_refuses_mcu_auto(printer):
+    keep_stock_bundle(printer)
+    for mode in ("auto", "manual"):
+        r = printer.install("--flavor", "klipper", "--mcu", mode)
+        assert r.returncode == 12 and "carries no MCU firmware" in r.stdout
+
+
+def test_a_release_without_mcu_firmware_must_say_so(printer):
+    doc = printer.install_doc
+    del doc["files"]["mcu_firmware"]
+    data = json.dumps(doc).encode()
+    open(os.path.join(printer.bundle, "install.json"), "wb").write(data)
+    open(os.path.join(printer.bundle, "install.json.minisig"), "w").write(printer.signer.sign(data))
+    r = printer.install("--flavor", "klipper")
+    assert r.returncode == 12 and "keep-stock" in r.stdout
+
+
+def test_a_dev_bundle_is_announced(printer):
+    doc = printer.install_doc
+    doc["channel"] = "dev"
+    data = json.dumps(doc).encode()
+    open(os.path.join(printer.bundle, "install.json"), "wb").write(data)
+    open(os.path.join(printer.bundle, "install.json.minisig"), "w").write(printer.signer.sign(data))
+    r = printer.install("--flavor", "klipper")
+    assert r.returncode == 0 and "DEVELOPMENT bundle" in r.stdout
+
+
+def test_a_disk_name_without_a_trailing_digit_has_no_p_in_its_partitions(printer):
+    vda = os.path.join(printer.tmp, "dev", "vda")
+    shutil.copy(printer.disk, vda)
+    from printerfix import STOCK_DUMP
+    with open(printer.dump, "w") as fh:
+        fh.write(STOCK_DUMP.format(disk=vda).replace(vda + "p", vda))
+    r = printer.install("--flavor", "klipper", EITRI_DISK=vda, FAKE_ROOT_SRC=vda + "2", FAKE_BOOT_SRC=vda + "1")
+    assert r.returncode == 0, r.stdout
+    assert "running from the eMMC (%s2, %s1)" % (vda, vda) in r.stdout
+
+
+def test_a_stock_system_without_zstd_uses_the_release_s_own(printer, tmp_path):
+    # Debian 10 on the printer has no zstd, but the data seed is a .tar.zst that stage 1 checks before anything changes.
+    # The release carries a static zstd (files.zstd, signed like everything else); here a copy of the host's.
+    host_zstd = shutil.which("zstd")
+    shutil.copy(host_zstd, os.path.join(printer.bundle, "zstd-aarch64"))
+    doc = printer.install_doc
+    data = open(os.path.join(printer.bundle, "zstd-aarch64"), "rb").read()
+    doc["files"]["zstd"] = {"url": "zstd-aarch64", "sha256": sha256(data), "size": len(data)}
+    blob = json.dumps(doc).encode()
+    open(os.path.join(printer.bundle, "install.json"), "wb").write(blob)
+    open(os.path.join(printer.bundle, "install.json.minisig"), "w").write(printer.signer.sign(blob))
+    # a PATH that has everything the host offers except zstd
+    nozstd = tmp_path / "nozstd-bin"
+    nozstd.mkdir()
+    seen = set()
+    for d in os.environ["PATH"].split(os.pathsep):
+        if not os.path.isdir(d):
+            continue
+        for name in os.listdir(d):
+            src = os.path.join(d, name)
+            if name in seen or name.startswith("zstd") or name in ("unzstd",) or not os.access(src, os.X_OK) or os.path.isdir(src):
+                continue
+            seen.add(name)
+            os.symlink(src, str(nozstd / name))
+    path = printer.shim_dir + os.pathsep + str(nozstd)
+    r = printer.install("--flavor", "klipper", PATH=path, TMPDIR=str(tmp_path))                     # dry run
+    assert r.returncode == 0 and "using the release's static zstd" in r.stdout, r.stdout
+    assert not os.path.exists(printer.state)
+    # a tampered zstd is refused before it is ever run
+    with open(os.path.join(printer.bundle, "zstd-aarch64"), "ab") as fh:
+        fh.write(b"x")
+    r = printer.install("--flavor", "klipper", PATH=path, TMPDIR=str(tmp_path))
+    assert r.returncode == 12 and "zstd does not match its signed checksum" in r.stdout
+    open(os.path.join(printer.bundle, "zstd-aarch64"), "wb").write(data)
+    bpath, digest = make_backup_file(printer)
+    r = printer.install("--flavor", "klipper", "--i-have-a-backup", "--yes", "--backup-file", bpath, "--backup-sha256", digest,
+                        "--confirm", "CONVERT", PATH=path)
+    assert r.returncode == 0, r.stdout
+    assert "unpack rules verified" in r.stdout and os.access(os.path.join(printer.state, "bin", "zstd"), os.X_OK)

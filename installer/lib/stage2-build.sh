@@ -56,11 +56,19 @@ build_stage2_initramfs() {
   local seedtool; seedtool="$(seed_tool || true)"
   if [[ -n "$seedtool" ]]; then args+=(--file "usr/libexec/eitri/eitri-seed-install=$seedtool:0755"); fi
   if [[ "$with_modules" == 1 ]]; then
+    # The modules go to usr/lib/eitri/modules/, never to their own path: the base archive is a merged-/usr tree in which
+    # /lib is a symlink to usr/lib, and an archive member under lib/... would make the kernel replace that symlink with a
+    # directory while unpacking - no dynamic loader, "Failed to execute /init", kernel panic (found by the rehearsal on a
+    # copy of the real eMMC).  Nothing in the extra archive may name lib/, lib64/, bin/ or sbin/.
     collect_modules
-    args+=(--file "etc/eitri/modules.list=$STATE_DIR/modules.list:0644")
+    : >"$STATE_DIR/modules.s2.list"
     while IFS= read -r ko; do
-      if [[ -n "$ko" && -r "$(P "$ko")" ]]; then args+=(--file "${ko#/}=$(P "$ko"):0644"); fi
+      if [[ -n "$ko" && -r "$(P "$ko")" ]]; then
+        args+=(--file "usr/lib/eitri/modules/$(basename "$ko")=$(P "$ko"):0644")
+        printf '/usr/lib/eitri/modules/%s\n' "$(basename "$ko")" >>"$STATE_DIR/modules.s2.list"
+      fi
     done <"$STATE_DIR/modules.list"
+    args+=(--file "etc/eitri/modules.list=$STATE_DIR/modules.s2.list:0644")
   fi
   py "$INSTALLER_DIR/tools/mkcpio.py" "$extra" "${args[@]}"
   cat "$base" "$extra" >"$out"

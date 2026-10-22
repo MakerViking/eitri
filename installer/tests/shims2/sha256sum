@@ -1,0 +1,4 @@
+#!/bin/sh
+# Like BusyBox's sha256sum (the stage-2 initramfs): no long options.  (The rehearsal found `sha256sum -c --quiet`.)
+for a in "$@"; do case "$a" in --*) echo "sha256sum: unrecognized option '$a'" >&2; exit 1 ;; esac; done
+exec /usr/bin/sha256sum "$@"

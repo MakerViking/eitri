@@ -1,6 +1,7 @@
 # Status
 
-Last integration pass: 2026-10-22 (data seed and Thomas's 13 decisions). Pre-alpha. **Nothing in this repository has run on a printer.**
+Last integration pass: 2026-10-22 (in-place install: offline dev bundle, stock-MCU first install, rehearsal on a copy of the real
+eMMC). Pre-alpha. **Only `install.sh --dry-run` (its read-only preflight) has run on the printer; nothing has been written to it.**
 Every test below is a unit, simulation, emulation or static test; "Needs hardware" lists what none of them can prove.
 
 `make test` runs every suite below (about 8 minutes, most of it the real klippy). `make test-fast` skips the klippy
@@ -9,6 +10,125 @@ Buildroot cross toolchain). `os/qemu/smoke-test.sh` boots the real image under Q
 
 Legend: **done** = complete as far as it can be without hardware, **partial** = works but has a known gap, **stub** =
 deliberately refuses to run.
+
+## In-place install: ready for the real dry run (2026-10-22)
+
+**Built** (all on this PC, nothing touched the printer): a local **development** minisign key
+(`build/devkeys/eitri-dev.key`, mode 600, outside the repository; public key id `51A0E3665B7E7F9C`), the stage-2 RAM installer,
+the conservative-feature rootfs and an offline, dev-signed bundle in `build/dev-bundle/` that `install.sh --bundle-dir` accepts.
+Reproducible with `installer/tools/mk-dev-bundle.sh --key ../build/devkeys/eitri-dev.key` (it calls
+`installer/tools/mk-stage2-initramfs.sh` and verifies the result the way `install.sh` will).
+
+| `build/dev-bundle/` | bytes | what |
+|---|---:|---|
+| `install.json` + `.minisig` | 1,562 + 354 | channel `dev`, `"dev": true`, version `0.0.0.dev0`, klipper only, `mcu_policy: keep-stock` (no MCU firmware), stock soc 1.7.1 + 1.7.3, exact SHA-256/size of every file |
+| `rootfs.img.zst` | 90,607,941 | slot A: the image's `rootfs.ext4` (640 MiB raw), features `ext_attr resize_inode dir_index filetype extent flex_bg sparse_super large_file dir_nlink extra_isize metadata_csum` (no 64bit, metadata_csum_seed, orphan_file, huge_file, inline_data, journal); kernel and dtb read back through U-Boot 2021.07's ext4load, byte for byte |
+| `stage2-initramfs.cpio.gz` | 4,010,310 | the RAM installer's userland (bash, BusyBox + httpd/nc/stat/xz modules, util-linux, e2fsprogs + debugfs, zstd, glibc), sha256 `66eb585e...` |
+| `data-seed-0.0.0.dev0-klipper.tar.zst` + `.manifest.json` | 57,869,239 + 14,391 | the Klipper seed from `build/seed/out` (`7f5c893e...`) |
+| `zstd-aarch64` | 1,424,264 | static zstd for stage 1: **the stock Debian 10 has no zstd** (found while preparing the rehearsal) |
+| `eitri-dev.pub`, `eitri-installer.tar.gz` (198 KB), `SHA256SUMS`, `BUILD-INFO.txt`, `rootfs.check.txt` | | public key, the installer to unpack on the printer, human checks |
+
+**Installer changes for this first install:**
+* `--mcu skip` is the **default**: neither MCU is probed, reset or written (no round trip, no Katapult probe); step 4 never
+  blocks. Both boards keep their stock firmware (toolhead: no bootloader; mainboard: flash it later from the wizard,
+  `eitri-mcuflash --only mainboard`). A release may say `"mcu_policy": "keep-stock"` and carry no MCU firmware; then only skip
+  is accepted (`--mcu auto|manual` exit 12). Stage 2 writes `toolhead_firmware=stock` into `/data/eitri/state/install.env`; the
+  configurator then leaves `[adxl345]`/`[resonance_tester]` out of `printer.cfg` and refuses input-shaper calibration with an
+  explanation (proven in the converted copy: the configurator renders `printer.cfg` with `[mcu]` and `[mcu U_1]`, no ADXL345).
+* **A dry run creates nothing** (the real printer's dry run had left `/var/lib/eitri-install/bundle`): all scratch goes to a
+  `mktemp -d` under `$TMPDIR`, removed on exit. With `--bundle-dir` it also checks every bundle file in place (size, SHA-256,
+  seed manifest, unpack rules) and with `--backup-file` the backup's SHA-256 and MBR signature, read-only.
+* Stock firmware V1.7.3 is listed as known; device names without a trailing digit (`/dev/vda`) work (`EITRI_DISK`).
+* `revert.sh` dry runs create nothing either.
+
+**Rehearsal on a copy of the real eMMC** (`installer/rehearsal/`, `run-all.sh BACKUP.img.gz`; no root, no device): the backup
+(`downloads/emmc-backup/mmcblk1.img.gz`, sha256 `df062aaf...` verified, never written) decompressed sparse to
+`build/rehearsal/scratch.img` (31,037,849,600 B, about 12 GB on disk). QEMU `virt` (4 x A53, 1 GiB) booted **the printer's own
+stock kernel 5.16.20-rockchip64 and initrd from the copy's /boot**, with QEMU's device tree carrying the board's compatible
+string; the copy is `/dev/vda` (the only deviation from the printer: `EITRI_DISK=/dev/vda`). A real **U-Boot 2021.07 sandbox**
+ran the `boot.scr` that stage 1 wrote, against the copy's partition 1 (booti replaced by an echo + reset: the sandbox cannot
+start arm64 kernels). Final run, from a fresh copy, with exactly the bundle above (`build/rehearsal/logs/`):
+
+* **Stage 1** on the copy's own Debian 10 (Python 3.7.3, no network, `systemd.run`): `install.sh --dry-run` with `--bundle-dir`,
+  `--pubkey`, `--backup-file` passed in 46 s and left `/var/lib` and `/boot` unchanged; the real run (`--mcu skip --confirm
+  CONVERT`) passed preflight (aarch64, roc-rk3328-cc, mkspi, V1.7.3, dos label 0x6a783df4, 256 + 29024 MiB, 20.4 GiB free, 149.2 MiB
+  free on /boot), verified the signature, used the bundle's zstd, planned the layout, **verified every byte of the 4 GB backup
+  (9 min 20 s under emulation)**, staged 145 MiB, rehearsed the seed, re-checked the backup, armed stage 2 and rebooted: 10 min
+  11 s of installer time.
+* **U-Boot** then started the RAM installer (`eitri.op=convert`, stock `/Image` + dtb + `/eitri/stage2/initramfs.cpio.gz`
+  loaded from p1, `eitri_s2_tries` 2 -> 1 written before booti).
+* **Stage 2** on the stock kernel: modules `nls_iso8859-1`, `nls_utf8`, `uas` (`.ko.xz`) loaded, e2fsck, payload re-verified,
+  `resize2fs -P` minimum 8464 MiB, shrink 29024 -> 9523 MiB (27 s), new table p2/p3/p5/p6/p7 (label-id kept), slot A written and
+  read back (45 s), `/data` created and seeded (15 s), RAUC slots mapped to p5/p6, committed: **103 s** (+ 8 s before its reboot)
+  under QEMU on this PC's NVMe
+  (the eMMC is slower; expect several minutes, mostly the shrink and the read-back). Room: the shrunk stock root is resize2fs's
+  minimum (8464 MiB, including the 145 MiB staged payload) + 12.5 % (at least 1 GiB) = 9523 MiB, slots A/B 2 GiB each, /data the
+  rest (15.3 GiB here); stage 1 needs the payload + 1 GiB free on the stock root (20.4 GiB free) and the RAM installer 4 MiB on
+  /boot (149 MiB free).
+* **(a)** U-Boot 2021.07 then booted slot A: `ext4load` of `/boot/Image` (21,619,200 B) and `/boot/dtb/rockchip/rk3328-roc-cc.dtb`
+  (38,307 B, through its symlink) from partition 5, bootargs `root=PARTUUID=6a783df4-05 ro rootwait rootfstype=ext4 eitri.slot=A
+  console=tty1 loglevel=4 panic=10 net.ifnames=0 eitri.data=LABEL=eitri-data eitri.bootfs=PARTUUID=6a783df4-01`, tries 3 -> 2.
+* **(b)** Two more boots that never confirmed (tries 2 -> 1 -> 0), then "no bootable slot left": `eitri_state_A=bad`, `sysboot` of
+  `extlinux.conf.stock` (stock `/Image`, `/uInitrd`, dtb, the stock append line). The copy's stock system then **booted to
+  `mkspi login:`** in about 30 s with that entry.
+* **(c)** After the shrink, e2fsck -fn of p2, p5 and p7: **exit 0, clean**. Stock root before stage 2 vs after: **133,688 of 133,688
+  files and 31,617 symlinks identical** (SHA-256 of every file). Against the untouched backup: all 62 files under
+  `/home/mks/printer_data/config/` and `/boot/extlinux/extlinux.conf` (now `.stock`) identical; the only other differences are
+  stock-boot logs, the unpacked installer, `/var/lib/eitri-install` and the masked Armbian resize unit.
+* **(d)** `revert.sh --hard` on the copy's stock system: boot.scr retired, `extlinux.conf` restored byte-identical to the original;
+  U-Boot's distro boot then takes `extlinux.conf` (boot.scr is not run) and the stock system boots to `mkspi login:`.
+  `revert.sh --to-eitri` switched back.
+* **(e)** Slot A booted with the QEMU build of the same 6.18 kernel (the printer's kernel has no virtio), the kernel arguments
+  exactly as U-Boot printed them: `multi-user.target` after 21.6 s of userspace (16.4 s on the second boot), **no failed units**, `/` = p5 read-only, `/data` = p7
+  (seeded: Klipper `a08fc79`, Moonraker, venvs run Python 3.14.5), `/boot/firmware` = p1, `/etc` overlay with RAUC mapped to p5/p6
+  and the `eitri-bootctl` backend, configurator up with a pairing code, nginx running; Klipper/Moonraker/Klarity wait for the
+  wizard's Apply as designed; `eitri-verify` confirmed slot A and the boot attempts went back to 3 on **every** healthy boot.
+
+**Real bugs the rehearsal found (each would have stopped or undone the install on the printer; all fixed, each with a test):**
+1. Stage 1: the stock system has **no zstd** -> the seed check could not run (now `files.zstd`, a static binary in the bundle).
+2. Stage 1: the extra initramfs archive put the stock modules under `lib/...`; unpacking it **replaced the base's `/lib -> usr/lib`
+   symlink** with a directory -> no dynamic loader -> "Failed to execute /init" -> kernel panic in stage 2 (modules now go to
+   `usr/lib/eitri/modules/`).
+3. Stage 2: the stock kernel's FAT default iocharset (iso8859-1) is an **xz-compressed module** the kernel cannot load itself ->
+   `/boot` would not mount (BusyBox insmod now decompresses `.ko.xz`; stage 2 falls back to the built-in `iocharset=ascii`).
+4. Stage 2: `sha256sum -c --quiet` is not BusyBox -> "staged payload does not match" on every install.
+5. Stage 2: with errtrace the ERR trap also ran inside the background network job; a failing `udhcpc` (no Ethernet: the printer
+   is on Wi-Fi) **scheduled a reboot 90 s into the conversion**, i.e. in the middle of the shrink. Subshells now hand their failure
+   to the main shell.
+6. Eitri: the kernel's FAT default iocharset is `ascii`, which is not built (NLS_ASCII off) -> `/boot/firmware` never mounted ->
+   the boot counter could never be reset (the generator now passes `iocharset=iso8859-1`).
+7. Eitri: `eitri-update verify` restored the boot attempts only at the first commit; U-Boot spends one on **every** boot, so the
+   **fifth boot after the install would have fallen back to stock**. A healthy boot of a confirmed slot now restores them.
+8. Eitri: `data-init` used `stat`, which the image's BusyBox lacks -> the seed's parent directories stayed root-owned.
+Also found: a read-only *mount* of the copy is not read-only (ext4 orphan cleanup writes on a writable device): the check VMs
+attach the copy read-only; the first copy was discarded and decompressed again.
+
+**Not proven by the rehearsal:** the board itself (eMMC speed, the real U-Boot 2021.07-armbian binary rather than a sandbox
+build of the same version, the RK3328 kernel on the RK3328, Wi-Fi/Ethernet, screen, MCUs, camera); `revert.sh --full` (image
+restore, not run); the backup on a USB stick plugged into the printer; Kalico; how long the eMMC takes for the shrink.
+
+**What Thomas runs on the printer** (offline; ssh in; copy `build/dev-bundle/` and the backup to a FAT32/exFAT stick first:
+`mmcblk1.img.gz` is 4,059,474,457 B and fits FAT32). Mount the stick (here `/mnt/usb`), then:
+
+```sh
+sudo mkdir -p /mnt/usb && sudo mount /dev/sda1 /mnt/usb          # or wherever the stick is mounted
+mkdir -p ~/eitri && tar -xzf /mnt/usb/dev-bundle/eitri-installer.tar.gz -C ~/eitri && cd ~/eitri/installer
+
+# 1. the DRY RUN (changes nothing, creates nothing; checks the bundle and the backup in place)
+sudo ./install.sh --dry-run --flavor klipper \
+     --bundle-dir /mnt/usb/dev-bundle --pubkey /mnt/usb/dev-bundle/eitri-dev.pub \
+     --backup-file /mnt/usb/mmcblk1.img.gz --backup-sha256 df062aaf408b680f850dab1e1e7eccc415f2ca63d0eaedc7c9f49b7187e62c54
+
+# 2. the REAL install (asks you to type CONVERT; about 10 minutes of checks, then the printer reboots into stage 2,
+#    a few minutes later into Eitri; the stock system stays in p2 and revert.sh brings it back)
+sudo ./install.sh --flavor klipper --i-have-a-backup --yes --mcu skip \
+     --bundle-dir /mnt/usb/dev-bundle --pubkey /mnt/usb/dev-bundle/eitri-dev.pub \
+     --backup-file /mnt/usb/mmcblk1.img.gz --backup-sha256 df062aaf408b680f850dab1e1e7eccc415f2ca63d0eaedc7c9f49b7187e62c54
+```
+The backup is from 2026-10-21; anything changed on the stock system since is not in it (a fresh one:
+`ssh root@PRINTER 'cd ~mks/eitri/installer && ./install.sh --backup-stream' > printer-backup.img.gz` from the PC). The stick
+can be removed once stage 1 has rebooted (the payload is staged on the stock root; stage 2 does not need the stick for a
+`--backup-file` backup). After Eitri is up: open the wizard at `http://<printer>:8099` with the code on the screen.
 
 ## Where it stands
 
@@ -23,7 +143,7 @@ deliberately refuses to run.
   eMMC is never written. Its `boot.scr` also **hides the eMMC from Linux** (`eitri_hide_emmc=1` in the card's `layout.env`:
   `fdt set /mmc@ff520000 status disabled` before `booti`, no Eitri boot if that fails), proven in the U-Boot 2021.07 sandbox on the
   real build output; the in-place eMMC install never sets it. Current image: `build/bench/eitri-sd-bench.img`, 2,336,227,328 B
-  (2228 MiB), sha256 `ab1fef76084c9f1fd159d6d5c2274fc635b75fef6d4be3acab4223be034a657f`, built from 5caa463 + this change.
+  (2228 MiB), rebuilt 2026-10-22 from the in-place pass's OS image, sha256 `503372b33e7574b5a7aa36bb3656a2726596725fb7a7f89c41fd17d4b3a46363`; previously sha256 `ab1fef76084c9f1fd159d6d5c2274fc635b75fef6d4be3acab4223be034a657f`, built from 5caa463 + this change.
 * **Hardening from an independent audit (2026-10-21):** `boot.scr` imports only a fixed variable list from `boot.env`/`layout.env`
   (a hand-edited file can no longer redirect its `fatwrite` or what it runs); through sudo, `eitri-update` refuses `--config`,
   `--manifest-url`, `--key-dir`, `--data-root`, `--allow-insecure`, `--allow-downgrade` and another `--events-file`; nothing root runs
@@ -39,7 +159,7 @@ deliberately refuses to run.
 | `os/` (Buildroot image, RAUC bundle, U-Boot, kernel, DTS, QEMU rig) | partial | 253 passed, 4 skipped (U-Boot sandbox); `check-pins` and `check-defconfig` (163 options) pass; QEMU smoke test 77/77 with the Klipper seed (2026-10-22, incl. the two privilege checks) and 75/75 with the Kalico seed (before them) | Never booted on the board. No release signing CA or key is committed. U-Boot sandbox tests skip (no sandbox build here). |
 | `klarity/` (screen daemon) | partial | 242 passed (warnings are errors), ruff clean | Screen map is 66 pages / 511 widgets, **104 flagged `todo`**, none checked against a live panel. The **Unlock setup** button reuses stock Settings widget 9 (page 0x3e) and the text field `t7`: both are assumptions about the panel. File browser, preview/print start, session state, thumbnails and forced page changes are not expressible. No camera page exists in the stock UI. Home e-stop widget is still `todo` (inert). |
 | `klipper-layer/` (qd_* extras, printer.cfg template, macros) | partial | 259 passed: unit tests, overlay install on throw-away clones of Klipper and Kalico, render tests, licence tags, real klippy batch tests for both flavors | `qd_probe` and `qd_reverse_home` are **stubs** (they refuse to load). Macros, currents, probe, interlock, power-loss recovery and the new 85 °C chamber backstop are untested on a machine. |
-| `installer/` (in-place install, `eitri-mcuflash`, `eitri-update`, boot manager, seed/MCU delivery, flavor switch) | partial | mcuflash 114, eitri-update 241, installer suite 179 passed (includes a real U-Boot 2021.07 sandbox run of `boot.scr` and of the bench card) | Never run against a board. No release signing key, placeholder download URLs, no stage-2 initramfs builder. The flasher refuses the toolhead (see "MCU firmware") and has no `hid-flash` path for the mainboard. |
+| `installer/` (in-place install, `eitri-mcuflash`, `eitri-update`, boot manager, seed/MCU delivery, flavor switch) | partial | mcuflash 115, eitri-update 242, installer suite 197 passed (includes a real U-Boot 2021.07 sandbox run of `boot.scr`, of the bench card and of the conservative rootfs); **end-to-end rehearsal on a copy of the real eMMC** (section at the top) | Only the dry run's preflight has run on the board. No release signing key (a local **dev** key signs the dev bundle), placeholder download URLs. The stage-2 builder and `mk-dev-bundle.sh` exist now. The flasher refuses the toolhead (see "MCU firmware") and has no `hid-flash` path for the mainboard; the first install leaves both MCUs stock. |
 | `mcu/` (MCU firmware parameters, configs, build and packaging tooling) | partial (**no firmware built**) | 48 passed, 1 skipped (artifact checks skip without a build) | Nothing compiled: the parameter gate stops the build while the toolhead is unresolved, and no toolchain is pinned in `release.lock`. The compile path has never run. See "MCU firmware". |
 | `configurator/` (setup wizard, port 8099) | done | 170 passed, including the real `eitri-mcuflash` CLI against non-existent ports, the real klipper-layer renderer and the real `eitri-access` helper | Pairing, lock/retire, nmcli handling, polkit and the remote-access step are proven in QEMU, not on hardware. |
 | `camera/` (ustreamer, go2rtc, udev) | done | 125 passed, 0 failed, 4 skipped (hardware only), including real go2rtc 1.9.14 auth enforcement | ustreamer v6.67 flags unchecked against the real binary. The 23.7 fps cause is unknown. `/webcam/` has no authentication (RTSP does). |
@@ -183,6 +303,9 @@ Consequences:
 - **Mainboard is buildable and serial-flashable**: offset and crystal confirmed on the board; flash via the stock bootloader / SD path. Its gate can flip to go once a real build passes the dictionary checks.
 - **Toolhead has no bootloader**, so it cannot be reflashed over serial at all — **but it does not need to be**: the toolhead can stay on its stock Klipper v0.12.0-65 firmware with the newest host. Verified 2026-10-22: all 84 klippy batch tests pass on BOTH mainline Klipper and Kalico with the stock toolhead dictionary (extracted from the dump) when the ADXL345 block is off. Only the accelerometer query formats changed since v0.12 (mainline keeps a backward-compat path for the old `query_analog_in`/`analog_in_state`, so thermistors work; Kalico's analog format is unchanged). **Plan:** default install keeps the toolhead stock and reflashes only the mainboard; add a new-named extra `qd_adxl345_compat` that speaks the v0.12 ADXL345 format so input-shaper calibration works without flashing; offer a one-time ST-Link/SWD Katapult install as an *optional* advanced step (future-proofing). Batch mode proves command compatibility, not real-time behaviour — the first real run is the final check.
 - Full stock flash dumps of both boards exist as private recovery images, kept outside the repo per the clean-room policy.
+- **Done for the first install (2026-10-22):** `install.sh` defaults to `--mcu skip` (no MCU is touched), a release can declare
+  `mcu_policy: keep-stock`, and the configurator leaves the ADXL345 out of `printer.cfg` while `install.env` says
+  `toolhead_firmware=stock`. Still open: `qd_adxl345_compat`, and a mainboard build so the wizard can flash it.
 
 ## MCU firmware (`mcu/`, `installer/mcuflash`)
 
@@ -289,6 +412,14 @@ with versions and hashes (`venvs.*.packages`), but no licence report exists for 
 
 ## Known quirks and open issues
 
+* The QEMU image in `build/br-qemu` was **not** rebuilt in this pass (the rehearsal only used its kernel; its rootfs predates the
+  generator, data-init and eitri-update fixes). The printer image in `build/br-out` was rebuilt (it is the dev bundle's rootfs).
+* The Eitri kernel's FAT default iocharset is `ascii` but `CONFIG_NLS_ASCII` is off; the mount generator now names
+  `iocharset=iso8859-1` (built in). Setting `CONFIG_NLS_ASCII=y` in `linux.fragment` is the cleaner fix (needs a kernel rebuild).
+* `mk-stage2-initramfs.sh`: the stage-2 archive is reproducible, the static `zstd-aarch64` is not byte-identical across builds.
+* The rehearsal's check VMs mount the copy with `noload` and attach it read-only; its pristine copy carries a live-dump journal
+  (`needs_recovery`), which the stock initramfs replays on the first stock boot (as on the printer, where it is clean anyway).
+
 * A Klipper clone with the overlay reports a version ending in `-dirty` (klippy marks any untracked file under `klippy/extras/`; it
   shows in Moonraker too: `v0.13.0-813-ga08fc79fc-dirty`). `git status` stays clean. Compare commits, not version strings.
 * **Release signing is not whole yet.** `release.yml` + `tools/release` exist (deferred signing under a protected `release`
@@ -319,16 +450,24 @@ with versions and hashes (`venvs.*.packages`), but no licence report exists for 
 1. **MCU firmware builds** (tooling exists in `mcu/`, nothing is built, see "MCU firmware") for both flavors: `mcu-firmware-<version>-<flavor>.tar.zst` with `<flavor>/manifest.json` plus
    `<board>/klipper.bin` (what `eitri-mcuflash` and stage 2 expect), and the mainboard's recovery image (the stock one cannot be
    shipped). The MCU build must use the seed's source tree (or `git -c core.abbrev=9 describe`) so the host and MCU version
-   strings agree with `sources.firmware.describe`. **Without them the in-place installer and the wizard's Flash step cannot run.**
-2. **Release trust roots and the first signed release:** minisign key, RAUC CA, the three `EITRI_RAUC_*` secrets / protected
-   environment, the stage-2 initramfs and the conservative-feature rootfs for U-Boot 2021.07 used by the in-place path, final download
-   URLs in `install.sh` and `eitri-update`.
+   strings agree with `sources.firmware.describe`. The first in-place install no longer needs them (`mcu_policy: keep-stock`,
+   `--mcu skip`: both boards stay stock); the wizard's Flash step and `--mcu auto` still do.
+2. **Release trust roots and the first signed release:** minisign release key, RAUC CA, the three `EITRI_RAUC_*` secrets / protected
+   environment, final download URLs in `install.sh` and `eitri-update`. (Built since: the stage-2 initramfs
+   (`installer/tools/mk-stage2-initramfs.sh`), the conservative-feature rootfs (the image's own mke2fs options) and a
+   development-signed offline bundle (`installer/tools/mk-dev-bundle.sh`); CI does not build them yet.)
 3. Upstream mode: the compiler add-on helper, and MCU rebuild-and-flash after a git update (not hooked to Moonraker).
 4. `spi_flash.py` needs `fatfs.so` or a host gcc on the device; the image has neither, so the mainboard can only be flashed through
    the `sdcard-file` method (and `revert --hard` cannot restore it automatically) until one is provided.
 5. Licence report for the seed's wheels and clones in the SBOM.
 
 ## Next steps to a first boot on the real printer
+
+**Now (Thomas's call, 2026-10-22): the in-place install with the dev bundle**, straight onto the eMMC, MCUs left stock: run the
+dry run from the section at the top, read its output, then the real install. If the stock system has to come back:
+`revert.sh --hard` (from the stock system after a fallback, or from Eitri with `--skip-mcu`: the MCUs were never flashed). The
+list below is the original, more cautious order (bench microSD first); steps 1 and 4 are done (MCU facts read; the eMMC
+backup exists and was rehearsed against).
 
 Step 1 touches the printer read-only and needs Thomas's permission. Nothing on the printer is written before step 8 (step 6 boots a microSD card, which is not a write to the printer's storage). Steps 2 to 5 are at the desk; Thomas has to do 1, 3, 4 and 6 onwards himself.
 

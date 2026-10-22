@@ -41,6 +41,9 @@ FILE_NAMES = {
 # The data seed (seed/SPEC.md) keeps its own file names: eitri-seed-install insists on data-seed-<version>-<flavor>.tar.zst.
 MIB = 1024 * 1024
 REQUIRED = ("rootfs", "stage2_initramfs", "data_seed", "mcu_firmware")
+# mcu_policy: "flash" (default) - the release carries MCU firmware for each flavor; "keep-stock" - it may carry none, both
+# boards keep the firmware they shipped with and the installer must not touch them (install.sh --mcu skip).
+MCU_POLICIES = ("flash", "keep-stock")
 
 
 class PayloadError(Exception):
@@ -80,6 +83,28 @@ def _entry(doc, key, flavor):
     return entry
 
 
+def mcu_policy(doc):
+    policy = doc.get("mcu_policy", "flash")
+    if policy not in MCU_POLICIES:
+        raise PayloadError("install.json: mcu_policy must be one of %s" % ", ".join(MCU_POLICIES))
+    return policy
+
+
+def has_mcu_firmware(doc, flavor):
+    entry = doc.get("files", {}).get("mcu_firmware")
+    if isinstance(entry, dict) and isinstance(entry.get(flavor), dict):
+        return True
+    if mcu_policy(doc) == "keep-stock":
+        return False
+    raise PayloadError("install.json has no mcu_firmware for flavor %s (a release without MCU firmware must say "
+                       "\"mcu_policy\": \"keep-stock\")" % flavor)
+
+
+def required(doc, flavor):
+    """The payload keys this release must carry for the flavor (mcu_firmware only when it has any)."""
+    return tuple(k for k in REQUIRED if k != "mcu_firmware" or has_mcu_firmware(doc, flavor))
+
+
 def seed_files(doc, flavor):
     """[(canonical file name, entry)] for the data seed archive and its manifest."""
     version = str(doc.get("version", ""))
@@ -109,7 +134,7 @@ def validate(doc, flavor):
         raise PayloadError("rootfs needs raw_size and raw_sha256")
     if rootfs["raw_size"] > layout["root_mib"] * 1024 * 1024:
         raise PayloadError("rootfs image does not fit its %d MiB slot" % layout["root_mib"])
-    for key in REQUIRED:
+    for key in required(doc, flavor):
         _entry(doc, key, flavor)
     seed_files(doc, flavor)
 
@@ -118,7 +143,7 @@ def downloads(doc, flavor):
     """[(canonical file name, entry)] of everything stage 1 has to fetch, in download order (the small signed seed
     manifest comes before the big archive so a mismatch is found early)."""
     out = []
-    for key in REQUIRED:
+    for key in required(doc, flavor):
         if key == "data_seed":
             archive, manifest = seed_files(doc, flavor)
             out.extend([manifest, archive])
@@ -127,8 +152,21 @@ def downloads(doc, flavor):
     return out
 
 
+def zstd_tool(doc):
+    """Optional files.zstd: a static aarch64 zstd for the stock system, which has none (Debian 10 on the printer); stage 1
+    needs it to look into the data seed before anything is changed.  Same rules as every other file: signed digest."""
+    entry = doc.get("files", {}).get("zstd")
+    if entry is None:
+        return None
+    if not isinstance(entry, dict) or not SHA.match(str(entry.get("sha256", ""))) or not isinstance(entry.get("size"), int) \
+            or entry["size"] <= 0 or not entry.get("url"):
+        raise PayloadError("files.zstd needs url, sha256 and size")
+    return entry
+
+
 def plan(doc, flavor, base_url, out_dir):
     validate(doc, flavor)
+    tool = zstd_tool(doc)
     os.makedirs(out_dir, exist_ok=True)
     total = 0
     lines = []
@@ -149,6 +187,11 @@ def plan(doc, flavor, base_url, out_dir):
         "payload_bytes": total,
         "kernel_cmdline": doc.get("kernel_cmdline", "console=tty1 loglevel=4 panic=10 net.ifnames=0"),
         "stock_soc_known": ",".join(stock.get("soc", [])),
+        "mcu_policy": mcu_policy(doc),
+        "has_mcu_firmware": 1 if has_mcu_firmware(doc, flavor) else 0,
+        "zstd_url": (urljoin(base_url, tool["url"]) if base_url else tool["url"]) if tool else "",
+        "zstd_sha256": tool["sha256"] if tool else "",
+        "zstd_size": tool["size"] if tool else "",
     }
     with open(os.path.join(out_dir, "install.env"), "w") as fh:
         for k, v in env.items():
@@ -215,7 +258,8 @@ def finalize(doc, flavor, directory):
         "data_seed_manifest_file": seed["manifest_name"],
         "data_seed_version": seed["version"],
         "data_seed_unpacked_bytes": seed["uncompressed_size"],
-        "mcu_firmware_file": FILE_NAMES["mcu_firmware"],
+        "mcu_firmware_file": FILE_NAMES["mcu_firmware"] if has_mcu_firmware(doc, flavor) else "",
+        "mcu_policy": mcu_policy(doc),
         "root_mib": doc["layout"]["root_mib"],
         "data_min_mib": doc["layout"]["data_min_mib"],
     }
