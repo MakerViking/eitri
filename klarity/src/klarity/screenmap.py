@@ -466,11 +466,15 @@ class ScreenMap:
         init: tuple[str, ...],
         meta: Mapping[str, Any],
         allow_todo: bool,
+        first_run: tuple[Action, ...] = (),
     ) -> None:
         self.pages = dict(pages)
         self.markers = dict(markers)
         self.camera = camera
         self.init = init
+        # Shown while the printer has never been set up (the configurator's pairing is open and its
+        # setup is not completed): the actions get {code} {host} {url} {message} like `unlock: setup`.
+        self.first_run = first_run
         self.meta = dict(meta)
         self.allow_todo = allow_todo
         self._by_id = {
@@ -654,12 +658,19 @@ class ScreenMap:
             )
 
         screen_node = raw.get("screen") or {}
-        _keys(screen_node, {"init"}, "screen")
+        _keys(screen_node, {"init", "first_run"}, "screen")
         init = tuple(screen_node.get("init", ()))
         if not all(isinstance(c, str) for c in init):
             raise MapError("screen.init: expected a list of Nextion instructions")
+        first_run = _parse_actions(screen_node.get("first_run"), "screen.first_run")
+        for act in first_run:
+            if act.verb == "page" and act.arg not in pages:
+                raise MapError(f"screen.first_run: action targets unknown page {act.arg!r}")
+            if act.verb in ("print", "gcode", "unlock"):
+                # It runs by itself at start-up, with nobody at the panel.
+                raise MapError(f"screen.first_run: {act.verb!r} actions are not allowed here")
 
-        smap = cls(pages, markers, camera, init, raw.get("meta") or {}, allow_todo)
+        smap = cls(pages, markers, camera, init, raw.get("meta") or {}, allow_todo, first_run)
         # Page references in actions must exist.
         for page in pages.values():
             for acts in [
