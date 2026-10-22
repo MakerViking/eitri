@@ -200,6 +200,10 @@ enable: false
 measurement_interval: 10
 logging: False
 min_diameter: 0.3
+# Mainline also reports runout ABOVE max_diameter (default nominal + max_difference,
+# i.e. 1.75 here); QIDI's Klipper did not, and a reading just over 1.75 mid-print
+# paused it as "Filament run out" (seen 2026-10-22). Only missing filament should.
+max_diameter: 3.0
 use_current_dia_while_delay: False
 pause_on_runout: True
 runout_gcode:
