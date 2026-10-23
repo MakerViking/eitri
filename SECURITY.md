@@ -42,20 +42,22 @@ Out of scope:
 
 ## Trust model
 
-Eitri assumes a printer on a home LAN that its owner controls, with a physical owner who can open the case. This section describes what the image is built to do; **none of it has run on a printer yet** ([`STATUS.md`](STATUS.md) lists what is verified and what is not). It is **not** designed to be exposed to the internet or to defend against someone who already has a shell on the printer. What it does promise:
+Eitri assumes a printer on a home LAN that its owner controls, with a physical owner who can open the case. This section describes what the image is built to do; most of it has been exercised in the QEMU smoke test and some on one printer ([`STATUS.md`](STATUS.md) lists what is verified and where). It is **not** designed to be exposed to the internet or to defend against someone who already has a shell on the printer. What it does promise:
 
 **Who may do what on the network**
 
 * The printer's web interface, API, webcam page and slicer uploads are all on **port 80** through nginx. nginx accepts connections from loopback, private (RFC 1918) and link-local **IPv4** addresses only. There is **no IPv6 listener** (the allow-list is IPv4-only, so listening on IPv6 would have bypassed it).
 * **Moonraker listens on `127.0.0.1` only.** Slicers and apps use port 80; nothing reaches Moonraker's own port from the LAN, and there are no wildcard CORS or trusted-client lists.
+* **Only the printer's own names, and no cross-site writes.** nginx answers only to the printer's IP address, single-label names (`eitri`) and `*.local`, plus names the owner lists in `eitri-hosts.txt`; any other `Host` is refused, which defeats DNS rebinding. On the Moonraker API and its websocket, a request a browser marks as cross-site (`Sec-Fetch-Site`) or that carries a foreign `Origin` is refused, so a web page open in a LAN browser cannot drive the printer. Slicers, apps and Home Assistant send neither header and are unaffected. The camera stream stays reachable from other sites (dashboards embed it).
 * **Web interface sign-in is a choice made in setup.** The default is *Trust my home network*: anyone on an allowed address can use the printer, like the stock firmware. *Require sign-in* puts a login in front of the web interface for networks that are shared. Neither option makes the printer safe to expose to the internet.
 * The **camera RTSP stream is password protected** (a random password per install; WebRTC is off, and go2rtc refuses to start with a non-loopback listener and no credentials). The password is shown on its own page after setup, not in the wizard. `/webcam/` on port 80 is part of the web interface and is protected like it (the LAN allow-list, plus the sign-in if you chose it).
 
 **Setup and shell access**
 
-* The setup wizard (port 8099) needs a one-time pairing code that the printer shows on its own touchscreen, closes when setup is finished, **and exits** (the service stops). Only the **Unlock setup** action on the touchscreen, or `sudo -n eitri-configurator unlock` in a shell, starts it again with a fresh code. It refuses changes while printing.
+* The setup wizard (port 8099, its own origin: it is **not** served on port 80, so nothing there can read its session) needs a one-time pairing code that the printer shows on its own touchscreen, closes when setup is finished, **and exits** (the service stops). Wrong codes are counted per client address, so one device guessing cannot lock the owner out, while a total across all clients still rotates the code. Only the **Unlock setup** action on the touchscreen, or `sudo -n eitri-configurator unlock` in a shell, starts it again with a fresh code. It refuses changes while printing.
 * **Shell access is off by default.** A new install has no password login. The optional remote-access step of the wizard adds an SSH public key and/or sets a password for the `eitri` user through a narrow privileged helper (`eitri-access`); it can be undone with the same step. sshd allows password login only if a password was set.
-* The `eitri` account may run only `eitri-update`, `eitri-bootctl`, `eitri-configurator unlock` and `eitri-access` as root, without a password. The Klipper and Moonraker services run unprivileged with `NoNewPrivileges`.
+* **The service account can never become root.** Moonraker, Klipper, Klarity, the camera and the wizard run as `eitri`, which has **no** general sudo rule (not even behind a password, since it can set its own). It may run only `eitri-update`, `eitri-bootctl`'s read-only queries, `eitri-configurator unlock` and `eitri-access` through `sudo`, with fixed arguments. Klipper and Moonraker additionally run with `NoNewPrivileges`.
+* **Root is the separate `admin` account**: SSH key only, keys read from a root-owned file. Its keys can be added only during first setup (a window `data-init` opens once, on the first boot, and finishing setup closes for good), from a USB stick with `eitri-admin-keys.txt` plugged into the printer (physical presence), or by an existing administrator. A compromised service can do neither.
 
 **What Klipper's shell extension may do**
 
@@ -70,8 +72,8 @@ Eitri assumes a printer on a home LAN that its owner controls, with a physical o
 
 **What is not defended**
 
-* Someone on your LAN with a browser, when you chose *Trust my home network*.
-* Someone with physical access: the boot partition, the serial console and the maskrom button are all reachable inside the case.
+* Someone on your LAN who can send requests themselves (not just through a web page), when you chose *Trust my home network*: that choice trusts the network.
+* Someone with physical access: the USB port (administrator keys), the boot partition, the serial console and the maskrom button are all within reach.
 * A compromised GitHub account that holds both the ability to start the release workflow and to approve its environment, or a compromised runner during the signing job ([`docs/RELEASING.md`](docs/RELEASING.md#5-deferred-signing)).
 * Upstream bugs in Klipper, Kalico, Moonraker, nginx, ustreamer or the kernel, until the pin moves.
 

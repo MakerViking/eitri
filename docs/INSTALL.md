@@ -79,19 +79,28 @@ The wizard does not show the camera's RTSP password. It is created on first star
 
 ### Remote access (SSH)
 
-Off by default: a new Eitri install has **no password login and no key** except the one(s) you add during setup. Turn it on in the wizard (step 5) if you want a shell:
+Off by default: a new Eitri install has **no password login and no key**. Turn it on in the wizard (step 5) if you want a shell. There are two accounts:
 
-* **Add an SSH public key** (recommended). Paste one OpenSSH public key; it is installed for the `eitri` user. SSH never accepts password login unless you also set a password.
-* **Set a password** for the `eitri` user. This enables SSH password login. A key is the safer choice.
-* **Both**, or neither.
+| Account | What it can do | How you get in |
+|---|---|---|
+| `admin` | **Everything** (root through `sudo`) | SSH key only. Added in the wizard during first setup, or later from a USB stick |
+| `eitri` | A shell as the printer's own user, **never root** | An SSH key or a password, added in the wizard |
 
-To undo it, use the same wizard step ("disable remote access"): it removes the added keys and the password and goes back to keys from setup only. On a development bench image an `authorized_keys` file dropped on the boot partition is also picked up; the in-place install does not rely on that.
+* **Administrator access (root)** is offered during first setup only: paste your public key and leave "Administrator access (root)" on. Finishing setup closes that door for good, so nothing running on the printer (Moonraker, the web interface, the wizard itself) can ever hand out root later. Log in with `ssh admin@eitri.local`; `sudo` works without a password.
+* **To add an administrator key later**, put the public key (one per line) in a file named `eitri-admin-keys.txt` on a FAT-formatted USB stick and plug it into the printer. It is read within seconds and the stick can be pulled again. Plugging something into the printer is the proof that you are standing next to it.
+* **The `eitri` user** can get a key or a password (the password gives a console login, and SSH password login only if you also choose that). It can never become root: that is the point of having two accounts.
 
-The `eitri` account may run only `eitri-update`, `eitri-bootctl` and the narrow helpers the wizard needs (`eitri-configurator unlock`, `eitri-access`) without a password.
+"Remove remote access" in the wizard removes the `eitri` user's keys and password. Administrator keys stay; an administrator removes them by editing `/data/eitri/state/access/admin_authorized_keys`.
+
+The `eitri` account may run only `eitri-update`, `eitri-bootctl`'s read-only queries and the narrow helpers the wizard needs (`eitri-configurator unlock`, `eitri-access`) through `sudo`, each without a password and with fixed arguments.
 
 ### Which address, which port
 
-Open the web interface and point slicers and apps at **port 80**: `http://eitri.local/`. Moonraker itself listens only on the loopback interface (`127.0.0.1:7125`); nginx on port 80 is the one way in, and it forwards the Moonraker API, the web interface and the webcam. The web server listens on **IPv4 only** for now.
+Open the web interface and point slicers and apps at **port 80**: `http://eitri.local/`. Moonraker itself listens only on the loopback interface (`127.0.0.1:7125`); nginx on port 80 is the one way in, and it forwards the Moonraker API, the web interface and the webcam. The web server listens on **IPv4 only** for now. The setup wizard has its own port, **8099**, and is not reachable through port 80.
+
+The web interface answers to the printer's **IP address**, single names such as **`eitri`**, and names ending in **`.local`**. Any other name is refused, which stops a web page from reaching the printer through a look-alike name (DNS rebinding). If your router gives the printer another name (for example `printer.home.arpa`), add it under "Other names for this printer" in the wizard's options, or on its own line in `eitri-hosts.txt` among the configuration files in Fluidd or Mainsail.
+
+Requests that a browser marks as coming from **another web site** are refused on the printer's API, so a page you happen to open cannot start a print or change the configuration. Slicers, phone apps and Home Assistant are not affected; they are not browser pages. The camera stream stays available to other sites, so a Home Assistant dashboard can still show it.
 
 ## Path 2: flash-once image (bench, microSD, CI)
 

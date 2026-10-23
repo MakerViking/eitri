@@ -28,21 +28,21 @@ hardware, what it added, and what is still open:
   0 skipped). It has still **never run on GitHub** (no remote). Getting it there found and fixed: `[qd_probe]` stopped Kalico
   from starting at all; missing CI deps (pytest-asyncio, cryptography); 7 ruff long lines.
 * **Security review (2026-10-23)** of the configurator, `eitri-update`/sudo, remote access, Moonraker/nginx and the camera.
-  Fixed: the `eitri_mcuflash` child of `sudo eitri-update` imported from the caller's working directory (eitri → root).
-  **Open, need a design decision:**
-  1. *High:* `eitri` can set its own password through NOPASSWD `sudo eitri-access set-password`, and the broad
-     `eitri ALL=(ALL) ALL` rule then accepts it — any foothold as `eitri` becomes root. The configurator and Klarity run with
-     `NoNewPrivileges=false` from venvs `eitri` owns.
-  2. *High:* nginx has no Host/Origin filtering and Moonraker trusts by client IP, so a malicious web page (cross-site POST,
-     DNS rebinding) can drive `/printer/gcode/script` and `/server/files/upload` in the default "trust my home network" mode.
-     With (1) that is LAN-web-page → root. Fix: reject non-local Host names and cross-site non-GET requests in nginx.
-  3. *Medium:* the configurator is also served at `/configure/` on port 80 with a `path=/` cookie, so XSS anywhere on :80
-     can read its CSRF token and make paired writes. Serve it on :8099 only, or scope the cookie.
-  4. *Medium:* `eitri_mcuflash/backup.py` writes as root into the eitri-owned `/data/eitri/mcu/state` (symlink → truncate any
-     file). Use `O_NOFOLLOW|O_EXCL` or write as the service user.
-  5. *Low:* one global pairing-lockout counter (a LAN device can keep the owner locked out); the RTSP password file sits in
-     Moonraker's served `config/` root; `eitri-bootctl` NOPASSWD with any arguments allows a downgrade to the other slot.
-
+  All findings are fixed (owner's decisions A1 + B1), each with tests, and the new rules pass in a full QEMU boot
+  (`os/qemu/smoke.py`: admin window, admin SSH + sudo, window closed after setup, refused host names and cross-site writes,
+  extra host names, wizard off port 80):
+  1. *High, fixed:* the service account `eitri` has **no general sudo rule** any more (it could set its own password).
+     Root is the separate key-only `admin` account; its keys come only from first setup (one-way window), a USB stick
+     with `eitri-admin-keys.txt`, or an existing admin. **The dev printer needs an admin key placed BEFORE it gets this
+     image** (handoff.md), or it loses root.
+  2. *High, fixed:* nginx answers only to IPs, single-label names, `*.local` and `eitri-hosts.txt`; cross-site browser
+     writes to Moonraker are refused (`os/tests/test_nginx_filter.py` runs the real image nginx under qemu-user).
+  3. *Medium, fixed:* the configurator is no longer proxied on port 80 (own origin on 8099).
+  4. *Medium, fixed:* `eitri_mcuflash/backup.py` never follows a link as root (`O_NOFOLLOW` directory handles).
+  5. *Low, fixed:* per-client pairing lockout (plus a global rotation bound); RTSP password moved to
+     `/data/eitri/camera/` (migrated from the served config folder); `eitri-bootctl` limited to read-only queries for
+     `eitri`. *Accepted residual:* `sudo eitri-update rollback` stays available to `eitri` (one-click rollback to the
+     previous slot is a product feature).
 ---
 
 Last integration pass: 2026-10-22 (in-place install: offline dev bundle, stock-MCU first install, rehearsal on a copy of the real
