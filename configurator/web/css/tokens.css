@@ -3,17 +3,15 @@
    blue oxide sheen that shows on a blade once it is tempered. It is spent sparingly:
    progress, the active step, primary actions, focus. */
 
-@font-face { font-family: "Instrument Serif"; font-style: normal; font-weight: 400; font-display: swap;
-  src: url("../fonts/instrument-serif-latin-400-normal.woff2") format("woff2"); }
-@font-face { font-family: "Instrument Serif"; font-style: italic; font-weight: 400; font-display: swap;
-  src: url("../fonts/instrument-serif-latin-400-italic.woff2") format("woff2"); }
 @font-face { font-family: "Schibsted Grotesk"; font-style: normal; font-weight: 400 900; font-display: swap;
   src: url("../fonts/schibsted-grotesk-latin-wght-normal.woff2") format("woff2"); }
 @font-face { font-family: "Martian Mono"; font-style: normal; font-weight: 100 800; font-display: swap;
   src: url("../fonts/martian-mono-latin-wght-normal.woff2") format("woff2"); }
 
 :root {
-  --font-display: "Instrument Serif", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  /* Headings are the body grotesque at a heavy weight -- no separate serif display
+     face (and so none of the big-serif-with-one-italic-accent-word look). */
+  --font-display: "Schibsted Grotesk", "Segoe UI", system-ui, sans-serif;
   --font-body: "Schibsted Grotesk", "Segoe UI", system-ui, sans-serif;
   --font-mono: "Martian Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
@@ -61,11 +59,6 @@
   --shadow-pop: 0 24px 60px -20px rgba(0, 0, 0, .85);
   --sheen: linear-gradient(90deg, #2c3a4c 0%, #2a64c4 30%, #3b9bff 62%, #8ccaff 86%, #e6f3ff 100%);
   --sheen-v: linear-gradient(180deg, #1c2633 0%, #2a64c4 30%, #3b9bff 64%, #8ccaff 88%, #e6f3ff 100%);
-  --grain-opacity: .07;
-  --grain-blend: overlay;
-  --grid-dot: rgba(176, 208, 240, .10);
-  --accent-glow-a: rgba(40, 110, 220, .22);
-  --accent-glow-b: rgba(120, 170, 240, .08);
   --console-bg: #080b0f;
 }
 
@@ -104,10 +97,5 @@
   --shadow-pop: 0 24px 50px -20px rgba(20, 44, 80, .4);
   --sheen: linear-gradient(90deg, #7d8da1 0%, #2f6ed0 32%, #3a85ee 64%, #7db6f5 88%, #cfe5ff 100%);
   --sheen-v: linear-gradient(180deg, #7d8da1 0%, #2f6ed0 32%, #3a85ee 66%, #7db6f5 90%, #cfe5ff 100%);
-  --grain-opacity: .14;
-  --grain-blend: multiply;
-  --grid-dot: rgba(20, 38, 60, .13);
-  --accent-glow-a: rgba(40, 110, 220, .13);
-  --accent-glow-b: rgba(110, 160, 230, .12);
   --console-bg: #121c27;
 }

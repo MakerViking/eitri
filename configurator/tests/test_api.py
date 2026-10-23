@@ -19,7 +19,7 @@ def test_static_frontend_and_security_headers(srv):
     assert "default-src 'self'" in headers["Content-Security-Policy"]
     assert headers["X-Content-Type-Options"] == "nosniff"
     assert srv.req("GET", "/js/main.js")[0] == 200
-    assert srv.req("GET", "/fonts/instrument-serif-latin-400-normal.woff2")[0] == 200
+    assert srv.req("GET", "/fonts/schibsted-grotesk-latin-wght-normal.woff2")[0] == 200
     assert srv.req("GET", "/%2e%2e/pyproject.toml")[0] in (403, 404)
     assert srv.req("GET", "/../pyproject.toml")[0] in (403, 404)
 

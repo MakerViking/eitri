@@ -20,17 +20,9 @@ code, kbd, .mono { font-family: var(--font-mono); font-size: .86em; letter-spaci
 
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-/* ---- atmosphere: a cool glow from below, a faint dot grid like a layout table, paper grain ---- */
-.atmosphere { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
-  background:
-    radial-gradient(90% 60% at 8% 112%, var(--accent-glow-a), transparent 60%),
-    radial-gradient(60% 45% at 96% -12%, var(--accent-glow-b), transparent 62%),
-    linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%); }
-.atmosphere::before { content: ""; position: absolute; inset: 0;
-  background-image: radial-gradient(circle, var(--grid-dot) 1px, transparent 1.5px); background-size: 30px 30px;
-  -webkit-mask-image: radial-gradient(120% 90% at 20% 100%, #000 0%, transparent 72%); mask-image: radial-gradient(120% 90% at 20% 100%, #000 0%, transparent 72%); }
-.atmosphere::after { content: ""; position: absolute; inset: -50%; opacity: var(--grain-opacity); mix-blend-mode: var(--grain-blend);
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 1.3 -.2'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
+/* ---- background: a flat, quiet gradient. No film grain, no radial glow, no dot grid. ---- */
+.atmosphere { position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background: linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }
@@ -38,10 +30,9 @@ code, kbd, .mono { font-family: var(--font-mono); font-size: .86em; letter-spaci
 .app { position: relative; z-index: 1; }
 
 /* ---- type ---- */
-.display { font-family: var(--font-display); font-weight: 400; letter-spacing: -.012em; line-height: .98; }
-.display em { font-style: italic; color: var(--accent-text); }
-.eyebrow { font: 500 .72rem/1 var(--font-mono); letter-spacing: .16em; text-transform: uppercase; color: var(--text-3); display: inline-flex; align-items: center; gap: .75rem; }
-.eyebrow::before { content: ""; width: 28px; height: 1px; background: var(--sheen); }
+.display { font-family: var(--font-display); font-weight: 680; letter-spacing: -.022em; line-height: 1.02; }
+.display em { font-style: normal; color: inherit; }
+.eyebrow { font: 600 .82rem/1.3 var(--font-body); letter-spacing: 0; color: var(--text-3); display: inline-flex; align-items: center; gap: .55rem; }
 .lead { font-size: clamp(1.02rem, .96rem + .3vw, 1.2rem); color: var(--text-2); max-width: 60ch; text-wrap: pretty; }
 .muted { color: var(--text-2); }
 .faint { color: var(--text-3); }
