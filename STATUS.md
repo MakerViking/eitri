@@ -22,7 +22,26 @@ hardware, what it added, and what is still open:
   MCUs); the optional toolhead Katapult flash (needs an ST-Link, ~2026-11-05); real signing keys + a published channel (only a
   dev key exists); CI on GitHub; a clean second-printer install; on-machine motion/tuning validation (probe polarity,
   `PROBE_CALIBRATE`, bed mesh, input shaping, power-loss recovery, the 85 °C chamber backstop); the Klarity screen `todo`
-  widgets (the home **e-stop is still inert** — a safety gap); end-user docs + a security review.
+  widgets (the home **e-stop is still inert** — a safety gap); the open security findings below.
+* **CI (2026-10-23):** `ci.yml` runs every component suite plus a klipper-layer job against the pinned Klipper/Kalico trees
+  (real klippy). Both jobs reproduced green locally in clean Python 3.14 venvs (checks: all suites; klipper-layer: 288 passed,
+  0 skipped). It has still **never run on GitHub** (no remote). Getting it there found and fixed: `[qd_probe]` stopped Kalico
+  from starting at all; missing CI deps (pytest-asyncio, cryptography); 7 ruff long lines.
+* **Security review (2026-10-23)** of the configurator, `eitri-update`/sudo, remote access, Moonraker/nginx and the camera.
+  Fixed: the `eitri_mcuflash` child of `sudo eitri-update` imported from the caller's working directory (eitri → root).
+  **Open, need a design decision:**
+  1. *High:* `eitri` can set its own password through NOPASSWD `sudo eitri-access set-password`, and the broad
+     `eitri ALL=(ALL) ALL` rule then accepts it — any foothold as `eitri` becomes root. The configurator and Klarity run with
+     `NoNewPrivileges=false` from venvs `eitri` owns.
+  2. *High:* nginx has no Host/Origin filtering and Moonraker trusts by client IP, so a malicious web page (cross-site POST,
+     DNS rebinding) can drive `/printer/gcode/script` and `/server/files/upload` in the default "trust my home network" mode.
+     With (1) that is LAN-web-page → root. Fix: reject non-local Host names and cross-site non-GET requests in nginx.
+  3. *Medium:* the configurator is also served at `/configure/` on port 80 with a `path=/` cookie, so XSS anywhere on :80
+     can read its CSRF token and make paired writes. Serve it on :8099 only, or scope the cookie.
+  4. *Medium:* `eitri_mcuflash/backup.py` writes as root into the eitri-owned `/data/eitri/mcu/state` (symlink → truncate any
+     file). Use `O_NOFOLLOW|O_EXCL` or write as the service user.
+  5. *Low:* one global pairing-lockout counter (a LAN device can keep the owner locked out); the RTSP password file sits in
+     Moonraker's served `config/` root; `eitri-bootctl` NOPASSWD with any arguments allows a downgrade to the other slot.
 
 ---
 
@@ -185,8 +204,8 @@ can be removed once stage 1 has rebooted (the payload is staged on the stock roo
 | `seed/` (data seed: build, verify, reference installer) | done (never on a printer) | 159 passed (spec, manifest, archive policy, installer on synthetic and real seeds, built-seed checks, workflow shape); `make seed` verifies both seeds under qemu-aarch64 | The CI workflow (`data-seed.yml`, also called by `os-image.yml` and `qemu-smoke.yml`) has not run on GitHub; the Ubuntu gcc and the pinned python-build-standalone headers path was only emulated locally. First-boot timing of an unpack on the A53 and the first slow `git status` are unmeasured. |
 | `os/` (Buildroot image, RAUC bundle, U-Boot, kernel, DTS, QEMU rig) | partial | 253 passed, 4 skipped (U-Boot sandbox); `check-pins` and `check-defconfig` (163 options) pass; QEMU smoke test 77/77 with the Klipper seed (2026-10-22, incl. the two privilege checks) and 75/75 with the Kalico seed (before them) | Never booted on the board. No release signing CA or key is committed. U-Boot sandbox tests skip (no sandbox build here). |
 | `klarity/` (screen daemon) | partial | 242 passed (warnings are errors), ruff clean | Screen map is 66 pages / 511 widgets, **104 flagged `todo`**, none checked against a live panel. The **Unlock setup** button reuses stock Settings widget 9 (page 0x3e) and the text field `t7`: both are assumptions about the panel. File browser, preview/print start, session state, thumbnails and forced page changes are not expressible. No camera page exists in the stock UI. Home e-stop widget is still `todo` (inert). |
-| `klipper-layer/` (qd_* extras, printer.cfg template, macros) | partial | 259 passed: unit tests, overlay install on throw-away clones of Klipper and Kalico, render tests, licence tags, real klippy batch tests for both flavors | `qd_probe` and `qd_reverse_home` are **stubs** (they refuse to load). Macros, currents, probe, interlock, power-loss recovery and the new 85 °C chamber backstop are untested on a machine. |
-| `installer/` (in-place install, `eitri-mcuflash`, `eitri-update`, boot manager, seed/MCU delivery, flavor switch) | partial | mcuflash 115, eitri-update 242, installer suite 197 passed (includes a real U-Boot 2021.07 sandbox run of `boot.scr`, of the bench card and of the conservative rootfs); **end-to-end rehearsal on a copy of the real eMMC** (section at the top) | Only the dry run's preflight has run on the board. No release signing key (a local **dev** key signs the dev bundle), placeholder download URLs. The stage-2 builder and `mk-dev-bundle.sh` exist now. The flasher refuses the toolhead (see "MCU firmware") and has no `hid-flash` path for the mainboard; the first install leaves both MCUs stock. |
+| `klipper-layer/` (qd_* extras, printer.cfg template, macros) | partial | 288 passed, 0 skipped (2026-10-23, clean venv, fresh clones of the pinned trees — the CI klipper-layer job): unit tests, overlay install on throw-away clones of Klipper and Kalico, render tests, licence tags, real klippy batch tests for both flavors | `qd_reverse_home` is a **stub** by choice. `qd_probe` works on Klipper; on Kalico (no `start_probe_session`) only an empty `prepare_gcode` loads. Macros, currents, probe, interlock, power-loss recovery and the new 85 °C chamber backstop are untested on a machine. |
+| `installer/` (in-place install, `eitri-mcuflash`, `eitri-update`, boot manager, seed/MCU delivery, flavor switch) | partial | mcuflash 115, eitri-update 248, installer suite 197 passed (includes a real U-Boot 2021.07 sandbox run of `boot.scr`, of the bench card and of the conservative rootfs); **end-to-end rehearsal on a copy of the real eMMC** (section at the top) | Only the dry run's preflight has run on the board. No release signing key (a local **dev** key signs the dev bundle), placeholder download URLs. The stage-2 builder and `mk-dev-bundle.sh` exist now. The flasher refuses the toolhead (see "MCU firmware") and has no `hid-flash` path for the mainboard; the first install leaves both MCUs stock. |
 | `mcu/` (MCU firmware parameters, configs, build and packaging tooling) | partial (**no firmware built**) | 48 passed, 1 skipped (artifact checks skip without a build) | Nothing compiled: the parameter gate stops the build while the toolhead is unresolved, and no toolchain is pinned in `release.lock`. The compile path has never run. See "MCU firmware". |
 | `configurator/` (setup wizard, port 8099) | done | 170 passed, including the real `eitri-mcuflash` CLI against non-existent ports, the real klipper-layer renderer and the real `eitri-access` helper | Pairing, lock/retire, nmcli handling, polkit and the remote-access step are proven in QEMU, not on hardware. |
 | `camera/` (ustreamer, go2rtc, udev) | done | 125 passed, 0 failed, 4 skipped (hardware only), including real go2rtc 1.9.14 auth enforcement | ustreamer v6.67 flags unchecked against the real binary. The 23.7 fps cause is unknown. `/webcam/` has no authentication (RTSP does). |
