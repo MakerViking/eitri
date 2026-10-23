@@ -47,7 +47,8 @@ def seed(data_dir: Path) -> None:
         (cfg / "printer.cfg").write_text(STOCK_PRINTER_CFG)
     (data_dir / "eitri" / "configurator").mkdir(parents=True, exist_ok=True)
     # What camera/bin/eitri-go2rtc-auth writes on go2rtc's first start (a made-up password, for the screenshots).
-    auth = cfg / "go2rtc-auth.env"
+    auth = data_dir / "eitri" / "camera" / "go2rtc-auth.env"
+    auth.parent.mkdir(parents=True, exist_ok=True)
     if not auth.exists():
         auth.write_text("EITRI_RTSP_USER=eitri\nEITRI_RTSP_PASS=9f3c1a7e5b2d48c0a6e71d94f20b835c7a1e\n")
         auth.chmod(0o600)

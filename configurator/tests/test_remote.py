@@ -445,7 +445,7 @@ def test_rtsp_credentials_need_a_session_and_are_not_cached(srv):
     st, body, headers = srv.req("GET", "/api/camera/rtsp")
     assert st == 200 and body["configured"] and body["user"] == "eitri" and len(body["password"]) == 36
     assert body["port"] == 8554 and body["stream"] == "eitri_cam" and headers["Cache-Control"] == "no-store"
-    assert body["file"].endswith("/printer_data/config/go2rtc-auth.env")
+    assert body["file"].endswith("/eitri/camera/go2rtc-auth.env")
 
 
 def test_rtsp_credentials_are_not_in_the_wizard_state_or_bootstrap(srv):

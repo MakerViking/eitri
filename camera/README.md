@@ -127,7 +127,8 @@ The camera is MJPEG, so OBS needs one of two ways to read it:
 
 **B. Media Source over RTSP (lower overhead, needs go2rtc.service).**
 1. Enable `go2rtc.service` on the printer. The first start creates the RTSP credentials in
-   `/data/printer_data/config/go2rtc-auth.env` (user `eitri`, random password, readable by root and `eitri` only). This serves
+   `/data/eitri/camera/go2rtc-auth.env` (user `eitri`, random password, readable by root and `eitri` only; not in the
+   configuration folder, which Moonraker serves to the network, and moved out of it on older installs). This serves
    `rtsp://eitri:<password>@<printer-ip>:8554/eitri_cam`.
 2. Add a *Media Source*. Input: that URL.
 3. Turn off *Local file*, enable *Restart playback when source becomes active*.

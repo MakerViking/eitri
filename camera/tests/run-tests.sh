@@ -160,7 +160,7 @@ check_eq "udev: no eitri-cam rule without SYSTEMD_WANTS" 0 \
 G2UNIT=$(cat "$CAM/systemd/go2rtc.service")
 check_contains "go2rtc unit: generates credentials first" "$G2UNIT" "ExecStartPre=/usr/lib/eitri/camera/eitri-go2rtc-auth ensure"
 check_contains "go2rtc unit: refuses an open config" "$G2UNIT" "ExecStartPre=/usr/lib/eitri/camera/eitri-go2rtc-auth check"
-check_contains "go2rtc unit: loads the credentials file" "$G2UNIT" "EnvironmentFile=-/data/printer_data/config/go2rtc-auth.env"
+check_contains "go2rtc unit: loads the credentials file" "$G2UNIT" "EnvironmentFile=-/data/eitri/camera/go2rtc-auth.env"
 
 if python3 -I - "$CAM/go2rtc/go2rtc.yaml" "$CAM/go2rtc/profiles/software-h264.yaml.example" <<'PY' 2>"$TMP/yaml.err"
 import sys
@@ -336,6 +336,7 @@ echo "== go2rtc credentials guard"
 AUTH="$CAM/bin/eitri-go2rtc-auth"
 GCASE=$(mktemp -d "$TMP/auth.XXXX") || exit 1
 export EITRI_GO2RTC_AUTH_FILE="$GCASE/go2rtc-auth.env"
+export EITRI_GO2RTC_LEGACY_AUTH_FILE="$GCASE/legacy/go2rtc-auth.env"
 unset EITRI_GO2RTC_ALLOW_UNSAFE EITRI_RTSP_USER EITRI_RTSP_PASS
 
 "$AUTH" >/dev/null 2>&1
@@ -356,6 +357,21 @@ before=$(cat "$EITRI_GO2RTC_AUTH_FILE")
 "$AUTH" ensure 2>/dev/null
 check_eq "auth ensure: existing credentials are never rewritten" "$before" "$(cat "$EITRI_GO2RTC_AUTH_FILE")"
 check_eq "auth ensure: leaves no temp files behind" 1 "$(ls -A "$GCASE" | wc -l)"
+
+# Older images kept the credentials in the configuration folder, which Moonraker serves: move them out once,
+# keeping the password, and never leave a copy behind.
+mkdir -p "$GCASE/legacy"
+saved=$(cat "$EITRI_GO2RTC_AUTH_FILE")
+mv "$EITRI_GO2RTC_AUTH_FILE" "$EITRI_GO2RTC_LEGACY_AUTH_FILE"
+"$AUTH" ensure 2>/dev/null
+check_eq "auth ensure: an old credentials file is moved, keeping the password" "$saved" "$(cat "$EITRI_GO2RTC_AUTH_FILE")"
+check_eq "auth ensure: the moved file is 0600" 600 "$(stat -c %a "$EITRI_GO2RTC_AUTH_FILE")"
+check_eq "auth ensure: nothing is left in the configuration folder" 0 "$(ls -A "$GCASE/legacy" | wc -l)"
+printf 'EITRI_RTSP_USER=eitri\nEITRI_RTSP_PASS=stale\n' >"$EITRI_GO2RTC_LEGACY_AUTH_FILE"
+"$AUTH" ensure 2>/dev/null
+check_eq "auth ensure: a stale copy beside the real file is removed" 0 "$(ls -A "$GCASE/legacy" | wc -l)"
+check_eq "auth ensure: and the real file is untouched" "$saved" "$(cat "$EITRI_GO2RTC_AUTH_FILE")"
+rmdir "$GCASE/legacy"
 
 rm -f "$EITRI_GO2RTC_AUTH_FILE"
 "$AUTH" ensure 2>/dev/null

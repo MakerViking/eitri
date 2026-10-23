@@ -157,7 +157,7 @@ anyone to use it (a test keeps the number out of the UI). SSH is a separate, lat
 
 ## Camera sign-in (separate page)
 
-The RTSP password that `camera/bin/eitri-go2rtc-auth ensure` generates (`/data/printer_data/config/go2rtc-auth.env`, user `eitri`)
+The RTSP password that `camera/bin/eitri-go2rtc-auth ensure` generates (`/data/eitri/camera/go2rtc-auth.env`, user `eitri`)
 is **not part of the wizard**. The Done step links to `camera.html`, a page of its own that shows the address, user name and password with
 Show and Copy buttons (the clipboard API does not exist over plain http, so a selection fallback is used). `GET /api/camera/rtsp` needs a paired
 browser, is never cached, and the password is in no other response (bootstrap, state, preview). The page explains when the gateway is off or

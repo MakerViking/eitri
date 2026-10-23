@@ -110,7 +110,8 @@ class Settings:
     @property
     def camera_auth_file(self) -> Path:
         # Written by camera/bin/eitri-go2rtc-auth on go2rtc's first start (mode 0600, readable by the eitri user).
-        return self.config_dir / "go2rtc-auth.env"
+        # Not in config_dir: Moonraker serves that folder to every trusted client on the network.
+        return self.eitri_dir / "camera" / "go2rtc-auth.env"
 
     @property
     def klarity_status_file(self) -> Path:

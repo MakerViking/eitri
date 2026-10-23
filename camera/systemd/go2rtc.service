@@ -4,8 +4,9 @@
 # go2rtc.yaml, copied there at install time).
 #
 # RTSP is password protected. The first start generates the credentials into
-# /data/printer_data/config/go2rtc-auth.env (user "eitri", mode 0600); read the
-# password from there. eitri-go2rtc-auth check then refuses to start go2rtc if the
+# /data/eitri/camera/go2rtc-auth.env (user "eitri", mode 0600), outside the
+# configuration folder Moonraker serves to the network; the setup wizard shows the
+# password on its camera page. eitri-go2rtc-auth check then refuses to start go2rtc if the
 # config would serve RTSP, WebRTC or the API to the LAN without authentication.
 
 [Unit]
@@ -20,7 +21,7 @@ User=eitri
 Group=eitri
 # The credentials file is created by the first ExecStartPre; systemd loads
 # EnvironmentFile for each command just before it runs, so later steps see it.
-EnvironmentFile=-/data/printer_data/config/go2rtc-auth.env
+EnvironmentFile=-/data/eitri/camera/go2rtc-auth.env
 ExecStartPre=/usr/lib/eitri/camera/eitri-go2rtc-auth ensure
 ExecStartPre=/usr/lib/eitri/camera/eitri-go2rtc-auth check
 ExecStart=/usr/bin/go2rtc -config /data/printer_data/config/go2rtc.yaml
@@ -31,7 +32,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/data/printer_data/config
+ReadWritePaths=/data/printer_data/config /data/eitri/camera
 
 [Install]
 WantedBy=multi-user.target

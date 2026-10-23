@@ -20,14 +20,18 @@
 # so "check" also rejects an unresolved reference rather than accept it as a password.
 #
 # Environment (all optional):
-#   EITRI_GO2RTC_AUTH_FILE     credentials file (default /data/printer_data/config/go2rtc-auth.env)
+#   EITRI_GO2RTC_AUTH_FILE     credentials file (default /data/eitri/camera/go2rtc-auth.env)
+#   EITRI_GO2RTC_LEGACY_AUTH_FILE  where older images kept it (default /data/printer_data/config/go2rtc-auth.env):
+#                              moved to the new place, or removed if both exist, because Moonraker serves the
+#                              configuration folder to every trusted client on the network
 #   EITRI_GO2RTC_CONFIG        config to check  (default /data/printer_data/config/go2rtc.yaml)
 #   EITRI_GO2RTC_ALLOW_UNSAFE  set to 1 to downgrade "check" failures to warnings
 #                              (an explicit decision to serve the camera unauthenticated)
 
 set -u
 
-AUTH_FILE="${EITRI_GO2RTC_AUTH_FILE:-/data/printer_data/config/go2rtc-auth.env}"
+AUTH_FILE="${EITRI_GO2RTC_AUTH_FILE:-/data/eitri/camera/go2rtc-auth.env}"
+LEGACY_AUTH_FILE="${EITRI_GO2RTC_LEGACY_AUTH_FILE:-/data/printer_data/config/go2rtc-auth.env}"
 CONFIG="${EITRI_GO2RTC_CONFIG:-/data/printer_data/config/go2rtc.yaml}"
 ALLOW_UNSAFE="${EITRI_GO2RTC_ALLOW_UNSAFE:-0}"
 
@@ -40,7 +44,21 @@ env_value() {
     sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n 1
 }
 
+# Older images kept the credentials in the configuration folder. Keep the password (RTSP clients have it saved)
+# but take it out of there.
+migrate_legacy() {
+    [ -e "$LEGACY_AUTH_FILE" ] || return 0
+    if [ ! -e "$AUTH_FILE" ] && [ -d "$(dirname "$AUTH_FILE")" ]; then
+        if mv -f "$LEGACY_AUTH_FILE" "$AUTH_FILE" && chmod 0600 "$AUTH_FILE"; then
+            log "moved the RTSP credentials out of the configuration folder to $AUTH_FILE"
+            return 0
+        fi
+    fi
+    rm -f "$LEGACY_AUTH_FILE" && log "removed the old copy of the RTSP credentials from the configuration folder"
+}
+
 cmd_ensure() {
+    migrate_legacy
     if [ -r "$AUTH_FILE" ] && [ -n "$(env_value "$AUTH_FILE" EITRI_RTSP_USER)" ] &&
         [ -n "$(env_value "$AUTH_FILE" EITRI_RTSP_PASS)" ]; then
         return 0

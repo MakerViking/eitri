@@ -11,6 +11,7 @@
 #     printer_data/{config,logs,gcodes,database,comms}
 #     eitri/{extras,klarity,toolchain,configurator,home}
 #     eitri/admin                    the administrator's home; owned by admin, 0700
+#     eitri/camera                   the RTSP credentials (go2rtc); owned by eitri, 0700
 #     eitri/{klipper-layer,seed,flavor}   from the data seed (seed/SPEC.md section 3)
 #     eitri/state/                   OS state, root only (etc overlay, RAUC, seed-installed.env)
 #     eitri/logs/                    eitri-update event log (update.jsonl), root only
@@ -88,6 +89,9 @@ dir "$OWNER" 0755 \
 	"$DATA/eitri/extras" "$DATA/eitri/klarity" "$DATA/eitri/toolchain" \
 	"$DATA/eitri/configurator" "$DATA/eitri/home"
 chmod 0750 "$DATA/eitri/home"
+
+# The camera's RTSP credentials: outside printer_data/config, which Moonraker serves to the network.
+dir "$OWNER" 0700 "$DATA/eitri/camera"
 
 # The administrator's home (sudoers.d/admin). Its SSH keys are NOT kept here but in the root-owned
 # eitri/state/access, so neither the administrator's own files nor the service user decide who logs in.

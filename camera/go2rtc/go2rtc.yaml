@@ -10,7 +10,7 @@
 #   * The API has no authentication. It listens on loopback only. Do not bind it
 #     to the LAN without putting an auth proxy in front.
 #   * RTSP needs a password. go2rtc.service runs eitri-go2rtc-auth, which creates
-#     /data/printer_data/config/go2rtc-auth.env (user "eitri", random password,
+#     /data/eitri/camera/go2rtc-auth.env (user "eitri", random password,
 #     mode 0600) and loads it; the variables below are filled from there. It also
 #     refuses to start go2rtc if this file would expose RTSP without credentials.
 #
