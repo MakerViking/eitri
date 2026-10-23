@@ -12,7 +12,7 @@
 # and MCU firmware with the SAME version first:
 #
 #   make -C .. seed      VERSION=2026.10.23-dev.<sha> FLAVOR=all
-#   make -C .. mcu-build MCU_VERSION=2026.10.23-dev.<sha> MCU_TOOLCHAIN=<dir>
+#   make -C .. mcu-build MCU_VERSION=2026.10.23-dev.<sha> MCU_TOOLCHAIN=<dir> MCU_BOARDS=mainboard   # toolhead: gated until Katapult
 #   make -C ../os image                                   # the OS .raucb (its own version is independent)
 #
 # Deploy (the channel dir is copied to the printer, then eitri-update is run AS REAL ROOT so the sudo hardening, which

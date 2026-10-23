@@ -142,6 +142,9 @@ BR2_PACKAGE_PYTHON3_CODECSCJK=y
 BR2_PACKAGE_PYTHON3_READLINE=y
 BR2_PACKAGE_PYTHON3_SSL=y
 BR2_PACKAGE_PYTHON3_SQLITE=y
+# xml + pyexpat: Moonraker imports dbus_fast, which imports xml.etree. Without this option Buildroot installs no
+# xml package at all, and a clean build ships a Moonraker that dies at startup (found by qemu-smoke in CI).
+BR2_PACKAGE_PYTHON3_PYEXPAT=y
 BR2_PACKAGE_PYTHON3_XZ=y
 BR2_PACKAGE_PYTHON3_ZLIB=y
 BR2_PACKAGE_PYTHON3_ZSTD=y

@@ -45,7 +45,7 @@ help:
 	@echo "                 test-os test-klipper-layer (test-klipper-layer-fast skips klippy)"
 	@echo "                 test-seed (the data seed's tests) test-tools (release tooling) test-mcu (MCU firmware tooling)"
 	@echo "  mcu            parameter gate status and the check-only pass for the MCU firmware (offline apart from git)"
-	@echo "  mcu-build      real MCU firmware build (MCU_VERSION=, MCU_TOOLCHAIN=); refuses while a board is unresolved"
+	@echo "  mcu-build      real MCU firmware build (MCU_VERSION=, MCU_TOOLCHAIN=, optional MCU_BOARDS=mainboard); refuses while a selected board is unresolved"
 	@echo "  seed           build and verify the data seeds into $(BUILD)/seed/out (needs network)"
 	@echo "  os-check       pins, defconfig and unit tests of the OS tree (needs the Buildroot checkout)"
 	@echo "  clean          remove byte-code and test caches"
@@ -107,7 +107,7 @@ mcu:
 	$(ROOT)/mcu/build-mcu.sh --check-only --flavor both --work $(BUILD)/mcu/work
 
 mcu-build:
-	$(ROOT)/mcu/build-mcu.sh --flavor both --version "$(MCU_VERSION)" --out $(BUILD)/mcu/out --work $(BUILD)/mcu/work --toolchain "$(MCU_TOOLCHAIN)"
+	$(ROOT)/mcu/build-mcu.sh --flavor both --version "$(MCU_VERSION)" --out $(BUILD)/mcu/out --work $(BUILD)/mcu/work --toolchain "$(MCU_TOOLCHAIN)" $(addprefix --board ,$(MCU_BOARDS))
 
 # --- static checks ----------------------------------------------------------------------------------
 lint:
