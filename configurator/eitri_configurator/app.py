@@ -236,14 +236,14 @@ def _set_session_cookie(resp: web.Response, token: str, max_age: int) -> None:
 
 
 async def auth_status(request: web.Request) -> web.Response:
-    return web.json_response(ctx_of(request).auth.status(session_token(request)[0]))
+    return web.json_response(ctx_of(request).auth.status(session_token(request)[0], request.remote or "unknown"))
 
 
 async def pair(request: web.Request) -> web.Response:
     ctx = ctx_of(request)
     data = await body(request)
     try:
-        token, expires = ctx.auth.pair(data.get("code"))
+        token, expires = ctx.auth.pair(data.get("code"), request.remote or "unknown")
     except PairError as exc:
         resp = jerr(exc.status, exc.message, **exc.extra)
         if exc.retry_after:

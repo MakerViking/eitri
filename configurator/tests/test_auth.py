@@ -12,7 +12,7 @@ from http.cookies import SimpleCookie
 import pytest
 
 from eitri_configurator import auth as auth_mod
-from eitri_configurator.auth import Auth
+from eitri_configurator.auth import Auth, PairError
 
 WRITES = [
     ("PUT", "/api/state", {"step": "network"}),
@@ -155,6 +155,49 @@ def test_bodies_must_be_json(srv):
     with pytest.raises(urllib.error.HTTPError) as e:
         urllib.request.urlopen(r)
     assert e.value.code == 415
+
+
+def wrong_code(auth):
+    return "00000000" if auth.code != "00000000" else "11111111"
+
+
+def test_one_device_guessing_cannot_lock_the_owner_out(srv):
+    # The lockout is per client: a device on the LAN that keeps guessing blocks only itself.
+    auth = srv.ctx.auth
+    auth.clock = lambda: 1000.0
+    right, wrong = auth.code, wrong_code(auth)
+    for _ in range(5):
+        with pytest.raises(PairError) as exc:
+            auth.pair(wrong, "192.168.0.66")
+        assert exc.value.status == 401
+    with pytest.raises(PairError) as exc:
+        auth.pair(right, "192.168.0.66")                                 # backing off, even with the right code
+    assert exc.value.status == 429
+    assert auth.status(None, "192.168.0.66")["retry_after"] > 0
+    assert auth.status(None, "192.168.0.10")["retry_after"] == 0
+    token, _ = auth.pair(right, "192.168.0.10")                          # the owner's browser pairs at once
+    assert token
+
+
+def test_wrong_codes_from_many_addresses_still_rotate_the_code(srv):
+    auth = srv.ctx.auth
+    auth.clock = lambda: 1000.0
+    start, wrong = auth.code, wrong_code(auth)
+    rotated = []
+    for i in range(50):                                                   # one guess each from 50 addresses
+        with pytest.raises(PairError) as exc:
+            auth.pair(wrong, f"10.0.0.{i}")
+        rotated.append(exc.value.extra.get("rotated", False))
+    assert rotated == [False] * 49 + [True] and auth.code != start
+
+
+def test_tracked_clients_are_bounded(srv):
+    auth = srv.ctx.auth
+    auth.clock = lambda: 1000.0
+    for i in range(300):
+        with pytest.raises(PairError):
+            auth.pair("x", f"10.1.{i // 256}.{i % 256}")
+    assert len(auth._clients) <= 256
 
 
 def test_completing_setup_locks_the_configurator(make_server):

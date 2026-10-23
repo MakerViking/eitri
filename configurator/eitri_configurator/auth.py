@@ -46,6 +46,8 @@ GRACE_TTL = 10 * 60              # the finishing browser keeps write access this
 MAX_SESSIONS = 8
 FAILS_BEFORE_DELAY = 5           # consecutive wrong codes before pairing backs off
 FAILS_BEFORE_ROTATE = 10         # ... and before the code is replaced
+TOTAL_FAILS_BEFORE_ROTATE = 50   # wrong codes from all clients together before the code is replaced
+MAX_TRACKED_CLIENTS = 256
 BASE_DELAY = 30
 MAX_DELAY = 900
 
@@ -85,8 +87,11 @@ class Auth:
         self.path = d / "auth.json"
         self.pairing_file = d / "pairing.json"
         self.unlock_flag = d / "unlock"
-        self._fails = 0
-        self._blocked_until = 0.0
+        # Wrong codes are counted per client address, so one device guessing locks out only itself, never
+        # the owner's browser. A total across all clients still rotates the code, so many addresses do not
+        # make guessing any less pointless.
+        self._clients: dict[str, tuple[int, float]] = {}        # address -> (wrong codes in a row, blocked until)
+        self._total_fails = 0
         self._published: tuple | None = None
         self._data: dict[str, Any] = {"code": "", "sessions": {}}
         try:
@@ -157,29 +162,36 @@ class Auth:
         self.publish()
 
     # --- pairing -------------------------------------------------------------
-    def pair(self, raw_code: object) -> tuple[str, float]:
+    def _remember(self, client: str, fails: int, until: float) -> None:
+        self._clients.pop(client, None)
+        self._clients[client] = (fails, until)
+        while len(self._clients) > MAX_TRACKED_CLIENTS:      # oldest first: a flood of addresses cannot grow memory
+            del self._clients[next(iter(self._clients))]
+
+    def pair(self, raw_code: object, client: str = "unknown") -> tuple[str, float]:
         now = self.clock()
         if self.locked:
             raise PairError(423, "Setup is complete and the configurator is locked. Unlock it on the printer "
                                  "(`eitri-configurator unlock`), then pair again.", locked=True)
-        if now < self._blocked_until:
-            wait = int(self._blocked_until - now) + 1
+        fails, until = self._clients.get(client, (0, 0.0))
+        if now < until:
+            wait = int(until - now) + 1
             raise PairError(429, f"Too many wrong codes. Try again in {wait} seconds.", retry_after=wait)
         code = normalize_code(raw_code)
         if not hmac.compare_digest(code.encode(), self.code.encode()):
-            self._fails += 1
-            if self._fails >= FAILS_BEFORE_ROTATE:
-                self._fails = 0
-                self._blocked_until = now + BASE_DELAY
+            fails += 1
+            self._total_fails += 1
+            if fails >= FAILS_BEFORE_ROTATE or self._total_fails >= TOTAL_FAILS_BEFORE_ROTATE:
+                self._remember(client, 0, now + BASE_DELAY)
+                self._total_fails = 0
                 self._rotate()
                 raise PairError(401, "Wrong code. For safety a new code was generated: read it from the printer again.", rotated=True)
-            if self._fails >= FAILS_BEFORE_DELAY:
-                delay = min(BASE_DELAY * 2 ** (self._fails - FAILS_BEFORE_DELAY), MAX_DELAY)
-                self._blocked_until = now + delay
-            log.warning("wrong pairing code (%d in a row)", self._fails)
+            if fails >= FAILS_BEFORE_DELAY:
+                until = now + min(BASE_DELAY * 2 ** (fails - FAILS_BEFORE_DELAY), MAX_DELAY)
+            self._remember(client, fails, until)
+            log.warning("wrong pairing code from %s (%d in a row)", client, fails)
             raise PairError(401, "That code is not right. Check the code on the printer screen.")
-        self._fails = 0
-        self._blocked_until = 0.0
+        self._clients.pop(client, None)
         token = secrets.token_urlsafe(32)
         expires = now + SESSION_TTL
         self._data["sessions"][_digest(token)] = {"created": now, "expires": expires}
@@ -226,9 +238,9 @@ class Auth:
             self._prune()
             self.publish()
 
-    def status(self, token: str | None) -> dict[str, Any]:
+    def status(self, token: str | None, client: str = "unknown") -> dict[str, Any]:
         sess = self.session(token)
-        blocked = self._blocked_until - self.clock()
+        blocked = self._clients.get(client, (0, 0.0))[1] - self.clock()
         out: dict[str, Any] = {
             "required": True, "paired": sess is not None, "locked": self.locked,
             "pairing_open": not self.locked,
