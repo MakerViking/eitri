@@ -89,7 +89,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            zstd git qemu-user gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libc6-arm64-cross
+            zstd git qemu-user gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libc6-arm64-cross \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross
           uv_version=$(python -c 'import tomllib; print(tomllib.load(open("release.lock", "rb"))["uv"]["version"])')
           python -m pip install --quiet "uv==$uv_version" pytest
           uv --version
