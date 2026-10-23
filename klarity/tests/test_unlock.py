@@ -22,12 +22,14 @@ FF3 = b"\xff\xff\xff"
 NETWORK_PAGE, UNLOCK_WIDGET = 62, 9
 
 
-#: Sandbox options that systemd implements with seccomp. For a unit whose user lacks CAP_SYS_ADMIN, systemd then sets
-#: NoNewPrivs on the process even with NoNewPrivileges=false (measured with systemd 258 on the QEMU image), and sudo
-#: refuses to run. Units that call sudo must not use any of them.
+#: Sandbox options that systemd implements with seccomp. For a unit whose user lacks
+#: CAP_SYS_ADMIN, systemd then sets NoNewPrivs on the process even with NoNewPrivileges=false
+#: (measured with systemd 258 on the QEMU image), and sudo refuses to run. Units that call sudo
+#: must not use any of them.
 SECCOMP_OPTIONS = {
-    "ProtectKernelTunables", "ProtectKernelModules", "RestrictNamespaces", "LockPersonality", "RestrictAddressFamilies",
-    "MemoryDenyWriteExecute", "SystemCallFilter", "SystemCallArchitectures", "RestrictRealtime", "RestrictSUIDSGID",
+    "ProtectKernelTunables", "ProtectKernelModules", "RestrictNamespaces", "LockPersonality",
+    "RestrictAddressFamilies", "MemoryDenyWriteExecute", "SystemCallFilter",
+    "SystemCallArchitectures", "RestrictRealtime", "RestrictSUIDSGID",
     "ProtectClock", "ProtectHostname", "ProtectKernelLogs",
 }
 
@@ -465,8 +467,8 @@ def test_klarity_unit_can_run_the_unlock_helper_and_matches_the_seed_layout():
     lines = dict(
         ln.split("=", 1) for ln in unit.splitlines() if "=" in ln and not ln.startswith("#")
     )
-    # sudo is setuid: NoNewPrivileges would block it, and so does every option that systemd implements with seccomp
-    # (it then sets NoNewPrivs anyway, measured on the QEMU image).
+    # sudo is setuid: NoNewPrivileges would block it, and so does every option that systemd
+    # implements with seccomp (it then sets NoNewPrivs anyway, measured on the QEMU image).
     assert lines["NoNewPrivileges"] == "false"
     assert not SECCOMP_OPTIONS & set(lines)
     assert "/data/eitri/configurator" in lines["ReadWritePaths"].split()

@@ -31,9 +31,9 @@ on:
         type: string
         default: '["klipper", "kalico"]'
       attach:
-        description: "attach the bundles to the draft release (tags only); callers that only need the files pass the string false"
-        type: string
-        default: "true"
+        description: "attach the bundles to the draft release (tags only); callers that only need the files pass false"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -90,7 +90,7 @@ jobs:
           fi
 
       - name: A release must not go out without MCU firmware
-        if: ${{ startsWith(github.ref, 'refs/tags/v') && steps.gate.outputs.go != 'true' && (inputs.attach || 'true') == 'true' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && steps.gate.outputs.go != 'true' && inputs.attach != false }}
         run: |
           echo "::error::refusing to cut a release: the MCU flash parameters are unresolved (mcu/README.md, Open questions)"
           exit 1
@@ -171,7 +171,7 @@ jobs:
   publish:
     name: Attach the MCU firmware to the release
     needs: build
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && (inputs.attach || 'true') == 'true' }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && inputs.attach != false }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write

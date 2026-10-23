@@ -73,8 +73,8 @@ class UnlockConfig:
     start_command: str = "/usr/bin/systemctl --no-block start eitri-configurator.service"
     # Written by the configurator: {"state": "pairing"|"locked", "code": "dddd-dddd"}.
     pairing_file: str = "/data/eitri/configurator/pairing.json"
-    # The configurator's wizard state; {"completed": true} once the printer has been set up. Until then
-    # the panel shows the pairing code by itself (the map's screen.first_run).
+    # The configurator's wizard state; {"completed": true} once the printer has been set up.
+    # Until then the panel shows the pairing code by itself (the map's screen.first_run).
     setup_state_file: str = "/data/eitri/configurator/state.json"
     # Address shown to the user: empty = the printer's own IPv4 address (default route).
     host: str = ""

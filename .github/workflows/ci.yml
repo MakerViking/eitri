@@ -1,11 +1,11 @@
 name: ci
 
-# Fast, hardware-free checks for every component that does not need a Buildroot build or an upstream
-# Klipper checkout: syntax gate, repository checks, Klarity, the configurator (against the real
-# eitri-mcuflash CLI and the klipper-layer templates) and the OS tree's unit tests.
-# Not run here yet: the klipper-layer tests (need Klipper/Kalico checkouts and arm-none-eabi-gcc, see
-# klipper-layer/tests/conftest.py), the camera tests (need go2rtc and ffmpeg) and the installer suite
-# (needs a U-Boot sandbox build for its boot-script tests). `make test` runs all of them locally.
+# Hardware-free checks, the same suites `make test` runs locally:
+#   checks          syntax gate, repository checks, release tooling, Klarity, the configurator, the OS tree, the MCU
+#                   tooling, the camera, the installer and the data seed's offline tests. Tests that need an artifact
+#                   this job does not build (a U-Boot sandbox, built seeds or MCU bundles, go2rtc) skip with a reason.
+#   klipper-layer   the qd_* extras against the Klipper and Kalico commits pinned in release.lock, including the real
+#                   klippy in batch mode (needs each tree's MCU data dictionary, built here with the pinned toolchain).
 
 on:
   pull_request:
@@ -35,8 +35,8 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends nodejs minisign zstd openssl
-          python -m pip install --quiet pytest ruff aiohttp pyyaml websockets pyserial-asyncio-fast pillow
+          sudo apt-get install -y --no-install-recommends nodejs minisign zstd openssl ffmpeg e2fsprogs
+          python -m pip install --quiet pytest pytest-asyncio ruff aiohttp pyyaml websockets pyserial-asyncio-fast pillow cryptography
           python -m pip install --quiet -e klarity
 
       - name: Syntax gate and repository checks
@@ -57,3 +57,59 @@ jobs:
 
       - name: OS tree (pins, scripts, units)
         run: make test-os
+
+      - name: MCU tooling
+        run: make test-mcu
+
+      - name: Camera
+        run: make test-camera
+
+      - name: Installer (scripts, mcuflash, eitri-update)
+        run: make test-installer
+
+      - name: Data seed (offline tests)
+        run: make test-seed
+
+  klipper-layer:
+    name: klipper-layer against the pinned Klipper and Kalico
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.14"
+
+      # klippy's own runtime dependencies (cffi, greenlet, jinja2, pyserial, python-can, numpy, msgspec) plus pytest.
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git make xz-utils curl
+          python -m pip install --quiet pytest cffi greenlet jinja2 pyserial python-can numpy msgspec
+
+      # Full clones: the tests make throw-away --shared clones of these and read `git describe`, so tags and every
+      # blob of the pinned commit must be local.
+      - name: Pinned Klipper and Kalico trees
+        run: |
+          for flavor in klipper kalico; do
+            url=$(python -I mcu/mcutool.py lock "firmware.$flavor" source)
+            commit=$(python -I mcu/mcutool.py lock "firmware.$flavor" commit)
+            git clone -q "$url" "$RUNNER_TEMP/$flavor"
+            git -C "$RUNNER_TEMP/$flavor" checkout -q --detach "$commit"
+          done
+
+      - name: Toolchain
+        run: mcu/fetch-toolchain.sh "$RUNNER_TEMP/toolchain"
+
+      - name: klippy data dictionaries
+        run: |
+          PATH="$RUNNER_TEMP/toolchain/bin:$PATH" \
+            klipper-layer/tests/build-dicts.sh "$RUNNER_TEMP/dicts" "$RUNNER_TEMP/klipper" "$RUNNER_TEMP/kalico"
+
+      - name: klipper-layer tests (real klippy in batch mode)
+        env:
+          EITRI_KLIPPER_SRC: ${{ runner.temp }}/klipper
+          EITRI_KALICO_SRC: ${{ runner.temp }}/kalico
+          EITRI_KLIPPY_DICTS: ${{ runner.temp }}/dicts
+        run: cd klipper-layer && python -B -m pytest -q -p no:cacheprovider

@@ -44,7 +44,7 @@ jobs:
       contents: read
     with:
       flavors: '["klipper"]'
-      attach: "false"
+      attach: false
 
   smoke:
     name: Build for QEMU, boot, run the first-run setup, measure

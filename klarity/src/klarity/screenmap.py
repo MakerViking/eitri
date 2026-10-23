@@ -472,8 +472,9 @@ class ScreenMap:
         self.markers = dict(markers)
         self.camera = camera
         self.init = init
-        # Shown while the printer has never been set up (the configurator's pairing is open and its
-        # setup is not completed): the actions get {code} {host} {url} {message} like `unlock: setup`.
+        # Shown while the printer has never been set up (the configurator's pairing is open and
+        # its setup is not completed): the actions get {code} {host} {url} {message} like
+        # `unlock: setup`.
         self.first_run = first_run
         self.meta = dict(meta)
         self.allow_todo = allow_todo

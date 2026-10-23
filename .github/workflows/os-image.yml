@@ -61,7 +61,7 @@ jobs:
       contents: read
     with:
       flavors: '["klipper"]'
-      attach: "false"
+      attach: false
 
   check:
     name: Checks without a full build
@@ -194,7 +194,7 @@ jobs:
           zstd -T0 -19 --quiet -o "$out/eitri-plus4-$version.img.zst" "$images/eitri-plus4.img"
           cp "$(readlink -f "$images/eitri-plus4.raucb")" "$out/eitri-plus4-$version.raucb"
           cp "$BUILD_ROOT/br-out/.config" "$out/buildroot.config"
-          (cd "$out" && sha256sum * > SHA256SUMS && cat SHA256SUMS)
+          (cd "$out" && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "dir=$out" >> "$GITHUB_OUTPUT"
 

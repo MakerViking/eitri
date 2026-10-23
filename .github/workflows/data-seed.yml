@@ -31,9 +31,9 @@ on:
         type: string
         default: '["klipper", "kalico"]'
       attach:
-        description: "attach the seeds to the draft release (tags only); callers that only need the files pass the string false"
-        type: string
-        default: "true"
+        description: "attach the seeds to the draft release (tags only); callers that only need the files pass false"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -163,7 +163,7 @@ jobs:
   publish:
     name: Attach the seeds to the release
     needs: build
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && (inputs.attach || 'true') == 'true' }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && inputs.attach != false }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
