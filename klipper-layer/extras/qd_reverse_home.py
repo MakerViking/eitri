@@ -4,6 +4,13 @@
 # moves heavy axes against a hard stop with a tuned stall threshold; it must
 # not ship before it has been validated on a printer (see "Bring-up").
 #
+# Why it is still a stub (and may stay one): the config already squares the bed
+# with [z_tilt] (probe-based, two independent Z screws, retries). That covers
+# the real need, so reverse homing is at most a faster pre-square -- not worth
+# shipping untested motor-into-hard-stop code for. Only revisit this if [z_tilt]
+# proves insufficient on the actual unit; the full design is kept below so it
+# can be built and bench-validated then, not reinvented.
+#
 # What the stock firmware did
 # ---------------------------
 # The Plus 4 has two independent Z lead screws (stepper_z, stepper_z1), each on
