@@ -87,3 +87,31 @@ def test_snippet_that_itself_probes_does_not_recurse():
     probe.start_probe_session(FakeGcmd())
     # prepare ran exactly once; the nested session did not re-run it
     assert printer.gcode.scripts == ["PROBE"] and probe.sessions == 2
+
+
+class OldProbe:
+    """Kalico's probe.py: a [probe] object without start_probe_session."""
+    def multi_probe_begin(self, always_restore_toolhead=False):
+        pass
+
+
+def build_old(**opts):
+    printer = FakePrinter()
+    printer.objects["gcode_macro"] = FakeGcodeMacro()
+    printer.objects["probe"] = OldProbe()
+    mod.QdProbe(FakeConfig(opts, "qd_probe", printer))
+    return printer
+
+
+def test_old_probe_api_with_empty_snippet_loads_unhooked():
+    printer = build_old()                              # the shipped default
+    for cb in printer.handlers["klippy:connect"]:
+        cb()
+    assert not hasattr(printer.objects["probe"], "start_probe_session")
+
+
+def test_old_probe_api_with_a_snippet_fails_closed():
+    printer = build_old(prepare_gcode="M117 wipe")
+    with pytest.raises(fakes.ConfigError):
+        for cb in printer.handlers["klippy:connect"]:
+            cb()

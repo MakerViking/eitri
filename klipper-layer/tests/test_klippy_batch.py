@@ -240,7 +240,22 @@ def test_zoffset_persists_across_restarts(env_factory):
     assert res.returncode != 0 and "outside" in res.log
 
 
-@pytest.mark.parametrize("section", ["qd_probe", "qd_reverse_home"])
+def test_qd_probe_prepare_runs_once_per_probe_session(env_factory, flavor):
+    """prepare_gcode wraps start_probe_session on mainline, where G28 Z and PROBE
+    each open one session. Kalico has no such hook, so a snippet must refuse to
+    load there instead of silently never running."""
+    env = env_factory()
+    env.append('[qd_probe]\nprepare_gcode:\n    { action_respond_info("qd-probe-" ~ "prepare ran") }\n')
+    res = env.run("G28\nPROBE\n")
+    if flavor == "klipper":
+        ok(res)
+        assert res.log.count("qd-probe-prepare ran") == 2      # G28 Z, then PROBE
+    else:
+        assert res.returncode != 0
+        assert "prepare_gcode needs [probe] start_probe_session" in res.log
+
+
+@pytest.mark.parametrize("section", ["qd_reverse_home"])
 def test_stubs_refuse_to_load(env_factory, section):
     env = env_factory()
     env.append("[%s]\n" % section)

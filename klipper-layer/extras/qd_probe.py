@@ -6,8 +6,10 @@
 #
 #   [qd_probe]
 #   prepare_gcode:
-#       # runs once at the start of every probing session (G28 Z, bed mesh,
-#       # Z_TILT_ADJUST, PROBE_CALIBRATE). Default: nothing.
+#       # runs once at the start of every probing session (G28 Z, PROBE,
+#       # PROBE_CALIBRATE, PROBE_ACCURACY, bed mesh, Z_TILT_ADJUST).
+#       # Default: nothing. During G28 Z it runs before Z is homed, so it
+#       # must not move Z.
 #       M117 cleaning nozzle
 #       # ... your wipe / Z-hop / vibrate here ...
 #
@@ -16,8 +18,14 @@
 # session begins. It is one wrapper around a documented public entry point,
 # installed once -- never a method swap on mcu_probe, so upstream's safety
 # behaviour (a probe already triggered before a move is still a hard error,
-# finite sample retries) is untouched. If [probe] or that entry point is absent
-# the section refuses to load (fail closed), like qd_power_interlock.
+# finite sample retries) is untouched. Without a [probe] section the section
+# refuses to load (fail closed), like qd_power_interlock.
+#
+# Kalico still has the older probe.py with no start_probe_session (its session
+# begins in multi_probe_begin, an event handler inside homing, which is no
+# place to run G-code). There, an empty prepare_gcode (the default) loads as a
+# no-op so the shipped config works on both bases, and a non-empty one refuses
+# to load rather than silently never running.
 #
 # QD_PROBE_PREPARE runs the same snippet by hand.
 #
@@ -39,6 +47,7 @@ class QdProbe:
         self.enabled = config.getboolean("enable", True)
         gcode_macro = self.printer.load_object(config, "gcode_macro")
         self.prepare_template = gcode_macro.load_template(config, "prepare_gcode", "")
+        self.has_snippet = bool(config.get("prepare_gcode", "").strip())
         self._probe = None
         self._orig_start = None
         self._running = False       # re-entrancy guard: the snippet must not probe
@@ -49,10 +58,18 @@ class QdProbe:
 
     def _handle_connect(self):
         probe = self.printer.lookup_object("probe", None)
-        if probe is None or not callable(getattr(probe, "start_probe_session", None)):
+        if probe is None:
             raise self.printer.config_error(
                 "[qd_probe] needs a [probe] section (its start_probe_session is "
                 "the hook point); none was found.")
+        if not callable(getattr(probe, "start_probe_session", None)):
+            if self.has_snippet:
+                raise self.printer.config_error(
+                    "[qd_probe] prepare_gcode needs [probe] start_probe_session "
+                    "(mainline Klipper); this Klipper base has none. Leave "
+                    "prepare_gcode empty, or call QD_PROBE_PREPARE from your "
+                    "own macros instead.")
+            return          # nothing to run before a session: stay unhooked
         self._probe = probe
         self._orig_start = probe.start_probe_session
         probe.start_probe_session = self._start_probe_session
