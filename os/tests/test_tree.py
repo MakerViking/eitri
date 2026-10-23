@@ -411,7 +411,8 @@ def test_sudo_rules_for_root_access_and_unlock_are_exact():
     for line in rules["nopasswd"]:
         commands |= {c.strip() for c in line.split("NOPASSWD:", 1)[1].split(",")}
     assert commands == {
-        "/usr/bin/eitri-update", "/usr/libexec/eitri/eitri-bootctl",
+        "/usr/bin/eitri-update", "/usr/libexec/eitri/eitri-bootctl status",
+        "/usr/libexec/eitri/eitri-bootctl get-current", "/usr/libexec/eitri/eitri-bootctl get-primary",
         "/usr/libexec/eitri/eitri-access set-key", "/usr/libexec/eitri/eitri-access disable",
         "/usr/libexec/eitri/eitri-access status", "/usr/libexec/eitri/eitri-access set-password",
         "/usr/libexec/eitri/eitri-access set-password --ssh-login",

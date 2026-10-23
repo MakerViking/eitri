@@ -1,7 +1,10 @@
 # The "eitri" account runs the unauthenticated configurator, Moonraker, Klipper, Klarity and the camera
 # programs, so a flaw in any of them must not hand out root. It gets exactly these:
 #
-#   - the two on-device update tools, without a password (they do the boot-slot and RAUC work;
+#   - eitri-bootctl's read-only queries only (status, get-current, get-primary): changing the boot
+#     slot is RAUC's and eitri-update's job, both of which run it as root, so the service account
+#     cannot point the board at an older image;
+#   - the on-device update tool, without a password (it does the boot-slot and RAUC work;
 #     unit control, reboot, host name and networking go through polkit, see
 #     usr/share/polkit-1/rules.d/50-eitri.rules). Through sudo, eitri-update refuses every option that
 #     changes what is trusted or where root writes (--config, --manifest-url, --key-dir, --data-root,
@@ -22,7 +25,8 @@
 # runs make itself root. Root is the "admin" account's job. Do not add an ALL rule for "eitri";
 # os/tests/test_tree.py rejects it. Bench images that need one ship it in a separate drop-in
 # (sudoers.d/eitri-dev).
-eitri ALL=(root) NOPASSWD: /usr/bin/eitri-update, /usr/libexec/eitri/eitri-bootctl
+eitri ALL=(root) NOPASSWD: /usr/bin/eitri-update
+eitri ALL=(root) NOPASSWD: /usr/libexec/eitri/eitri-bootctl status, /usr/libexec/eitri/eitri-bootctl get-current, /usr/libexec/eitri/eitri-bootctl get-primary
 eitri ALL=(root) NOPASSWD: /usr/libexec/eitri/eitri-access set-key, /usr/libexec/eitri/eitri-access disable, /usr/libexec/eitri/eitri-access status
 eitri ALL=(root) NOPASSWD: /usr/libexec/eitri/eitri-access admin-set-key, /usr/libexec/eitri/eitri-access admin-close-window
 eitri ALL=(root) NOPASSWD: /usr/libexec/eitri/eitri-access set-password, /usr/libexec/eitri/eitri-access set-password --ssh-login
