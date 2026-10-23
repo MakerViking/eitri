@@ -48,6 +48,28 @@ ln -s usr/bin "$SR/bin"
 cp -a "$LIBC_ROOT/lib/." "$SR/usr/lib/"
 [ ! -d "$LIBC_ROOT/usr/lib" ] || cp -a "$LIBC_ROOT/usr/lib/." "$SR/usr/lib/" 2>/dev/null || true
 
+# zlib: the image ships libz.so.1 (requirements/image-libs.txt) and wheels such as Pillow link it, so the sysroot needs
+# it too, for check-elf and for the qemu-user run. Cross-built from the pinned source, the image's version.
+read -r ZURL ZSHA < <(python3 -I - "$HERE/../requirements/ci-toolchain.toml" <<'PY'
+import sys, tomllib
+c = tomllib.load(open(sys.argv[1], "rb"))["zlib"]
+print(c["url"], c["sha256"])
+PY
+)
+ZTAR="$DEST/$(basename -- "$ZURL")"
+if [ ! -f "$ZTAR" ] || [ "$(sha256sum "$ZTAR" | cut -d' ' -f1)" != "$ZSHA" ]; then
+    curl -fsSL --retry 3 -o "$ZTAR.part" "$ZURL" >&2
+    mv "$ZTAR.part" "$ZTAR"
+fi
+[ "$(sha256sum "$ZTAR" | cut -d' ' -f1)" = "$ZSHA" ] || { echo "ci-toolchain: SHA-256 of $ZTAR does not match requirements/ci-toolchain.toml" >&2; exit 1; }
+rm -rf "$DEST/zlib-src"
+mkdir -p "$DEST/zlib-src"
+tar -xJf "$ZTAR" -C "$DEST/zlib-src" --strip-components=1
+(cd "$DEST/zlib-src" && CHOST="${EITRI_CI_CHOST:-aarch64-linux-gnu}" ./configure --prefix=/usr --shared >&2 \
+    && make -j"$(nproc)" libz.so.1.3.2 >&2) || { echo "ci-toolchain: cross-building zlib failed" >&2; exit 1; }
+cp -a "$DEST/zlib-src/libz.so.1.3.2" "$SR/usr/lib/"
+ln -sf libz.so.1.3.2 "$SR/usr/lib/libz.so.1"
+
 cat <<EOS
 export EITRI_PY_INCLUDE='$DEST/python/include/python3.14'
 export EITRI_SYSCONFIGDATA='$DEST/python/lib/python3.14/_sysconfigdata__linux_aarch64-linux-gnu.py'

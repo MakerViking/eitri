@@ -1,7 +1,8 @@
 # What the CI workflow (and anyone without a Buildroot build tree) uses instead of the image's own Python and
 # toolchain. Only the Python headers, its sysconfig data (for cross-compiling extension modules) and an aarch64
 # CPython for the qemu-user smoke test come from here; the compiler is the distribution's gcc-aarch64-linux-gnu
-# and the C library for qemu is libc6-arm64-cross. The ABI of CPython 3.14.x is stable across patch releases, so
+# and the C library for qemu is libc6-arm64-cross. zlib is cross-built from source into the sysroot, because the
+# image ships it (requirements/image-libs.txt) and the distribution has no arm64 cross package for it. The ABI of CPython 3.14.x is stable across patch releases, so
 # these headers build modules that the image's 3.14.5 loads (the qemu test proves it).
 schema = 1
 
@@ -10,3 +11,8 @@ release = "20261020"
 version = "3.14.8"
 url     = "https://github.com/astral-sh/python-build-standalone/releases/download/20261020/cpython-3.14.8%2B20261020-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"
 sha256  = "6519109a1bed8cff79aad3a6df880c95dde153e2c4c9713846476fa344d94049"
+
+[zlib]
+version = "1.3.2"              # the image's zlib (Buildroot 2026.02.3 package/libzlib)
+url     = "https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.xz"
+sha256  = "d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3"   # equals Buildroot's libzlib.hash (from zlib.net)
