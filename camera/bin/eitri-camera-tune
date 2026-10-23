@@ -32,7 +32,7 @@ set -u
 
 DEVICE="${EITRI_CAMERA_DEVICE:-/dev/eitri-cam}"
 WAIT_SECONDS="${EITRI_CAMERA_WAIT_SECONDS:-20}"
-EXPOSURE_MODE="${EITRI_CAMERA_EXPOSURE_MODE:-manual}"
+EXPOSURE_MODE="${EITRI_CAMERA_EXPOSURE_MODE:-auto}"
 EXPOSURE_ABS="${EITRI_CAMERA_EXPOSURE_ABS:-}"
 POWER_LINE="${EITRI_CAMERA_POWER_LINE:-}"
 EXTRA_CTRLS="${EITRI_CAMERA_CTRLS:-}"
@@ -164,6 +164,11 @@ cmd_tune() {
 
     case "$EXPOSURE_MODE" in
         auto)
+            # Hand exposure back to the camera's auto-exposure. Menu value 3
+            # (Aperture Priority) is the auto mode UVC webcams expose; plain Auto
+            # (0) is usually absent. Without this the device keeps whatever manual
+            # exposure a previous run left latched, so "auto" did nothing before.
+            set_ctrl_any 3 auto_exposure exposure_auto
             ;;
         manual)
             case "$EXPOSURE_ABS" in

@@ -249,25 +249,26 @@ run_tune tune
 check_eq "tune default: exits 0" 0 "$RC"
 check_eq "tune default: auto-priority cleared" 0 "$(state_of exposure_auto_priority)"
 check_contains "tune default: dynamic framerate skipped when absent" "$ERR" "skip exposure_dynamic_framerate"
-check_eq "tune default: fixed exposure (Manual Mode)" 1 "$(state_of exposure_auto)"
-check_eq "tune default: 33.3 ms with the camera on 60 Hz" 333 "$(state_of exposure_absolute)"
+check_eq "tune default: auto exposure (Aperture Priority)" 3 "$(state_of exposure_auto)"
+check_absent "tune default: no manual exposure write" "$(cat "$LOG")" "exposure_absolute"
 
 new_tune_case
 EITRI_CAMERA_EXPOSURE_MODE=auto run_tune tune
-check_eq "tune auto: leaves exposure_auto alone" "" "$(state_of exposure_auto)"
+check_eq "tune auto: enables auto exposure (Aperture Priority)" 3 "$(state_of exposure_auto)"
 check_absent "tune auto: no exposure_absolute write" "$(cat "$LOG")" "exposure_absolute"
 
 # Kernel 6.x control names (the X-Plus 4 camera on Eitri's 6.18 kernel), camera set to 50 Hz.
 new_tune_case
 FAKE_V4L2_CONTROLS="$FIX/controls-uvc-618.txt" EITRI_CAMERA_CTRLS="gain=4 bogus" run_tune tune
-check_eq "tune 6.x names: auto_exposure=1 (Manual Mode)" 1 "$(state_of auto_exposure)"
-check_eq "tune 6.x names: 30 ms with the camera on 50 Hz" 300 "$(state_of exposure_time_absolute)"
+check_eq "tune 6.x names: auto_exposure=3 (Aperture Priority, default)" 3 "$(state_of auto_exposure)"
+check_absent "tune 6.x names: no manual exposure write by default" "$(cat "$LOG")" "exposure_time_absolute"
 check_eq "tune extra controls: gain=4" 4 "$(state_of gain)"
 check_contains "tune extra controls: malformed entry warned" "$ERR" "ignoring 'bogus'"
 
 new_tune_case
 FAKE_V4L2_CONTROLS="$FIX/controls-uvc-618.txt" EITRI_CAMERA_POWER_LINE=60 run_tune tune
-check_eq "tune power line 60 then default exposure: 33.3 ms" 333 "$(state_of exposure_time_absolute)"
+check_eq "tune power line 60: power_line_frequency=2" 2 "$(state_of power_line_frequency)"
+check_absent "tune power line 60: default auto writes no exposure" "$(cat "$LOG")" "exposure_time_absolute"
 
 new_tune_case
 EITRI_CAMERA_EXPOSURE_MODE=manual EITRI_CAMERA_EXPOSURE_ABS=250 run_tune tune
