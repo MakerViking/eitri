@@ -14,5 +14,5 @@ def test_extra_imports(flavor, source_tree, extra):
         capture_output=True, text=True, timeout=120)
     assert res.returncode == 0, res.stderr
     assert res.stdout.startswith("OK "), res.stdout
-    is_stub = extra.name in ("qd_probe.py", "qd_reverse_home.py")
+    is_stub = extra.name in ("qd_reverse_home.py",)
     assert ("stub=%s" % is_stub) in res.stdout

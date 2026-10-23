@@ -403,6 +403,14 @@ sample_retract_dist: 5
 samples_tolerance: 0.05
 samples_tolerance_retries: 5
 
+# Runs a G-code snippet once at the start of every probing session (G28 Z, bed
+# mesh, Z_TILT_ADJUST, PROBE_CALIBRATE). Empty by default; add a nozzle wipe or
+# a Z-vibrate to shake ooze off before the first contact. QD_PROBE_PREPARE runs
+# it by hand. See extras/qd_probe.py.
+[qd_probe]
+#prepare_gcode:
+#    M117 preparing to probe
+
 [bed_mesh]
 speed: 150
 horizontal_move_z: 5

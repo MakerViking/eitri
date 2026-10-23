@@ -1,83 +1,85 @@
-# STUB -- qd_probe: single-offset probe helpers for the QIDI X-Plus 4
+# qd_probe: run a G-code snippet before each probing session (QIDI X-Plus 4)
 #
-# STATUS: design notes only. Loading [qd_probe] fails on purpose; the stock
-# [probe] section already covers everything needed to print (see "What works
-# today"). Do not remove the guard at the bottom until the open items below
-# have been implemented AND validated on a printer.
+# QIDI's fork ran a short routine (a Z vibrate to shake ooze off the nozzle)
+# before probing, so the first contact is clean. Mainline's [probe] has no such
+# hook. This adds one without touching probe.py:
 #
-# Background
-# ----------
-# QIDI's fork ships two sensors on the toolhead path:
-#   * a nozzle-contact sensor ([smart_effector] pin, mainboard MCU) used to
-#     measure the first-layer Z offset, and
-#   * an offset probe ([qdprobe] pin PA10, toolhead MCU) used for Z homing and
-#     bed meshes.
-# The fork's qdprobe.py swapped between them with QIDI_PROBE_PIN_1/2 by
-# monkey-patching methods of probe.PrinterProbe.mcu_probe. That cannot be
-# ported: mainline reworked probe.py in 2024-25 into composable helpers
-# (PrinterProbe -> ProbeEndstopWrapper, ProbeCommandHelper,
-# ProbeParameterHelper, ProbeOffsetsHelper, HomingViaProbeHelper,
-# SampleAveragingHelper, start_probe_session()/run_probe()/
-# pull_probed_results()), so there is no single method left to patch, and any
-# patch would silently rot with the next refactor. Kalico tracks the same
-# structure.
+#   [qd_probe]
+#   prepare_gcode:
+#       # runs once at the start of every probing session (G28 Z, bed mesh,
+#       # Z_TILT_ADJUST, PROBE_CALIBRATE). Default: nothing.
+#       M117 cleaning nozzle
+#       # ... your wipe / Z-hop / vibrate here ...
 #
-# Design: SINGLE offset probe, no probe-pin switching
-# ---------------------------------------------------
-# Eitri defines exactly one probe, the PA10 offset probe, as an ordinary
-# [probe] section (see config/printer.cfg.tmpl). Z homing
-# (probe:z_virtual_endstop), bed meshes, Z_TILT_ADJUST and PROBE_CALIBRATE all
-# use it unmodified, so nothing here can interfere with upstream's safety
-# behaviour: a probe that is already triggered before a move is still a hard
-# error ("Probe triggered prior to movement") and sample-tolerance retries
-# stay finite.
+# How it works: at klippy:connect the single [probe] object's public
+# start_probe_session() is wrapped so the snippet runs first, then the original
+# session begins. It is one wrapper around a documented public entry point,
+# installed once -- never a method swap on mcu_probe, so upstream's safety
+# behaviour (a probe already triggered before a move is still a hard error,
+# finite sample retries) is untouched. If [probe] or that entry point is absent
+# the section refuses to load (fail closed), like qd_power_interlock.
 #
-# What works today (no code needed)
-#   * z_offset of the offset probe: PROBE_CALIBRATE + SAVE_CONFIG, or
-#     Z_OFFSET_APPLY_PROBE after a baby-stepped first layer.
-#   * Per-print baby-stepping persistence: qd_zoffset_var.
-#   * Sample filtering: samples_result: median (replaces the fork's
-#     "submaxmin"), finite samples_tolerance_retries (replaces the fork's
-#     endless retry loop).
+# QD_PROBE_PREPARE runs the same snippet by hand.
 #
-# What qd_probe would add (open items)
-#   1. QD_PROBE_PREPARE hook: run a configurable G-code snippet (for example
-#      Z_VIBRATE to shake off ooze) before each probing *session*. Implement
-#      by registering a handler on the 'probe:...' events if upstream has
-#      them, otherwise by wrapping PrinterProbe.start_probe_session() on the
-#      instance created by [probe] -- one wrapper around a documented public
-#      entry point, installed at klippy:connect, never a method swap on
-#      mcu_probe. If the entry point is missing the module must refuse to
-#      load (fail closed), as qd_power_interlock does.
-#   2. QD_NOZZLE_CONTACT_CALIBRATE (optional hardware): measure the Z where the
-#      contact sensor fires and where the offset probe fires at the same XY,
-#      and store the difference as the offset probe's z_offset through
-#      configfile.set(). Needs its own mcu_endstop built from the second pin
-#      via ppins.setup_pin('endstop', ...) and a probing move run through
-#      probe.run_single_probe-style logic on that endstop. It must enforce the
-#      "lift first" order so a pre-triggered sensor aborts instead of being
-#      accepted.
-#   3. SAVE_Z_OFFSET_TO_BED_MESH equivalent: subtract the centre sample from a
-#      mesh. Prefer bed_mesh's zero_reference_position; only write code if that
-#      proves insufficient on hardware.
-#
-# Hardware validation needed before this stops being a stub
-#   * Confirm which MCU/pin carries which sensor on the shipping X-Plus 4 and
-#     the pin polarity (the fork used PA10 with inversion, '!PA10').
-#   * Compare PROBE_ACCURACY of the offset probe at the mesh speeds used.
-#   * Verify that contact-sensor and offset-probe Z agree to within the mesh
-#     noise over a heated bed (thermal drift).
+# Not implemented here (need the second sensor and a printer; see the stub
+# history in git): QD_NOZZLE_CONTACT_CALIBRATE (measure the contact-sensor vs
+# offset-probe Z difference and store it as z_offset) and a save-to-mesh helper.
+# bed_mesh's zero_reference_position already covers the common case of the
+# latter.
 #
 # Copyright (C) 2026  The Eitri Authors
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
-STUB = True
+
+class QdProbe:
+    def __init__(self, config):
+        self.printer = config.get_printer()
+        self.enabled = config.getboolean("enable", True)
+        gcode_macro = self.printer.load_object(config, "gcode_macro")
+        self.prepare_template = gcode_macro.load_template(config, "prepare_gcode", "")
+        self._probe = None
+        self._orig_start = None
+        self._running = False       # re-entrancy guard: the snippet must not probe
+        self.printer.register_event_handler("klippy:connect", self._handle_connect)
+        gcode = self.printer.lookup_object("gcode")
+        gcode.register_command("QD_PROBE_PREPARE", self.cmd_QD_PROBE_PREPARE,
+                               desc="Run the [qd_probe] prepare_gcode now")
+
+    def _handle_connect(self):
+        probe = self.printer.lookup_object("probe", None)
+        if probe is None or not callable(getattr(probe, "start_probe_session", None)):
+            raise self.printer.config_error(
+                "[qd_probe] needs a [probe] section (its start_probe_session is "
+                "the hook point); none was found.")
+        self._probe = probe
+        self._orig_start = probe.start_probe_session
+        probe.start_probe_session = self._start_probe_session
+
+    def _run_prepare(self, gcmd=None):
+        # Rendered fresh each time so printer variables are current; a blank
+        # template (the default) is a no-op. The guard stops a snippet that
+        # itself probes from recursing forever.
+        if self._running:
+            return
+        script = self.prepare_template.render().strip()
+        if not script:
+            return
+        self._running = True
+        try:
+            self.printer.lookup_object("gcode").run_script_from_command(script)
+        finally:
+            self._running = False
+
+    def _start_probe_session(self, gcmd):
+        if self.enabled and not self._running:
+            self._run_prepare(gcmd)
+        return self._orig_start(gcmd)
+
+    def cmd_QD_PROBE_PREPARE(self, gcmd):
+        self._run_prepare(gcmd)
 
 
 def load_config(config):
-    raise config.error(
-        "[qd_probe] is a design stub and is not implemented. Use the stock "
-        "[probe] section (see klipper-layer/config/printer.cfg.tmpl); the "
-        "design notes are at the top of klipper-layer/extras/qd_probe.py.")
+    return QdProbe(config)
