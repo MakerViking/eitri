@@ -37,9 +37,19 @@ def parse_timestamp(text: str) -> datetime.datetime:
 
 
 def version_key(version: str) -> Tuple[int, ...]:
-    """2026.10.1 -> (2026, 10, 1); pre-release suffixes sort before the release."""
+    """2026.10.1 -> (2026, 10, 1); pre-release suffixes sort before the release.
+
+    A version string that is not CalVer -- e.g. the ``<sha>-dirty`` that ``git
+    describe`` leaves on a hand-flashed bench build -- is not a channel release.
+    Rather than crash the comparison (int('6888c58') raises), it sorts before
+    every real release, so ``check``/``plan_upgrade`` simply offer the upgrade
+    onto it. Manifest versions are validated against _VERSION before they reach
+    here, so only the installed side can be unparseable."""
     base = re.split(r"[-+]", version, maxsplit=1)[0]
-    parts = tuple(int(p) for p in base.split("."))
+    try:
+        parts = tuple(int(p) for p in base.split("."))
+    except ValueError:
+        return (-1,)
     return parts + ((0,) if "-" in version else (1,))
 
 
