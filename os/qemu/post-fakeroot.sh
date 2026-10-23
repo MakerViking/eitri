@@ -34,3 +34,27 @@ echo "eitri qemu post-fakeroot: WARNING: bench image, the eitri and bench users 
 # QEMU bench image only: the smoke test runs "sudo bash" and "sudo systemctl poweroff" non-interactively as bench.
 printf '# QEMU bench image only.\nbench ALL=(ALL) NOPASSWD: ALL\n' >"$TARGET_DIR/etc/sudoers.d/eitri-qemu"
 chmod 0440 "$TARGET_DIR/etc/sudoers.d/eitri-qemu"
+
+# QEMU's virt board has no thermal sensor, so /sys/class/thermal is empty and Klipper's
+# [temperature_sensor host] (temperature_host, thermal_zone0) stops the whole config with "Unable to open
+# temperature file". On the printer the RK3328 provides that zone. Give the bench image a stand-in zone
+# (a tmpfs over the empty class directory, before Klipper starts) so the smoke test still checks that every
+# later config section and extra loads.
+mkdir -p "$TARGET_DIR/etc/systemd/system/multi-user.target.wants"
+cat >"$TARGET_DIR/etc/systemd/system/eitri-qemu-thermal.service" <<'UNIT'
+[Unit]
+Description=QEMU bench image only: a stand-in thermal zone for Klipper's host temperature sensor
+DefaultDependencies=no
+After=sysinit.target
+Before=klipper.service
+ConditionPathExists=!/sys/class/thermal/thermal_zone0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'mount -t tmpfs -o size=16k,mode=0755 eitri-qemu-thermal /sys/class/thermal && mkdir /sys/class/thermal/thermal_zone0 && echo 42000 >/sys/class/thermal/thermal_zone0/temp'
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+ln -sf ../eitri-qemu-thermal.service "$TARGET_DIR/etc/systemd/system/multi-user.target.wants/eitri-qemu-thermal.service"

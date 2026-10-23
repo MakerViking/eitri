@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import os
 import re
@@ -331,6 +332,28 @@ def http_probe(port: int, path: str = "/") -> str:
         return f"error: {type(e).__name__}"
 
 
+def http_status(port: int, method: str, path: str, headers: dict[str, str]) -> int:
+    """Status of one request with exactly these headers (Host included), the way a browser or a slicer sends it."""
+    return http_request(port, method, path, headers)[0]
+
+
+def http_request(port: int, method: str, path: str, headers: dict[str, str]) -> tuple[int, str]:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+    try:
+        conn.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+        for k, v in headers.items():
+            conn.putheader(k, v)
+        if method == "POST":
+            conn.putheader("Content-Length", "0")
+        conn.endheaders()
+        resp = conn.getresponse()
+        return resp.status, resp.read().decode(errors="replace")
+    except OSError:
+        return 0, ""
+    finally:
+        conn.close()
+
+
 def free_ports(n: int) -> list[int]:
     socks = [socket.socket() for _ in range(n)]
     for s in socks:
@@ -482,9 +505,55 @@ def setup_scenario(boot: Boot, ports: dict[str, int], run_dir: Path, report_dir:
     except subprocess.TimeoutExpired:
         step("SSH login is refused after 'disable'", False, "timeout")
 
+    # --- the administrator (root): a key during first setup only, then SSH as admin with sudo ---
+    st, body = w.call("GET", "/api/access")
+    step("first setup: the administrator-key window is open (data-init opened it on the first boot)",
+         st == 200 and (body.get("admin") or {}).get("window_open") is True, f"{st} {body}")
+    akey = run_dir / "id_admin"
+    for f in (akey, akey.with_suffix(".pub")):
+        f.unlink(missing_ok=True)
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "eitri-smoke-admin", "-f", str(akey)], check=True)
+    apub = akey.with_suffix(".pub").read_text().strip()
+    st, body = w.call("POST", "/api/access/key", {"key": apub, "admin": True})
+    step("add an administrator key (configurator -> sudo -n eitri-access admin-set-key)",
+         st == 200 and (body.get("added") or {}).get("user") == "admin", f"{st} {body}")
+    assh = [*ssh[:-1], "admin@127.0.0.1"]
+    assh[assh.index(str(key))] = str(akey)
+    try:
+        r = subprocess.run([*assh, "id -un; sudo -n true && echo root-ok"], capture_output=True, text=True, timeout=240)
+        step("SSH as admin with that key works, and admin is root through sudo", r.returncode == 0 and r.stdout.split() == ["admin", "root-ok"],
+             f"rc={r.returncode} {r.stdout!r} {r.stderr[-300:]!r}")
+    except subprocess.TimeoutExpired:
+        step("SSH as admin with that key works, and admin is root through sudo", False, "timeout")
+
+    # --- the web interface on port 80: only names the printer is reached by, and no cross-site writes ---
+    hp = ports["HTTP_PORT"]
+    host = {"Host": f"127.0.0.1:{hp}"}
+    step("nginx refuses a host name it does not know (DNS rebinding)", http_status(hp, "GET", "/server/info", {"Host": "rebind.example.com"}) == 403)
+    step("nginx refuses a cross-site write to Moonraker (Sec-Fetch-Site)",
+         http_status(hp, "POST", "/printer/gcode/script?script=M115", {**host, "Sec-Fetch-Site": "cross-site"}) == 403)
+    step("nginx refuses a write from a page of another origin (Origin)",
+         http_status(hp, "POST", "/printer/gcode/script?script=M115", {**host, "Origin": "http://evil.example.com"}) == 403)
+    step("a slicer-style request (no browser headers) still reaches Moonraker", http_status(hp, "GET", "/server/info", host) == 200)
+    step("the printer's own page (same origin) still reaches Moonraker",
+         http_status(hp, "GET", "/server/info", {**host, "Origin": f"http://127.0.0.1:{hp}", "Sec-Fetch-Site": "same-origin"}) == 200)
+    boot.cmd("sudo -u eitri sh -c 'echo printer.home.arpa > /data/printer_data/config/eitri-hosts.txt'", 30)
+    deadline = time.monotonic() + 60
+    while http_status(hp, "GET", "/server/info", {"Host": "printer.home.arpa"}) != 200 and time.monotonic() < deadline:
+        time.sleep(2)
+    out, _ = boot.cmd("cat /etc/nginx/eitri-hosts.map; systemctl show -p Result eitri-hosts.service", 30)
+    step("a name listed in eitri-hosts.txt is served (eitri-hosts.path -> validated map -> nginx reload)",
+         http_status(hp, "GET", "/server/info", {"Host": "printer.home.arpa"}) == 200, out)
+    st, body = http_request(hp, "GET", "/configure/api/auth", host)
+    step("the setup wizard is not proxied on port 80 any more (its own origin: port 8099 only)", "pairing_open" not in body, f"{st} {body[:120]!r}")
+
     # --- finish: the configurator locks and exits, Klarity's 'Unlock setup' brings it back ---
     st, body = w.call("POST", "/api/complete", {})
     step("finish setup (the configurator locks)", st == 200, f"{st} {body}")
+    out, _ = boot.cmd("sudo /usr/libexec/eitri/eitri-access status", 30)
+    step("finishing setup closed the administrator-key window", '"window_open": false' in out, out)
+    out, _ = boot.cmd(f"echo '{apub}' | sudo -u eitri sudo -n /usr/libexec/eitri/eitri-access admin-set-key; echo rc=$?", 30)
+    step("after setup the service account cannot add an administrator key", re.search(r"rc=3\b", out) is not None, out)
     st, body = w.call("POST", "/api/logout", {})
     step("the finishing browser logs out", st == 200, f"{st} {body}")
     ok, out = wait_for(boot, "systemctl show -p ActiveState,SubState,Result,NRestarts eitri-configurator", r"ActiveState=inactive", 120, 5)
