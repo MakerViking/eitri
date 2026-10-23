@@ -14,7 +14,7 @@ import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BOOT_DIR = os.path.join(HERE, "..", "boot")
-DEFAULT_SANDBOX = "/home/thomash/Koding/projects/Plus4/build/uboot-sandbox/u-boot-2021.07/u-boot"
+DEFAULT_SANDBOX = os.path.join(HERE, "..", "..", "..", "build", "uboot-sandbox", "u-boot-2021.07", "u-boot")   # repo next to build/
 SANDBOX = os.environ.get("EITRI_UBOOT_SANDBOX", DEFAULT_SANDBOX)
 FAT_OFFSET = 2048 * 512
 

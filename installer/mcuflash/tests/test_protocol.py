@@ -13,7 +13,10 @@ from eitri_mcuflash import katapult_proto as kp
 from eitri_mcuflash import klipper_proto as kl
 from eitri_mcuflash.errors import ProtocolError
 
-KLIPPER_SRC = "/home/thomash/Koding/projects/Plus4/src/upstream-klipper/klippy"
+# The workspace layout: the repo sits next to src/ (see klipper-layer/tests/conftest.py).
+_WORKSPACE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+KLIPPER_SRC = os.path.join(os.environ.get("EITRI_KLIPPER_SRC", os.path.join(_WORKSPACE, "src", "upstream-klipper")),
+                           "klippy")
 
 
 def _klipper_msgproto():
