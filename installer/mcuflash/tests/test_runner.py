@@ -2,11 +2,13 @@
 """End-to-end flows against simulated boards."""
 import json
 import os
+import shutil
 
 import pytest
 
 from fakes import FakeBoard, FakeBus, FakeClock, make_image
 from helpers import STOCK_CFG, settle, write_release
+from eitri_mcuflash.errors import FlashError
 from eitri_mcuflash.events import EventSink
 from eitri_mcuflash.methods import FlashContext
 from eitri_mcuflash.proc import RunResult
@@ -403,12 +405,32 @@ def test_missing_spi_flash_tooling_falls_back_to_the_microsd_card_when_offered(r
 def test_backup_metadata_is_written_atomically_and_made_durable(rig, monkeypatch):
     synced = []
     import eitri_mcuflash.backup as backup_mod
-    monkeypatch.setattr(backup_mod, "fsync_dir", lambda path: synced.append(path))
+    real = backup_mod._sync_dir
+    monkeypatch.setattr(backup_mod, "_sync_dir", lambda fd: (synced.append(os.readlink("/proc/self/fd/%d" % fd)), real(fd)))
     entry = rig.flasher.store.save("toolhead", app=b"firmware", dictionary={"version": "x"}, info={"origin": "stock"})
-    assert entry.directory in synced and os.path.dirname(entry.directory) in synced
+    assert os.path.realpath(entry.directory) in synced and os.path.realpath(os.path.dirname(entry.directory)) in synced
     # no temp files left behind, and the entry is findable again
     assert sorted(os.listdir(entry.directory)) == ["app.bin", "dictionary.json", "meta.json"]
     assert rig.flasher.store.latest_restorable("toolhead").directory == entry.directory
+
+
+def test_a_link_planted_by_the_service_user_never_redirects_a_backup_write(rig, tmp_path):
+    store = rig.flasher.store
+    victim = tmp_path / "victim"
+    victim.write_text("precious")
+    os.makedirs(store.root, exist_ok=True)
+    os.symlink(str(victim), os.path.join(store.root, ".write-test"))
+    store.check_writable()                                   # the link is removed, not written through
+    assert victim.read_text() == "precious" and not os.path.lexists(os.path.join(store.root, ".write-test"))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    backup = os.path.join(store.root, "backup")
+    if os.path.isdir(backup) and not os.path.islink(backup):
+        shutil.rmtree(backup)
+    os.symlink(str(elsewhere), backup)
+    with pytest.raises(FlashError) as exc:
+        store.save("toolhead", app=b"firmware", dictionary=None, info={})
+    assert exc.value.code == "backup_unwritable" and os.listdir(str(elsewhere)) == []
 
 
 def test_entry_with_unreadable_meta_is_reported_not_silently_ignored(rig):

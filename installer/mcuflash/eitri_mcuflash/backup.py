@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .errors import FlashError
-from .fsutil import atomic_write, fsync_dir, sha256_file
+from .fsutil import sha256_file
 
 MIN_FREE_BYTES = 8 * 1024 * 1024
 
@@ -47,6 +47,59 @@ class BackupEntry:
                              recovery="Use an older entry under the backup directory, or flash the board by hand (see docs/recovery.md).")
 
 
+# The backup directory belongs to the service user, and the flasher may run as root (eitri-update, through sudo).
+# So root never follows a symlink there: it walks the tree one directory at a time with O_NOFOLLOW directory
+# handles, creates every file relative to such a handle with O_EXCL | O_NOFOLLOW, and checks that the entry
+# directory it just made is still its own. A link planted by the service user can make a backup fail, but can
+# never redirect root's writes to another file.
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+_NEW_FILE = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+
+
+def _open_dir(name: str, dir_fd: Optional[int] = None, create: bool = False) -> int:
+    if create:
+        try:
+            os.mkdir(name, 0o755, dir_fd=dir_fd)
+        except FileExistsError:
+            pass
+    return os.open(name, _DIR_FLAGS, dir_fd=dir_fd)
+
+
+def _unlink_at(dfd: int, name: str) -> None:
+    try:
+        os.unlink(name, dir_fd=dfd)          # removes a planted link itself, never what it points to
+    except FileNotFoundError:
+        pass
+
+
+def _write_at(dfd: int, name: str, data: bytes, mode: int) -> None:
+    """Write *name* inside the directory *dfd*: a fsynced temp file renamed into place."""
+    tmp = ".%s.tmp" % name
+    _unlink_at(dfd, tmp)
+    fd = os.open(tmp, _NEW_FILE, mode, dir_fd=dfd)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            os.fchmod(fh.fileno(), mode)
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.rename(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+    except BaseException:
+        _unlink_at(dfd, tmp)
+        raise
+
+
+def _sync_dir(dfd: int) -> None:
+    """Make a directory's entries durable (after the files in it were renamed into place)."""
+    os.fsync(dfd)
+
+
+def _read_at(dfd: int, name: str) -> bytes:
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+    with os.fdopen(fd, "rb") as fh:
+        return fh.read()
+
+
 class BackupStore:
     def __init__(self, root: str) -> None:
         self.root = root
@@ -54,10 +107,15 @@ class BackupStore:
     def check_writable(self) -> None:
         try:
             os.makedirs(self.root, exist_ok=True)
-            probe = os.path.join(self.root, ".write-test")
-            with open(probe, "w") as fh:
-                fh.write("ok")
-            os.unlink(probe)
+            rfd = _open_dir(self.root)
+            try:
+                _unlink_at(rfd, ".write-test")
+                fd = os.open(".write-test", _NEW_FILE, 0o600, dir_fd=rfd)
+                os.write(fd, b"ok")
+                os.close(fd)
+                os.unlink(".write-test", dir_fd=rfd)
+            finally:
+                os.close(rfd)
             free = shutil.disk_usage(self.root).free
         except OSError as exc:
             raise FlashError(
@@ -81,37 +139,57 @@ class BackupStore:
     ) -> BackupEntry:
         # Microsecond resolution and exist_ok=False: two backups taken in the same second must never overwrite
         # each other (the name also sorts the entries oldest to newest).
-        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        directory = os.path.join(self.root, "backup", "%s-%s" % (stamp, board))
-        os.makedirs(os.path.dirname(directory), exist_ok=True)
-        while True:
+        try:
+            os.makedirs(self.root, exist_ok=True)
+            rfd = _open_dir(self.root)
             try:
-                os.mkdir(directory)
+                bfd = _open_dir("backup", dir_fd=rfd, create=True)
+                try:
+                    return self._save_in(bfd, board, app, dictionary, info)
+                finally:
+                    os.close(bfd)
+            finally:
+                os.close(rfd)
+        except OSError as exc:
+            raise FlashError("cannot write the %s backup under %s: %s" % (board, self.root, exc),
+                             code="backup_unwritable", step="backup", board=board,
+                             recovery="Check that %s and its backup directory are ordinary directories (not links)." % self.root) from exc
+
+    def _save_in(self, bfd: int, board: str, app: Optional[bytes], dictionary: Optional[Dict[str, Any]],
+                 info: Dict[str, Any]) -> BackupEntry:
+        while True:
+            stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            name = "%s-%s" % (stamp, board)
+            try:
+                os.mkdir(name, 0o755, dir_fd=bfd)
                 break
             except FileExistsError:
-                stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-                directory = os.path.join(self.root, "backup", "%s-%s" % (stamp, board))
-        meta: Dict[str, Any] = {"board": board, "created": stamp, **info}
-        if app is not None:
-            path = os.path.join(directory, "app.bin")
-            with open(path, "wb") as fh:
-                fh.write(app)
-                fh.flush()
-                os.fsync(fh.fileno())
-            meta["app_file"] = "app.bin"
-            meta["app_sha256"] = hashlib.sha256(app).hexdigest()
-            meta["app_size"] = len(app)
-            # Read it back: a backup that cannot be re-read is not a backup.
-            if sha256_file(path) != meta["app_sha256"]:
-                raise FlashError("backup file failed read-back verification", code="backup_unwritable", step="backup", board=board)
-        if dictionary is not None:
-            atomic_write(os.path.join(directory, "dictionary.json"), json.dumps(dictionary, separators=(",", ":")), mode=0o644)
-            meta["dictionary_file"] = "dictionary.json"
-        # meta.json is what makes the entry findable (entries() skips a directory without a readable one), so it is
-        # written atomically and the directory entries are made durable BEFORE the caller erases anything.
-        atomic_write(os.path.join(directory, "meta.json"), json.dumps(meta, indent=2, sort_keys=True), mode=0o644)
-        fsync_dir(directory)
-        fsync_dir(os.path.dirname(directory))
+                continue
+        directory = os.path.join(self.root, "backup", name)
+        dfd = os.open(name, _DIR_FLAGS, dir_fd=bfd)
+        try:
+            if os.fstat(dfd).st_uid != os.geteuid():
+                raise FlashError("the new backup directory %s was replaced while it was being written" % directory,
+                                 code="backup_unwritable", step="backup", board=board)
+            meta: Dict[str, Any] = {"board": board, "created": stamp, **info}
+            if app is not None:
+                _write_at(dfd, "app.bin", app, 0o644)
+                meta["app_file"] = "app.bin"
+                meta["app_sha256"] = hashlib.sha256(app).hexdigest()
+                meta["app_size"] = len(app)
+                # Read it back: a backup that cannot be re-read is not a backup.
+                if hashlib.sha256(_read_at(dfd, "app.bin")).hexdigest() != meta["app_sha256"]:
+                    raise FlashError("backup file failed read-back verification", code="backup_unwritable", step="backup", board=board)
+            if dictionary is not None:
+                _write_at(dfd, "dictionary.json", json.dumps(dictionary, separators=(",", ":")).encode(), 0o644)
+                meta["dictionary_file"] = "dictionary.json"
+            # meta.json is what makes the entry findable (entries() skips a directory without a readable one), so it
+            # is written atomically and the directory entries are made durable BEFORE the caller erases anything.
+            _write_at(dfd, "meta.json", json.dumps(meta, indent=2, sort_keys=True).encode(), 0o644)
+            _sync_dir(dfd)
+            _sync_dir(bfd)
+        finally:
+            os.close(dfd)
         return BackupEntry(directory, meta)
 
     def damaged(self, board: str) -> List[str]:
