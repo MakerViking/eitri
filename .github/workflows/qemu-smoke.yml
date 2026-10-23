@@ -40,8 +40,11 @@ jobs:
   seed:
     name: Data seed for the /data disk
     uses: ./.github/workflows/data-seed.yml
+    # A ceiling, not a grant: GitHub refuses to start a caller whose reusable workflow has any job asking for more
+    # (data-seed's `publish` job needs contents: write). Its build jobs still get `read` from data-seed.yml's own
+    # top-level permissions, and `publish` never runs here (attach: false).
     permissions:
-      contents: read
+      contents: write
     with:
       flavors: '["klipper"]'
       attach: false
