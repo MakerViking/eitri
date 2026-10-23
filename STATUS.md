@@ -1,7 +1,34 @@
 # Status
 
+**Update 2026-10-23 — Eitri is installed and running on the real X-Plus 4.** The claim below ("nothing written to the
+printer") is superseded: Eitri was installed in-place on the actual printer, boots, and runs. What this session proved on
+hardware, what it added, and what is still open:
+
+* **Proven on the machine:** in-place install + first boot; A/B RAUC (both slots `good`, confirmed via a cold power-cycle);
+  Klarity drives the stock touchscreen (screen version-match fixed); all temperature/driver sensors (always-on TMC driver
+  temps via `qd_tmc_driver`, chamber/host/mainboard, filament-width with the false-runout fixed); the camera streams
+  (ustreamer 1080p — but the stock sensor is light-starved, an AR0230 upgrade is ordered); it **prints**; the accelerometer
+  works through `qd_adxl345_stock` on the stock toolhead; sensorless X/Y homing and probe-based Z homing work; Wi-Fi
+  (usb_modeswitch) associates; polkit + the configurator (pair → wizard) work.
+* **Added this session:** `qd_tmc_driver`, `qd_stock_mcu`, `qd_adxl345_stock`, `qd_probe` (the `QD_PROBE_PREPARE` hook — no
+  longer a stub); the configurator UI was de-AI'd (dropped Instrument Serif/grain/eyebrows, kept the token system);
+  `installer/tools/mk-dev-channel.sh` + a `version_key` robustness fix make dev builds installable through `eitri-update`.
+* **Root-caused, fix staged (NOT yet hardware-verified):** the warm-reboot hang (stock ATF PSCI `SYSTEM_RESET` does not reset
+  the RK3328; no fallback). A `syscon-reboot` DTB node (CRU global reset) is staged in `rk3328-eitri-plus4.dts`. **Until it is
+  verified on the board, a warm `reboot` hangs — always cold power-cycle after an OS update.**
+* **Still a stub by choice:** `qd_reverse_home` — `[z_tilt]` already squares the bed with the probe, so the motor-into-hard-stop
+  sensorless squaring is not worth shipping untested.
+* **Still open before a public release:** flash the mainboard MCU (firmware built, not yet flashed — the install kept stock
+  MCUs); the optional toolhead Katapult flash (needs an ST-Link, ~2026-11-05); real signing keys + a published channel (only a
+  dev key exists); CI on GitHub; a clean second-printer install; on-machine motion/tuning validation (probe polarity,
+  `PROBE_CALIBRATE`, bed mesh, input shaping, power-loss recovery, the 85 °C chamber backstop); the Klarity screen `todo`
+  widgets (the home **e-stop is still inert** — a safety gap); end-user docs + a security review.
+
+---
+
 Last integration pass: 2026-10-22 (in-place install: offline dev bundle, stock-MCU first install, rehearsal on a copy of the real
-eMMC). Pre-alpha. **Only `install.sh --dry-run` (its read-only preflight) has run on the printer; nothing has been written to it.**
+eMMC). Pre-alpha. **Only `install.sh --dry-run` (its read-only preflight) had run on the printer at that point** (the 2026-10-23
+update above is the first real install).
 Every test below is a unit, simulation, emulation or static test; "Needs hardware" lists what none of them can prove.
 
 `make test` runs every suite below (about 8 minutes, most of it the real klippy). `make test-fast` skips the klippy
