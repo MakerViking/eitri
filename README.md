@@ -66,6 +66,7 @@ Eitri has no users yet, and FreeDi, OpenNept4une, and Simple AF have years of fi
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): layers, partitions, services, ports, the `/data` layout and data seed, MCU flashing, and safety invariants
 - [`docs/INSTALL.md`](docs/INSTALL.md): install paths, the offline data seed, first boot and remote access, Klipper vs Kalico, and update channels
 - [`docs/RELEASING.md`](docs/RELEASING.md): how releases are built and signed, key custody, rotation and revocation
+- [`docs/SAFETY.md`](docs/SAFETY.md): how to stop the printer, the heater protections, and what is not verified on a machine yet
 - [`docs/RECOVERY.md`](docs/RECOVERY.md): eMMC backup and restore, microSD boot, maskrom recovery, and ST-Link as the last resort
 - [`docs/CLEAN-ROOM.md`](docs/CLEAN-ROOM.md): the reverse-engineering and clean-room policy
 - [`docs/COMPARISON.md`](docs/COMPARISON.md): the extended comparison with sources

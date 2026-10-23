@@ -7,7 +7,7 @@
 You need:
 
 - A **QIDI X-Plus 4**. It is the only supported printer.
-- **Wired Ethernet.** Wired is the supported network path. Wireless is not supported until it has been measured on this hardware.
+- **A network connection:** wired Ethernet, or Wi-Fi through the printer's USB Wi-Fi dongle (the setup wizard joins the network).
 - A computer on the same LAN with an SSH client.
 - A **full eMMC backup** of the printer, taken and checked before the first install. The installer makes one itself (to a USB stick of 8 GB or more, or over SSH to your computer) and refuses to continue without it. [`RECOVERY.md`](RECOVERY.md#1-full-emmc-backup) describes how to take and check one by hand.
 - Optionally, a **USB-A to USB-A cable** and the recovery procedure, if you are willing to open the printer. Entering maskrom requires opening it. Know how before you start, not after something fails.
@@ -64,7 +64,7 @@ The format and the install algorithm are specified in [`seed/SPEC.md`](../seed/S
 
 After the first boot the printer's touchscreen shows a pairing code, and the setup wizard answers at `http://eitri.local:8099/`. Enter the code to pair your browser. The wizard walks through:
 
-1. **Network.** Wired is expected; the wizard shows the address.
+1. **Network.** Shows the printer's address, and can join a Wi-Fi network.
 2. **Detect.** Identifies both MCU boards over their serial ports. Nothing is assumed about which port is which.
 3. **Firmware flavor.** Klipper (default) or Kalico (see below).
 4. **Options.** Chamber heater, power-loss recovery, accelerometer, and **web interface sign-in**:
@@ -137,13 +137,13 @@ Switching channels does not change the flavor.
 
 ## After install: verify
 
-Work through this list before you print anything.
+Read [`SAFETY.md`](SAFETY.md) first: how to stop the printer, what is not verified yet, and why you power-cycle instead of rebooting. Then work through this list before you print anything.
 
 - [ ] Moonraker answers: `curl http://eitri.local/server/info` returns JSON.
 - [ ] The web interface loads at `http://eitri.local/` on port 80.
 - [ ] The services are active: `systemctl status klipper moonraker klarity eitri-camera`.
 - [ ] `git -C /data/firmware/klipper status` is clean and `git -C /data/firmware/klipper log -1` shows the commit pinned for your flavor in `release.lock`.
-- [ ] The camera responds: `curl -o /tmp/snap.jpg http://eitri.local:8080/snapshot`.
+- [ ] The camera responds: `curl -o snap.jpg http://eitri.local/webcam/snapshot` (the camera server itself listens only on the printer's loopback interface).
 - [ ] Both MCUs are identified, and each reports the firmware version that matches your flavor and `release.lock`.
 - [ ] The screen shows status, and pressing its controls does what the stock screen did. The screen offers **Unlock setup**.
 - [ ] Heater runaway protection is active. Klipper's configuration must show `verify_heater` enabled for each heater.
@@ -156,5 +156,5 @@ Work through this list before you print anything.
 - **An MCU readback does not match.** Do not retry in a loop. Stop, keep the log, and follow [`RECOVERY.md`](RECOVERY.md#3-mcu-recovery-over-serial).
 - **`klipper` and `moonraker` are `inactive (dead)` after the first boot.** The data seed is missing or incomplete (the units start only when it is there). Check `/data/eitri/state/seed-installed.env` and `journalctl -u eitri-data-init`; reinstall the seed with `eitri-seed-install` ([`seed/SPEC.md`](../seed/SPEC.md#10-installing-a-seed)).
 - **The setup page does not answer on port 8099.** That is normal after setup: the wizard has exited. Use **Unlock setup** on the touchscreen, or `sudo -n /usr/bin/eitri-configurator unlock` over SSH.
-- **The screen stays blank.** Check that `klarity.service` is running and that `serial_port` in `klarity.cfg` points at the display's UART. The default is `/dev/ttyS1` at 115200; it is not confirmed on the mainline kernel.
+- **The screen stays blank.** Check that `klarity.service` is running and that `serial_port` in `klarity.cfg` points at the display's UART. The default is `/dev/ttyS1` at 115200, confirmed on the printer.
 - **You want to go back to stock.** Run `revert.sh` (the stock system is still in its own partition), or restore the eMMC backup you took before installing. [`RECOVERY.md`](RECOVERY.md) has the steps.
