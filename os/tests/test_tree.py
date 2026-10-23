@@ -101,7 +101,7 @@ def test_no_unit_weakens_heater_safety():
 
 
 # Tools in the overlay that are Python, not sh: the root helpers behind the sudo rules.
-PYTHON_TOOLS = {"eitri-access"}
+PYTHON_TOOLS = {"eitri-access", "eitri-hosts"}
 
 
 def test_overlay_scripts_are_executable_and_pass_sh_syntax():
@@ -267,7 +267,7 @@ def test_nginx_limits_uploads_and_is_lan_only():
     # Only one body-size rule outside the upload route may exist, and it is small.
     sizes = re.findall(r"client_max_body_size\s+(\S+);", conf)
     assert sizes[0] == "1m" and "0" not in sizes
-    upload = re.search(r"location ~ \^/\(server/files/upload[^{]*\{(.*?)\}", conf, re.S)
+    upload = re.search(r"location ~ \^/\(server/files/upload[^{]*\{(.*?)\n        \}", conf, re.S)
     assert upload and "client_max_body_size 1g;" in upload.group(1)
     assert "include /etc/nginx/eitri-lan-only.conf;" in conf
     acl = (OVERLAY / "etc/nginx/eitri-lan-only.conf").read_text().splitlines()

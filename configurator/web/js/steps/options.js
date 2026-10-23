@@ -31,7 +31,7 @@ export function enter(ctx) {
   function control(f) {
     if (f.type === 'bool') return switchControl({ checked: values[f.id], label: f.label, onChange: (v) => set(f.id, v) });
     if (f.type === 'choice') return segmented({ name: f.id, value: values[f.id], choices: f.choices, onChange: (v) => set(f.id, v) });
-    const input = h('input', { class: `input ${f.mono ? 'mono' : ''}`, value: values[f.id], placeholder: '/dev/ttyS1', 'aria-label': f.label, spellcheck: false, autocomplete: 'off', onInput: () => set(f.id, input.value) });
+    const input = h('input', { class: `input ${f.mono ? 'mono' : ''}`, value: values[f.id], placeholder: f.placeholder || '', 'aria-label': f.label, spellcheck: false, autocomplete: 'off', onInput: () => set(f.id, input.value) });
     return h('div', { style: { minWidth: 'min(16rem, 100%)' } }, input);
   }
 

@@ -1,0 +1,15 @@
+[Unit]
+Description=Apply the extra host names the web interface answers to
+Documentation=file:///usr/share/doc/eitri/os/README.md
+After=eitri-data-init.service eitri-etc.service
+Wants=eitri-data-init.service
+Before=nginx.service
+RequiresMountsFor=/data
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/eitri/eitri-hosts
+
+[Install]
+WantedBy=multi-user.target

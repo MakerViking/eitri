@@ -6,6 +6,8 @@ enable eitri-zram.service
 enable eitri-seed.service
 enable eitri-access.path
 enable eitri-access.service
+enable eitri-hosts.path
+enable eitri-hosts.service
 enable eitri-mark-good.service
 enable klipper.service
 enable moonraker.service

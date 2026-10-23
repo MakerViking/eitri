@@ -43,6 +43,34 @@ def test_hostname(name, ok):
             opts.validate_hostname(name)
 
 
+@pytest.mark.parametrize("raw,want", [
+    ("", ""), ("printer.home.arpa", "printer.home.arpa"), ("Voron.LAN, x.example.org  voron.lan", "voron.lan x.example.org"),
+    ("printer.home.arpa.", "printer.home.arpa"),
+])
+def test_extra_hostnames_are_normalized(raw, want):
+    assert opts.validate({"extra_hostnames": raw})["extra_hostnames"] == want
+
+
+@pytest.mark.parametrize("raw", ["evil{", "a;b", "under_score.lan", "-x.lan", " ".join(f"h{i}.lan" for i in range(17)), 7])
+def test_extra_hostnames_reject_anything_but_dns_names(raw):
+    with pytest.raises(opts.ValidationError) as e:
+        opts.validate({"extra_hostnames": raw})
+    assert set(e.value.errors) == {"extra_hostnames"}
+
+
+def test_extra_hostnames_are_rendered_for_nginx_and_allowed_as_origins(tmp_path):
+    settings = Settings(data_dir=tmp_path)
+    ctx = render.build_context(flavor="klipper", options=opts.validate({"extra_hostnames": "printer.home.arpa"}),
+                               detect=None, lock={}, hostname="eitri")
+    files = render.render_all(settings, ctx)
+    names = [ln for ln in files["eitri-hosts.txt"].splitlines() if ln and not ln.startswith("#")]
+    assert names == ["printer.home.arpa"]
+    assert "http://printer.home.arpa" in files["eitri-access.conf"]
+    empty = render.render_all(settings, render.build_context(flavor="klipper", options=opts.validate({}), detect=None,
+                                                             lock={}, hostname="eitri"))
+    assert [ln for ln in empty["eitri-hosts.txt"].splitlines() if ln and not ln.startswith("#")] == []
+
+
 # --- release.lock -------------------------------------------------------------
 def test_release_lock_real_file_and_fallback(tmp_path):
     p = tmp_path / "release.lock"

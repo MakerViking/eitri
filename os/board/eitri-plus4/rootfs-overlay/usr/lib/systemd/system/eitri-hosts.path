@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch the list of extra host names for the web interface
+Documentation=file:///usr/share/doc/eitri/os/README.md
+RequiresMountsFor=/data
+
+[Path]
+PathChanged=/data/printer_data/config/eitri-hosts.txt
+Unit=eitri-hosts.service
+
+[Install]
+WantedBy=multi-user.target

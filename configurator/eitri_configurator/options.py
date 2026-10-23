@@ -43,6 +43,9 @@ FLAVORS = {
 
 _HOST_RE = re.compile(r"(?!-)[a-z0-9-]{1,63}(?<!-)")
 _PORT_RE = re.compile(r"|/dev/tty[A-Za-z0-9_.-]{1,24}")     # matched with fullmatch: `$` admits a trailing newline
+_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_DNS_RE = re.compile(rf"{_LABEL}(?:\.{_LABEL})*")
+MAX_EXTRA_HOSTNAMES = 16
 
 
 def _choice(value, label, help_=""):
@@ -95,7 +98,7 @@ SCHEMA: list[dict[str, Any]] = [
                 "help": "Drives the stock touchscreen over its serial link. The display firmware is never reflashed.",
             },
             {
-                "id": "klarity_port", "type": "text", "default": "/dev/ttyS1",
+                "id": "klarity_port", "type": "text", "default": "/dev/ttyS1", "check": "tty", "placeholder": "/dev/ttyS1",
                 "label": "Screen serial port",
                 "help": "The UART the display is wired to. The stock software uses /dev/ttyS1; that is not confirmed on the mainline kernel until probed on the printer. Klarity stays idle while this is empty.",
                 "depends_on": "klarity", "mono": True,
@@ -133,6 +136,12 @@ SCHEMA: list[dict[str, Any]] = [
                     _choice("lan", "Trust my home network", "Devices on private addresses need no sign-in"),
                     _choice("signin", "Require sign-in", "Only the printer itself is trusted; needs a user created over SSH first (see Remote access)"),
                 ],
+            },
+            {
+                "id": "extra_hostnames", "type": "text", "default": "", "check": "hostnames", "placeholder": "printer.home.arpa",
+                "label": "Other names for this printer",
+                "help": "The web interface answers to the printer's IP address, single names such as eitri, and names ending in .local. If your router gives it another name, list it here (separate several with spaces); any other name is refused, which stops web pages from reaching the printer through a look-alike name. Saved as eitri-hosts.txt with the configuration files.",
+                "mono": True,
             },
         ],
     },
@@ -189,9 +198,19 @@ def validate(raw: dict[str, Any] | None) -> dict[str, Any]:
                 errors[key] = "not an available choice"
                 continue
         elif f["type"] == "text":
-            if not isinstance(val, str) or not _PORT_RE.fullmatch(val):
-                errors[key] = "must be empty or a /dev/tty* path"
+            if not isinstance(val, str):
+                errors[key] = "must be text"
                 continue
+            if f["check"] == "tty":
+                if not _PORT_RE.fullmatch(val):
+                    errors[key] = "must be empty or a /dev/tty* path"
+                    continue
+            elif f["check"] == "hostnames":
+                try:
+                    val = normalize_hostnames(val)
+                except ValueError as exc:
+                    errors[key] = str(exc)
+                    continue
         out[key] = val
     if out["chamber_heater"] and not out["chamber_ack"]:
         errors["chamber_ack"] = "acknowledge the thermal interlock to enable the chamber heater"
@@ -202,6 +221,22 @@ def validate(raw: dict[str, Any] | None) -> dict[str, Any]:
     if errors:
         raise ValidationError(errors)
     return out
+
+
+def normalize_hostnames(text: str) -> str:
+    """Space-separated, lowercase DNS names; the same rules as /usr/libexec/eitri/eitri-hosts applies."""
+    names: list[str] = []
+    for entry in re.split(r"[\s,]+", text.strip()):
+        if not entry:
+            continue
+        name = entry.lower().rstrip(".")
+        if len(name) > 253 or not _DNS_RE.fullmatch(name):
+            raise ValueError(f"{entry[:40]!r} is not a host name (letters, digits, hyphens and dots)")
+        if name not in names:
+            names.append(name)
+    if len(names) > MAX_EXTRA_HOSTNAMES:
+        raise ValueError(f"at most {MAX_EXTRA_HOSTNAMES} names")
+    return " ".join(names)
 
 
 def validate_hostname(name: str) -> str:

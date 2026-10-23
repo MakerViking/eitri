@@ -158,7 +158,8 @@ check("7125" in read("klarity/config/klarity.cfg"), "klarity talks to Moonraker 
 check("8080/snapshot" in read("klarity/config/klarity.cfg"), "klarity snapshot_url is ustreamer :8080/snapshot")
 check("127.0.0.1:8080" in read("camera/moonraker/nginx-webcam.inc"), "nginx proxies /webcam/ to ustreamer :8080")
 check("--port 8099" in read("configurator/systemd/eitri-configurator.service"), "configurator unit uses port 8099")
-check("127.0.0.1:8099" in read("os/board/eitri-plus4/rootfs-overlay/etc/nginx/nginx.conf"), "nginx proxies the configurator on 8099")
+check(not re.search(r"^\s*[^#\s].*(:8099|upstream configurator)", read("os/board/eitri-plus4/rootfs-overlay/etc/nginx/nginx.conf"), re.M),
+      "nginx does not proxy the configurator: it keeps its own origin on 8099 (security review 2026-10-23)")
 check("/data/eitri/flavor" in read("klipper-layer/scripts/overlay-install.sh"), "overlay-install reads /data/eitri/flavor")
 check("flavor_file" in read("configurator/eitri_configurator/settings.py"), "configurator writes the flavor file")
 for unit in ("klipper", "moonraker", "klarity", "eitri-camera", "go2rtc", "eitri-configurator"):
