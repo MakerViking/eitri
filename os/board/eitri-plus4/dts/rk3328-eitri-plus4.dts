@@ -91,3 +91,39 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&sdmmc_vqmmc_pin>;
 };
+
+/*
+ * Reliable warm reboot (bench-validate; not yet booted).
+ *
+ * The stock ARM Trusted Firmware that Eitri keeps does not reset the RK3328 on a
+ * PSCI SYSTEM_RESET: `reboot` issues the SMC, the firmware hangs in EL3, and the
+ * kernel has no other reset path, so a warm reboot hangs while a cold power-on
+ * always works. systemd's watchdog fallback (RebootWatchdogSec) is not honoured
+ * by this build, so nothing recovers it but a power cut.
+ *
+ * Reset the SoC directly instead: the CRU first global software reset
+ * (CRU_GLB_SRST_FST, offset 0x9c, magic 0xfdb9) resets the whole chip. The clock
+ * driver already writes the CRU from the non-secure kernel, so EL1 can reach this
+ * register too; adding "syscon" to the CRU node lets syscon-reboot map it. The
+ * handler's priority (192) is above PSCI's (129), so the register write is tried
+ * before the SMC. If the write turns out to be ignored (secure-gated), reboot is
+ * no worse than today -- it simply falls through to PSCI. The clock driver still
+ * binds on the first compatible string, so clocking and boot are unchanged.
+ *
+ * Validate on the bench from microSD: after this DTB boots, `reboot` must bring
+ * the board back by itself, and the screen (console=tty1) must pass
+ * "reboot: Restarting system" without hanging.
+ */
+&cru {
+	compatible = "rockchip,rk3328-cru", "syscon";
+};
+
+/ {
+	eitri_reboot: syscon-reboot {
+		compatible = "syscon-reboot";
+		regmap = <&cru>;
+		offset = <0x9c>;
+		value = <0xfdb9>;
+		priority = <192>;
+	};
+};
