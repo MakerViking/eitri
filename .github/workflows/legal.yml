@@ -49,6 +49,11 @@ jobs:
             build-essential libncurses-dev libssl-dev unzip rsync bc cpio file wget git \
             flex bison libelf-dev openssl zstd xz-utils
 
+      # actions/cache refuses paths containing '..' (a warning, and nothing is saved), and BUILD_ROOT is
+      # github.workspace/../build. Same directory, spelled without '..', for every later step.
+      - name: Resolve the build root
+        run: echo "BUILD_ROOT=$(realpath -m "$BUILD_ROOT")" >> "$GITHUB_ENV"
+
       # Release builds start from an empty cache (see os-image.yml).
       - name: Restore download cache
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}

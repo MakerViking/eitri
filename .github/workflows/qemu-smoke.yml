@@ -73,6 +73,11 @@ jobs:
             build-essential libncurses-dev libssl-dev unzip rsync bc cpio file wget git \
             flex bison libelf-dev openssl zstd e2fsprogs qemu-system-arm fakeroot openssh-client
 
+      # actions/cache refuses paths containing '..' (a warning, and nothing is saved), and BUILD_ROOT is
+      # github.workspace/../build. Same directory, spelled without '..', for every later step.
+      - name: Resolve the build root
+        run: echo "BUILD_ROOT=$(realpath -m "$BUILD_ROOT")" >> "$GITHUB_ENV"
+
       - name: Restore download and compiler caches
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
