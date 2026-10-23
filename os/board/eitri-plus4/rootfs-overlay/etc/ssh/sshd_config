@@ -17,7 +17,7 @@ Port 22
 AddressFamily any
 
 PermitRootLogin no
-AllowUsers eitri
+AllowUsers eitri admin
 PubkeyAuthentication yes
 # The second file holds the keys added through the configurator: root-owned (so the
 # web-facing programs cannot edit it), and removable without touching the first.
@@ -35,3 +35,9 @@ ClientAliveCountMax 4
 PrintMotd no
 
 Subsystem sftp /usr/libexec/sftp-server
+
+# The administrator (root through sudo) logs in only with a key from this root-owned file, never with a
+# password and never from a key file in its own home. Match blocks must stay at the end of the file.
+Match User admin
+	AuthorizedKeysFile /data/eitri/state/access/admin_authorized_keys
+	PasswordAuthentication no

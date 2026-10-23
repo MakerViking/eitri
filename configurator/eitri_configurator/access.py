@@ -5,6 +5,11 @@ it validates what the person typed and hands it to the image's privileged helper
 sudoers rule,
 
     sudo -n /usr/libexec/eitri/eitri-access set-key | set-password [--ssh-login] | disable | status
+    sudo -n /usr/libexec/eitri/eitri-access admin-set-key | admin-close-window
+
+"eitri" (the user the services run as) gets a shell but never root. Root is the separate "admin" account,
+whose keys can be added here only during first setup: completing setup closes that window for good, and
+after that only a USB stick at the printer adds administrator keys (see the helper's documentation).
 
 (`set-key` reads one OpenSSH public key on stdin, `set-password` reads the password on stdin, `--ssh-login`
 additionally lets sshd accept it, `status` prints JSON, exit 3 means the input was rejected, exit 4 means
@@ -39,6 +44,7 @@ log = logging.getLogger("eitri.configurator.access")
 
 HELPER = "/usr/libexec/eitri/eitri-access"
 SSH_USER = "eitri"
+ADMIN_USER = "admin"
 
 MAX_KEY_CHARS = 4096
 PASSWORD_MIN = 10
@@ -186,15 +192,23 @@ def normalize_status(doc: Any) -> dict[str, Any]:
                 fingerprints.append(fp)
     else:
         count = raw_keys if isinstance(raw_keys, int) and not isinstance(raw_keys, bool) and raw_keys >= 0 else 0
+    adm = d.get("admin") if isinstance(d.get("admin"), dict) else {}
+    adm_keys = adm.get("keys", [])
+    admin = {"window_open": adm.get("window_open") is True,
+             "keys": len(adm_keys) if isinstance(adm_keys, list) else 0,
+             "fingerprints": [k["fingerprint"] for k in adm_keys if isinstance(adm_keys, list) and isinstance(k, dict)
+                              and isinstance(k.get("fingerprint"), str) and _FINGERPRINT.fullmatch(k["fingerprint"])][:8],
+             "user": ADMIN_USER}
     pw = d.get("password", False)
     password = bool(pw.get("set")) if isinstance(pw, dict) else pw is True
     ssh_login = bool(pw.get("ssh_login")) if isinstance(pw, dict) else False
     return {"available": True, "keys": count, "fingerprints": fingerprints[:8], "password": password,
             "password_auth": password and ssh_login, "pending": d.get("pending") is True,
-            "enabled": count > 0 or password, "user": SSH_USER}
+            "enabled": count > 0 or password, "user": SSH_USER, "admin": admin}
 
 
-UNAVAILABLE = {"available": False, "keys": 0, "fingerprints": [], "password": False, "password_auth": False, "pending": False, "enabled": False, "user": SSH_USER}
+UNAVAILABLE = {"available": False, "keys": 0, "fingerprints": [], "password": False, "password_auth": False, "pending": False, "enabled": False, "user": SSH_USER,
+               "admin": {"window_open": False, "keys": 0, "fingerprints": [], "user": ADMIN_USER}}
 
 
 class RemoteAccess:
@@ -278,6 +292,24 @@ class RemoteAccess:
         st = await self._change(["set-key"], key.line + "\n", None, "key")
         log.warning("remote access: SSH key %s added for %s", key.fingerprint, SSH_USER)
         return st
+
+    async def set_admin_key(self, key: PublicKey) -> dict[str, Any]:
+        st = await self._change(["admin-set-key"], key.line + "\n", None, "key")
+        log.warning("remote access: administrator SSH key %s added for %s", key.fingerprint, ADMIN_USER)
+        return st
+
+    async def close_admin_window(self) -> bool:
+        """End first setup's window for administrator keys. Best effort: a failure is logged, never raised,
+        because it must not stop setup from finishing (the window then stays open until the next attempt)."""
+        try:
+            rc, _out, err = await self._run(["admin-close-window"])
+        except AccessError as exc:
+            log.warning("could not close the administrator-key window: %s", exc.message)
+            return False
+        if rc != 0:
+            log.warning("could not close the administrator-key window (exit %d): %s", rc, self._explain(rc, err, None).message)
+            return False
+        return True
 
     async def set_password(self, password: str, ssh_login: bool = False) -> dict[str, Any]:
         st = await self._change(["set-password", *(["--ssh-login"] if ssh_login else [])], password + "\n", password, "password")

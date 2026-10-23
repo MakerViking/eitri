@@ -1,6 +1,9 @@
 """Stand-in for /usr/libexec/eitri/eitri-access (mock mode and tests).
 
-    eitri_access.py STATE_FILE set-key|set-password|disable|status
+    eitri_access.py STATE_FILE set-key|set-password|disable|status|admin-set-key|admin-close-window
+
+A fresh state behaves like the first boot of a fresh /data: the first-setup window for administrator keys
+is open until admin-close-window.
 
 Same contract as the real helper: the key or password arrives on stdin (one line), `status` prints JSON.
 State is a JSON file in the scratch data directory.  The password is kept as a salted SHA-256 only so a
@@ -30,36 +33,45 @@ def invalid(message: str) -> int:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in ("set-key", "set-password", "disable", "status"):
-        print("usage: eitri-access set-key|set-password [--ssh-login]|disable|status", file=sys.stderr)
+    if len(argv) < 2 or argv[1] not in ("set-key", "set-password", "disable", "status", "admin-set-key", "admin-close-window"):
+        print("usage: eitri-access set-key|set-password [--ssh-login]|disable|status|admin-set-key|admin-close-window", file=sys.stderr)
         return 2
     path, verb, extra = Path(argv[0]), argv[1], argv[2:]
     if extra and not (verb == "set-password" and extra == ["--ssh-login"]):
         return invalid("unexpected arguments")
     state = load(path)
     keys: list[str] = state.get("keys", [])
+    admin_keys: list[str] = state.get("admin_keys", [])
+    window = state.get("admin_window", True)
     if verb == "status":
         # Same shape as the real helper (os/.../eitri-access status).
         print(json.dumps({"ok": True, "schema": 1, "keys": [{"type": "ssh-ed25519", "fingerprint": k, "comment": ""} for k in keys],
+                          "admin": {"window_open": window,
+                                    "keys": [{"type": "ssh-ed25519", "fingerprint": k, "comment": ""} for k in admin_keys]},
                           "password": {"set": bool(state.get("password")), "ssh_login": bool(state.get("ssh_login"))},
                           "generation": 1, "applied": 1, "pending": False}))
         return 0
-    if verb == "disable":
-        state = {"keys": [], "password": None, "ssh_login": False}
+    if verb == "admin-close-window":
+        state["admin_window"] = False
+    elif verb == "disable":
+        state = {**state, "keys": [], "password": None, "ssh_login": False}   # administrator keys stay
     else:
         line = sys.stdin.readline()
         if not line.endswith("\n") or "\n" in line[:-1] or sys.stdin.read(1):
             return invalid("input must be exactly one line")
         value = line[:-1]
-        if verb == "set-key":
+        if verb == "admin-set-key" and not window:
+            return invalid("administrator keys can only be added during first setup, or with a USB stick")
+        if verb in ("set-key", "admin-set-key"):
             parts = value.split(" ")
             if len(parts) < 2 or not parts[0].startswith(("ssh-", "ecdsa-", "sk-")):
                 return invalid("not an OpenSSH public key")
             blob = base64.b64decode(parts[1])
             fp = "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
-            if fp not in keys:
-                keys.append(fp)
-            state["keys"] = keys
+            target = admin_keys if verb == "admin-set-key" else keys
+            if fp not in target:
+                target.append(fp)
+            state["keys"], state["admin_keys"] = keys, admin_keys
         else:
             if len(value) < 8:
                 return invalid("password must be at least 8 characters")

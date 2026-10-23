@@ -8,3 +8,7 @@
 # or by the configurator. The home directory lives on the writable /data
 # partition and is created by eitri-data-init on first boot.
 eitri 1000 eitri 1000 * /data/eitri/home /bin/bash dialout,video,plugdev,tty Eitri service and login user
+#
+# "admin" is the owner's way to root (sudoers.d/admin), never a service account. Key login only, from a
+# root-owned key file (etc/ssh/sshd_config); usr/libexec/eitri/eitri-access says where its keys come from.
+admin 1001 admin 1001 * /data/eitri/admin /bin/bash - Eitri administrator (root through sudo)

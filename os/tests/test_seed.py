@@ -296,7 +296,8 @@ def firstboot(tmp_path):
     seeds.mkdir()
     env = {**{k: v for k, v in os.environ.items() if not k.startswith("EITRI_")},
            "EITRI_DATA": str(data), "EITRI_SEED_DIR": str(seeds), "EITRI_SEED_INSTALL": str(INSTALLER),
-           "EITRI_OWNER": f"{os.getuid()}:{os.getgid()}", "EITRI_RUN": str(tmp_path / "run")}
+           "EITRI_OWNER": f"{os.getuid()}:{os.getgid()}", "EITRI_ADMIN": f"{os.getuid()}:{os.getgid()}",
+           "EITRI_RUN": str(tmp_path / "run")}
     return {"env": env, "data": data, "seeds": seeds, "run": tmp_path / "run"}
 
 
@@ -422,6 +423,7 @@ def data_env(tmp_path):
     bootfs.mkdir()
     return {**os.environ, "EITRI_DATA": str(tmp_path / "data"), "EITRI_FACTORY": str(factory), "EITRI_BOOTFS": str(bootfs),
             "EITRI_OWNER": f"{os.getuid()}:{os.getgid()}", "EITRI_NO_RESIZE": "1",
+            "EITRI_ADMIN": f"{os.getuid()}:{os.getgid()}",
             "EITRI_CONFIGURATOR_SRC": str(tmp_path / "none")}
 
 

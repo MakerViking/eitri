@@ -1,0 +1,4 @@
+# The owner's administrator account: root for every command. It has no password ("*" in users.table)
+# and logs in only with an SSH key from /data/eitri/state/access/admin_authorized_keys, which only root
+# writes: during first setup, from a USB stick, or by an administrator (usr/libexec/eitri/eitri-access).
+admin ALL=(ALL) NOPASSWD: ALL

@@ -39,7 +39,9 @@ def parse(path):
 @pytest.mark.parametrize("unit", UNITS, ids=lambda p: p.name)
 def test_unit_is_well_formed(unit):
     parser = parse(unit)
-    assert {"Unit", "Service", "Install"} <= set(parser.sections()), unit.name
+    # A template (name@.service) is started per device by udev, never enabled, so it has no [Install].
+    wanted = {"Unit", "Service"} if "@." in unit.name else {"Unit", "Service", "Install"}
+    assert wanted <= set(parser.sections()), unit.name
     assert parser["Unit"]["Description"]
 
 
@@ -73,6 +75,8 @@ def test_every_preset_names_a_unit_we_or_a_package_provide():
 def test_all_units_we_ship_are_preset_enabled_unless_optional():
     preset = (OVERLAY / "usr/lib/systemd/system-preset/50-eitri.preset").read_text()
     for unit in UNITS:
+        if "@." in unit.name:
+            continue  # templates are started by udev (61-eitri-admin-usb.rules), not enabled
         assert f"enable {unit.name}" in preset, f"{unit.name} is not enabled by the preset"
 
 
@@ -224,20 +228,30 @@ def test_sudo_is_scoped_not_blanket():
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
-            if "NOPASSWD" in line:
-                commands = [c.strip() for c in line.split("NOPASSWD:", 1)[1].split(",")]
-                assert "ALL" not in commands, f"{path.name}: passwordless sudo for every command: {line}"
-                assert all(c.startswith("/") for c in commands), line
+            if line.startswith("admin "):
+                # The administrator is root by design; it is a key-only login, never a service account.
+                assert path.name == "admin" and line == "admin ALL=(ALL) NOPASSWD: ALL", line
+                continue
+            assert line.startswith("eitri "), f"{path.name}: rule for an unexpected account: {line}"
+            assert "NOPASSWD" in line, f"{path.name}: eitri may not have any password rule (it can set its own): {line}"
+            commands = [c.strip() for c in line.split("NOPASSWD:", 1)[1].split(",")]
+            assert "ALL" not in commands, f"{path.name}: passwordless sudo for every command: {line}"
+            assert all(c.startswith("/") for c in commands), line
     text = (OVERLAY / "etc/sudoers.d/eitri").read_text()
     assert "/usr/bin/eitri-update" in text
     if shutil.which("visudo"):
-        assert run(["visudo", "-cf", OVERLAY / "etc/sudoers.d/eitri"]).returncode == 0
+        for name in ("eitri", "admin"):
+            assert run(["visudo", "-cf", OVERLAY / "etc/sudoers.d" / name]).returncode == 0, name
 
 
 def test_sshd_takes_keys_only():
-    config = dict(
-        line.split(None, 1) for line in (OVERLAY / "etc/ssh/sshd_config").read_text().splitlines()
-        if line.strip() and not line.startswith("#"))
+    text = (OVERLAY / "etc/ssh/sshd_config").read_text()
+    main, _, match = text.partition("\nMatch User admin\n")
+    config = dict(line.split(None, 1) for line in main.splitlines() if line.strip() and not line.startswith("#"))
+    # The administrator: keys from the root-owned file only, never a password, and nothing after its block.
+    admin = dict(line.split(None, 1) for line in match.splitlines() if line.strip() and not line.startswith("#"))
+    assert admin == {"AuthorizedKeysFile": "/data/eitri/state/access/admin_authorized_keys", "PasswordAuthentication": "no"}
+    assert config["AllowUsers"] == "eitri admin" and "Match" not in config
     assert config["PasswordAuthentication"] == "no"
     # The owner's optional choices (decision 4) come in through two fixed paths, and the Include must be read
     # before PasswordAuthentication because sshd takes the first value it sees.
@@ -401,6 +415,7 @@ def test_sudo_rules_for_root_access_and_unlock_are_exact():
         "/usr/libexec/eitri/eitri-access set-key", "/usr/libexec/eitri/eitri-access disable",
         "/usr/libexec/eitri/eitri-access status", "/usr/libexec/eitri/eitri-access set-password",
         "/usr/libexec/eitri/eitri-access set-password --ssh-login",
+        "/usr/libexec/eitri/eitri-access admin-set-key", "/usr/libexec/eitri/eitri-access admin-close-window",
         "/usr/bin/eitri-configurator unlock",
     }, "the apply subcommand in particular must not be reachable through sudo"
     for command in commands:
@@ -408,14 +423,13 @@ def test_sudo_rules_for_root_access_and_unlock_are_exact():
             assert (OVERLAY / command.split()[0].lstrip("/")).is_file(), command
 
 
-def test_the_broad_sudo_rule_comes_first_because_the_last_match_wins():
-    # sudo applies the LAST rule that matches. With the password rule last, every passwordless rule above it
-    # would be overridden for the commands it names.
-    order = [ln.strip() for ln in (OVERLAY / "etc/sudoers.d/eitri").read_text().splitlines()
-             if ln.strip() and not ln.startswith("#")]
-    broad = next(i for i, ln in enumerate(order) if ln == "eitri ALL=(ALL) ALL")
-    specific = [i for i, ln in enumerate(order) if "NOPASSWD" in ln]
-    assert specific and broad < min(specific)
+def test_eitri_has_no_general_sudo_rule():
+    # eitri can set its own password (eitri-access set-password), so ANY rule for all commands, with or without
+    # a password, would let a program it runs make itself root. Only the specific passwordless helpers are left.
+    rules = sudo_rules()
+    assert "password" not in rules, rules.get("password")
+    for line in rules["nopasswd"]:
+        assert line.startswith("eitri ALL=(root) NOPASSWD: /"), line
 
 
 def test_access_units_are_wired_to_the_helper():

@@ -6,7 +6,7 @@ import { alertBox, button, switchControl, toast, withBusy } from '../ui.js';
 export const meta = {
   id: 'remote', title: 'Remote access', hint: 'Optional, off',
   headline: 'A door, only if you *want* one.',
-  lead: 'Remote access starts out off. The printer works fully without it, and nothing here is required. Add an SSH key or a password only if you want to log in from another computer later.',
+  lead: 'Remote access starts out off. The printer works fully without it, and nothing here is required. Add an SSH key only if you want to log in from another computer later.',
 };
 
 const KEY_START = /^(ssh-|ecdsa-|sk-)/;
@@ -38,7 +38,15 @@ export async function enter(ctx) {
   const keyErr = h('div', { class: 'field-error', role: 'alert', id: 'key-err' });
   const keyDone = h('div', { class: 'key-done', hidden: true, role: 'status' });
 
-  // ---- SSH key
+  // ---- SSH key: for the administrator (root, first setup only) or for the printer's own user (no root)
+  let asAdmin = st.admin?.window_open === true;
+  const forWhom = h('div', { class: 'opt inline key-for' },
+    h('div', { class: 'opt-text' }, h('div', { class: 'opt-label' }, 'Administrator access (root)'),
+      h('p', { class: 'help' }, 'On: the key logs in as ', h('code', { class: 'cmd' }, 'admin'), ', which can do anything through sudo. ',
+        'This can only be granted now, during first setup. Off: it logs in as the printer\u2019s own user, without root.')),
+    h('div', { class: 'opt-ctl' }, switchControl({ checked: asAdmin, label: 'Give this key administrator (root) access', onChange: (v) => { asAdmin = v; } })));
+  const usbNote = h('p', { class: 'help usb-note' }, 'Administrator (root) keys can only be added during first setup. To add one now, put the key in a file named ',
+    h('code', { class: 'cmd' }, 'eitri-admin-keys.txt'), ' on a FAT-formatted USB stick and plug it into the printer.');
   const area = h('textarea', {
     class: 'keybox mono', rows: 4, spellcheck: false, autocomplete: 'off', autocapitalize: 'off', placeholder: 'ssh-ed25519 AAAAC3Nza… you@your-computer',
     'aria-label': 'SSH public key', 'aria-describedby': 'key-err',
@@ -47,10 +55,11 @@ export async function enter(ctx) {
   const addKey = button({ label: 'Add this key', kind: 'primary', icon: 'plus', disabled: true, onClick: () => withBusy(addKey, async () => {
     keyErr.textContent = '';
     try {
-      const r = await post('access/key', { key: area.value });
+      const admin = asAdmin && st.admin?.window_open === true;
+      const r = await post('access/key', { key: area.value, admin });
       area.value = ''; addKey.disabled = true;
       st = r.status; paint();
-      mount(keyDone, icon('check'), h('span', null, 'Key added: ', h('code', { class: 'fp' }, r.added.fingerprint), r.added.comment && h('span', { class: 'faint' }, ` (${r.added.comment})`)));
+      mount(keyDone, icon('check'), h('span', null, `Key added for ${r.added.user}: `, h('code', { class: 'fp' }, r.added.fingerprint), r.added.comment && h('span', { class: 'faint' }, ` (${r.added.comment})`)));
       keyDone.hidden = false;
     } catch (e) { if (e.data?.fields?.key) keyErr.textContent = e.data.fields.key; else toast(e.message, 'bad'); }
   }) });
@@ -59,7 +68,7 @@ export async function enter(ctx) {
       h('div', { class: 'grow' }, h('h2', { class: 'card-title' }, 'An SSH key'), h('p', { class: 'card-sub' }, 'The safe way in. Only the computer that holds the matching private key can log in.')),
       h('span', { class: 'chip accent' }, 'Recommended')),
     h('p', { class: 'help' }, 'On your computer run ', h('code', { class: 'cmd' }, 'ssh-keygen -t ed25519'), ' once, then paste the contents of the file ending in ', h('code', { class: 'cmd' }, '.pub'), '. Never paste the private one.'),
-    area, keyErr, keyDone,
+    forWhom, usbNote, area, keyErr, keyDone,
     h('div', { class: 'remote-actions' }, addKey));
 
   // ---- password
@@ -68,7 +77,7 @@ export async function enter(ctx) {
   const pw2 = passwordField('rm-pw2', 'Repeat the password', 'new-password');
   const sshRow = h('div', { class: 'opt inline ssh-login' },
     h('div', { class: 'opt-text' }, h('div', { class: 'opt-label' }, 'Also let SSH accept this password'),
-      h('p', { class: 'help' }, 'Off keeps SSH to keys only, and the password then works at the console and for sudo. On lets anyone on your network who guesses it log in.')),
+      h('p', { class: 'help' }, 'Off keeps SSH to keys only, and the password then works at the console. On lets anyone on your network who guesses it log in.')),
     h('div', { class: 'opt-ctl' }, switchControl({ checked: false, label: 'Let SSH accept the password over the network', onChange: (v) => { sshLogin = v; } })));
   const setPw = button({ label: 'Set password', kind: '', icon: 'lock', onClick: () => withBusy(setPw, async () => {
     pw.err.textContent = pw2.err.textContent = '';
@@ -77,7 +86,7 @@ export async function enter(ctx) {
       pw.input.value = pw2.input.value = '';
       pw.input.type = pw2.input.type = 'password';
       st = r.status; paint();
-      toast(st.password_auth ? `Password set. SSH accepts it for the user ${st.user}.` : 'Password set for sudo and the console. SSH still needs a key.', 'ok');
+      toast(st.password_auth ? `Password set. SSH accepts it for the user ${st.user}.` : 'Password set for the console. SSH still needs a key.', 'ok');
     } catch (e) {
       const f = e.data?.fields || {};
       if (f.password || f.confirm) { pw.err.textContent = f.password || ''; pw2.err.textContent = f.confirm || ''; } else toast(e.message, 'bad');
@@ -86,7 +95,7 @@ export async function enter(ctx) {
   const pwCard = h('details', { class: 'card remote-card disclosure pw-details' },
     h('summary', null, 'Set a password (not recommended)'),
     h('div', { class: 'pw-body' },
-      alertBox('warn', h('p', null, h('strong', null, 'A password is more than a login. '), 'It gives the printer’s user administrator rights through sudo, and a console login, and a password can be guessed. A key alone is safer; set one only if you need sudo or the console, and never one you use elsewhere.')),
+      alertBox('warn', h('p', null, h('strong', null, 'A password can be guessed. '), 'It is for the printer\u2019s own user and gives a console login, never root: administrator access is by key only. A key alone is safer; set a password only if you need the console, and never one you use elsewhere.')),
       h('div', { class: 'grid two' }, pw.node, pw2.node),
       h('p', { class: 'help' }, 'At least 10 characters; a few random words make a good one.'),
       sshRow,
@@ -100,22 +109,26 @@ export async function enter(ctx) {
   const offCard = h('section', { class: 'card remote-card', hidden: true },
     h('div', { class: 'remote-head' }, h('span', { class: 'link-ico' }, icon('shield')),
       h('div', { class: 'grow' }, h('h2', { class: 'card-title' }, 'Close the door again'),
-        h('p', { class: 'card-sub' }, 'Removes the keys and the password added here. Only what was installed with the printer stays.')), off));
+        h('p', { class: 'card-sub' }, 'Removes the printer user\u2019s keys and password added here. Administrator keys stay.')), off));
 
   function paint() {
-    const on = st.enabled;
+    const on = st.enabled || (st.admin?.keys || 0) > 0;
     const plate = h('div', { class: 'plate door' },
       bolt(on, on ? 'Remote access is on' : 'Remote access is off'),
       h('dl', { class: 'specs' },
         h('div', null, h('dt', null, 'Remote access'), h('dd', null, on ? 'On' : 'Off',
-          h('small', null, !on ? 'The default' : st.keys || st.password_auth ? `ssh ${st.user}@${host}` : 'Console and sudo only'))),
-        h('div', null, h('dt', null, 'SSH keys added'), h('dd', null, String(st.keys), h('small', null, st.keys ? 'Added in this setup' : 'None'))),
+          h('small', null, !on ? 'The default' : st.admin?.keys ? `ssh admin@${host}` : st.keys || st.password_auth ? `ssh ${st.user}@${host}` : 'Console only'))),
+        h('div', null, h('dt', null, 'Administrator keys'), h('dd', null, String(st.admin?.keys || 0),
+          h('small', null, st.admin?.keys ? `ssh admin@${host}` : st.admin?.window_open ? 'Can be added now' : 'USB stick only'))),
+        h('div', null, h('dt', null, 'Printer user keys'), h('dd', null, String(st.keys), h('small', null, st.keys ? 'No root' : 'None'))),
         h('div', null, h('dt', null, 'Password'), h('dd', null, st.password ? 'Set' : 'Not set',
-          h('small', null, !st.password ? 'Key login only' : st.password_auth ? 'SSH accepts it' : 'Sudo and console, not SSH')))));
+          h('small', null, !st.password ? 'Key login only' : st.password_auth ? 'SSH accepts it' : 'Console, not SSH')))));
     mount(stateHost, plate, st.pending ? h('div', { class: 'chip warn applying' }, h('span', { class: 'dot live' }), 'Applying the change on the printer…') : null,
       st.fingerprints?.length ? fingerprintChips(st.fingerprints) : null);
     if (st.pending) settle();
-    offCard.hidden = !on;
+    offCard.hidden = !st.enabled;   // it removes the printer user's access; administrator keys stay
+    forWhom.hidden = st.admin?.window_open !== true;
+    usbNote.hidden = st.admin?.window_open === true;
     area.disabled = pw.input.disabled = pw2.input.disabled = setPw.disabled = !st.available;
     ctx.actions.set({ next: { label: on ? 'Continue' : 'Skip, keep it off' },
       note: !st.available ? 'Not available on this image.' : on ? 'Remote access is on. You can remove it here at any time before finishing.' : 'Optional. Nothing is added unless you do it here.' });

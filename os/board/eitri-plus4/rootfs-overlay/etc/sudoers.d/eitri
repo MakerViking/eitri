@@ -14,15 +14,16 @@
 #   - "unlock setup" (decision 8): Klarity's button runs `eitri-configurator unlock`. It runs the
 #     configurator's own copy in the read-only image, never code from /data, drops to the eitri user
 #     before it touches the maintenance flag under /data/eitri/configurator, and starts the service;
-#   - anything else only with the account's own password. The password is locked ("*") until
-#     its owner sets one, so on a fresh image there is no general root access at all.
+#   - an administrator key for the separate "admin" account (sudoers.d/admin), but only during
+#     first setup: admin-set-key refuses once the window is closed, and closing it is one-way.
 #
-# Do not add a NOPASSWD rule that allows ALL commands; os/tests/test_tree.py rejects it. Bench
-# images that need one ship it in a separate drop-in (sudoers.d/eitri-dev).
-# sudo uses the LAST rule that matches a command, so the broad rule (password required) comes first
-# and the specific passwordless rules after it; in the other order they would never apply.
-eitri ALL=(ALL) ALL
+# Nothing else. "eitri" has NO general sudo rule, not even behind a password: it can set its own
+# password (eitri-access set-password), so a password-protected "ALL" rule would let any program it
+# runs make itself root. Root is the "admin" account's job. Do not add an ALL rule for "eitri";
+# os/tests/test_tree.py rejects it. Bench images that need one ship it in a separate drop-in
+# (sudoers.d/eitri-dev).
 eitri ALL=(root) NOPASSWD: /usr/bin/eitri-update, /usr/libexec/eitri/eitri-bootctl
 eitri ALL=(root) NOPASSWD: /usr/libexec/eitri/eitri-access set-key, /usr/libexec/eitri/eitri-access disable, /usr/libexec/eitri/eitri-access status
+eitri ALL=(root) NOPASSWD: /usr/libexec/eitri/eitri-access admin-set-key, /usr/libexec/eitri/eitri-access admin-close-window
 eitri ALL=(root) NOPASSWD: /usr/libexec/eitri/eitri-access set-password, /usr/libexec/eitri/eitri-access set-password --ssh-login
 eitri ALL=(root) NOPASSWD: /usr/bin/eitri-configurator unlock

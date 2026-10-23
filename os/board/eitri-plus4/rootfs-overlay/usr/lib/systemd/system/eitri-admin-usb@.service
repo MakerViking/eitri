@@ -1,0 +1,14 @@
+[Unit]
+Description=Add administrator SSH keys from the USB stick %I
+Documentation=file:///usr/share/doc/eitri/os/README.md
+After=eitri-data-init.service
+RequiresMountsFor=/data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/eitri/eitri-access admin-import-usb /dev/%I
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectHome=yes
+NoNewPrivileges=yes
+TimeoutStartSec=60

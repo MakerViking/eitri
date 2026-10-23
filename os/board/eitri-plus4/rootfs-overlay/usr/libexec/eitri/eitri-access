@@ -12,6 +12,19 @@ that runs the web-facing programs never gets a general root shell from it:
     sudo -n /usr/libexec/eitri/eitri-access set-password --ssh-login   ... and let sshd accept it
     sudo -n /usr/libexec/eitri/eitri-access disable                 remove everything added here
     sudo -n /usr/libexec/eitri/eitri-access status                  JSON; needs no privileges
+    sudo -n /usr/libexec/eitri/eitri-access admin-set-key           an ADMINISTRATOR key on stdin (first setup only)
+    sudo -n /usr/libexec/eitri/eitri-access admin-close-window      end first setup's administrator window
+            /usr/libexec/eitri/eitri-access admin-import-usb DEVICE  root only, from eitri-admin-usb@.service
+
+Two accounts can log in. "eitri" runs the services and gets a shell, never root: a flaw in a program it
+runs can reach anything "eitri" can do, so "eitri" must not be able to make itself root. "admin" is the
+owner's way to root (sudo for every command; SSH key only, no password), and keys for it can only come
+from something a compromised service cannot fake:
+
+    - the first-setup window: data-init opens it once, on the first boot of a fresh /data
+      (/data/eitri/state/access/admin-window, root's), and finishing setup closes it for good;
+    - a USB stick with eitri-admin-keys.txt on it, plugged into the printer: physical presence;
+    - an existing administrator, who is root and can edit the key file.
 
 set-key
     Adds the key to the keys of the "eitri" user (up to 8; the same key twice is a no-op). The line is
@@ -23,12 +36,27 @@ set-key
 
 set-password
     Sets the account's password (8 to 128 characters; yescrypt, or SHA-512 where that is not available).
-    A password gives general sudo (the account's own password is what the broad sudo rule asks for) and a
-    console login. sshd keeps refusing passwords unless --ssh-login is given: password login over the
+    A password gives a console login, not root: "eitri" has no general sudo rule (that is what the
+    "admin" account is for). sshd keeps refusing passwords unless --ssh-login is given: password login over the
     network is a separate, explicit choice. Calling set-password again replaces both settings.
 
 disable
-    Deletes the keys and the password and turns password login off again.
+    Deletes the keys and the password and turns password login off again. Administrator keys are not
+    touched: "eitri" can neither add nor remove them outside the first-setup window.
+
+admin-set-key
+    Adds one key for "admin", the same parsing as set-key, but only while the first-setup window is open;
+    afterwards it refuses with exit 3. The keys live in /data/eitri/state/access/admin_authorized_keys,
+    the only key file sshd reads for "admin" (etc/ssh/sshd_config, Match User admin).
+
+admin-close-window
+    Closes the window (idempotent). Closing can only take something away, so it needs no protection.
+
+admin-import-usb DEVICE
+    Run by systemd as root when a FAT-formatted USB stick appears (udev: 61-eitri-admin-usb.rules), never
+    through sudo. Mounts DEVICE read-only, nosuid, nodev, noexec, reads eitri-admin-keys.txt from its top
+    directory (one OpenSSH public key per line; blank lines and # comments are skipped), adds the keys
+    for "admin" and unmounts. A stick without that file is left alone.
 
 What changes /etc (the password hash in /etc/shadow, and telling sshd to re-read its configuration) is
 done by "apply", which only systemd runs, from the unit eitri-access.service: the callers of this tool
@@ -86,6 +114,12 @@ F_MANAGED = STATE / "shadow-managed"
 F_GEN = STATE / "generation"
 F_APPLIED = STATE / "applied"
 F_LOCK = STATE / "lock"
+F_ADMIN_KEYS = STATE / "admin_authorized_keys"
+F_ADMIN_WINDOW = STATE / "admin-window"
+USB_KEY_FILE = "eitri-admin-keys.txt"
+MAX_USB_FILE = 65536
+MOUNT = os.environ["EITRI_ACCESS_MOUNT"] if _TESTING and os.environ.get("EITRI_ACCESS_MOUNT") else "mount"
+UMOUNT = os.environ["EITRI_ACCESS_UMOUNT"] if _TESTING and os.environ.get("EITRI_ACCESS_UMOUNT") else "umount"
 
 KEY_TYPES = {
     # type: number of length-prefixed fields in the blob, the first being the type itself
@@ -182,10 +216,10 @@ def fingerprint(b64: str) -> str:
     return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
 
 
-def read_keys() -> list[tuple[str, str, str]]:
+def read_keys(path: Path = F_KEYS) -> list[tuple[str, str, str]]:
     keys = []
     try:
-        lines = F_KEYS.read_text().splitlines()
+        lines = path.read_text().splitlines()
     except FileNotFoundError:
         return keys
     for line in lines:
@@ -330,18 +364,23 @@ def wait_applied(gen: int) -> bool:
 
 # --- commands -------------------------------------------------------------------------------------------
 
-def status() -> dict:
+def key_list(path: Path) -> list[dict]:
     keys = []
     try:
-        for ktype, b64, comment in read_keys():
+        for ktype, b64, comment in read_keys(path):
             keys.append({"type": ktype, "fingerprint": fingerprint(b64), "comment": comment})
     except Invalid:
         pass  # a damaged file shows as no keys; set-key / disable rewrite it
+    return keys
+
+
+def status() -> dict:
     gen, done = read_int(F_GEN), read_int(F_APPLIED)
     return {
         "ok": True,
         "schema": 1,
-        "keys": keys,
+        "keys": key_list(F_KEYS),
+        "admin": {"window_open": F_ADMIN_WINDOW.exists(), "keys": key_list(F_ADMIN_KEYS)},
         "password": {"set": F_HASH.exists(), "ssh_login": F_SSH.exists()},
         "generation": gen,
         "applied": done,
@@ -349,20 +388,105 @@ def status() -> dict:
     }
 
 
+def add_keys(path: Path, new: list[tuple[str, str, str]]) -> int:
+    """Add keys to a key file (the caller holds the lock). Returns how many were new."""
+    keys = read_keys(path)
+    added = 0
+    for ktype, b64, comment in new:
+        if any(b == b64 and t == ktype for t, b, _ in keys):
+            continue
+        if len(keys) >= MAX_KEYS:
+            raise Invalid(f"at most {MAX_KEYS} keys can be added; remove one first")
+        keys.append((ktype, b64, comment))
+        added += 1
+    if added:
+        write_atomic(path, "".join(f"{t} {b}{' ' + c if c else ''}\n" for t, b, c in keys), 0o644)
+    return added
+
+
 def cmd_set_key(args: list[str]) -> int:
     if args:
         raise Invalid("set-key takes no arguments; the key is read from stdin")
-    ktype, b64, comment = parse_key(read_stdin(MAX_KEY_INPUT))
+    key = parse_key(read_stdin(MAX_KEY_INPUT))
     with Locked():
-        keys = read_keys()
-        if any(b == b64 and t == ktype for t, b, _ in keys):
-            emit(status() | {"changed": False})
-            return 0
-        if len(keys) >= MAX_KEYS:
-            raise Invalid(f"at most {MAX_KEYS} keys can be added; run disable first")
-        keys.append((ktype, b64, comment))
-        write_atomic(F_KEYS, "".join(f"{t} {b}{' ' + c if c else ''}\n" for t, b, c in keys), 0o644)
-    emit(status() | {"changed": True})
+        added = add_keys(F_KEYS, [key])
+    emit(status() | {"changed": bool(added)})
+    return 0
+
+
+def cmd_admin_set_key(args: list[str]) -> int:
+    if args:
+        raise Invalid("admin-set-key takes no arguments; the key is read from stdin")
+    key = parse_key(read_stdin(MAX_KEY_INPUT))
+    with Locked():
+        # Checked under the lock: admin-close-window takes the same lock, so a key cannot slip in after it.
+        if not F_ADMIN_WINDOW.exists():
+            raise Invalid("administrator keys can only be added during first setup, or with a USB stick "
+                          "holding eitri-admin-keys.txt (docs/INSTALL.md)")
+        added = add_keys(F_ADMIN_KEYS, [key])
+    emit(status() | {"changed": bool(added)})
+    return 0
+
+
+def cmd_admin_close_window(args: list[str]) -> int:
+    if args:
+        raise Invalid("admin-close-window takes no arguments")
+    with Locked():
+        existed = F_ADMIN_WINDOW.exists()
+        F_ADMIN_WINDOW.unlink(missing_ok=True)
+    emit(status() | {"changed": existed})
+    return 0
+
+
+def usb_keys(text: str) -> list[tuple[str, str, str]]:
+    keys = []
+    for number, line in enumerate(text.splitlines(), 1):
+        line = line.strip().lstrip("\ufeff")
+        if not line or line.startswith("#"):
+            continue
+        try:
+            keys.append(parse_key(line))
+        except Invalid as exc:
+            raise Invalid(f"{USB_KEY_FILE} line {number}: {exc}") from None
+    if not keys:
+        raise Invalid(f"{USB_KEY_FILE} holds no key")
+    return keys
+
+
+def cmd_admin_import_usb(args: list[str]) -> int:
+    if len(args) != 1 or not re.fullmatch(r"/dev/sd[a-z]{1,2}[0-9]{0,2}", args[0]):
+        raise Invalid("usage: admin-import-usb /dev/sdXN")
+    device = args[0]
+    mnt = Path(tempfile.mkdtemp(prefix="eitri-admin-usb."))
+    try:
+        mounted = subprocess.run([MOUNT, "-t", "vfat", "-o", "ro,nosuid,nodev,noexec", device, str(mnt)],
+                                 capture_output=True, text=True, timeout=30)
+        if mounted.returncode != 0:
+            raise Failed(f"cannot mount {device} read-only as FAT")
+        try:
+            path = mnt / USB_KEY_FILE
+            if not path.is_file() or path.is_symlink():
+                emit(status() | {"changed": False, "note": f"no {USB_KEY_FILE} on {device}"})
+                return 0
+            with open(path, "rb") as fh:
+                data = fh.read(MAX_USB_FILE + 1)
+            if len(data) > MAX_USB_FILE:
+                raise Invalid(f"{USB_KEY_FILE} is larger than {MAX_USB_FILE} bytes")
+            keys = usb_keys(data.decode("utf-8", errors="strict"))
+        finally:
+            subprocess.run([UMOUNT, str(mnt)], capture_output=True, timeout=30)
+    except UnicodeDecodeError:
+        raise Invalid(f"{USB_KEY_FILE} is not UTF-8 text") from None
+    finally:
+        try:
+            mnt.rmdir()
+        except OSError:
+            pass
+    with Locked():
+        added = add_keys(F_ADMIN_KEYS, keys)
+    for ktype, b64, _ in keys:
+        print(f"eitri-access: administrator key {fingerprint(b64)} ({ktype}) from {device}", file=sys.stderr)
+    emit(status() | {"changed": bool(added), "added": added})
     return 0
 
 
@@ -490,6 +614,9 @@ def apply_state() -> int:
 
 COMMANDS = {
     "set-key": cmd_set_key,
+    "admin-set-key": cmd_admin_set_key,
+    "admin-close-window": cmd_admin_close_window,
+    "admin-import-usb": cmd_admin_import_usb,
     "set-password": cmd_set_password,
     "disable": cmd_disable,
 }
@@ -497,7 +624,8 @@ COMMANDS = {
 
 def main(argv: list[str]) -> int:
     if not argv or argv[0] not in (*COMMANDS, "status", "apply"):
-        print(__doc__.split("\n\n")[0] + "\nusage: eitri-access set-key | set-password [--ssh-login] | disable | status",
+        print(__doc__.split("\n\n")[0] + "\nusage: eitri-access set-key | set-password [--ssh-login] | disable | status"
+              " | admin-set-key | admin-close-window | admin-import-usb DEVICE",
               file=sys.stderr)
         return 2
     cmd, args = argv[0], argv[1:]

@@ -279,7 +279,8 @@ def test_disable_on_a_fresh_system_is_harmless(box):
 def test_status_needs_no_state_and_no_privileges(box):
     result = access(box, "status")
     assert result.returncode == 0
-    assert doc(result) == {"ok": True, "schema": 1, "keys": [], "password": {"set": False, "ssh_login": False},
+    assert doc(result) == {"ok": True, "schema": 1, "keys": [], "admin": {"window_open": False, "keys": []},
+                           "password": {"set": False, "ssh_login": False},
                            "generation": 0, "applied": 0, "pending": False}
 
 
@@ -457,3 +458,106 @@ def test_python_in_the_helper_scripts_has_no_third_party_imports():
         mods |= {n.module.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module and n.level == 0}
         mods -= {"eitri_configurator"}  # the CLI imports the image's own copy on purpose
         assert mods <= set(sys.stdlib_module_names), (path.name, mods - set(sys.stdlib_module_names))
+
+
+# --- the administrator account -------------------------------------------------------------------------
+
+def open_window(box):
+    box["state"].mkdir(parents=True, exist_ok=True)
+    (box["state"] / "admin-window").write_text("")
+
+
+def test_admin_key_is_refused_outside_the_first_setup_window(box):
+    result = access(box, "admin-set-key", stdin=ED25519 + "\n")
+    assert result.returncode == 3
+    assert "first setup" in doc(result)["error"]
+    assert not (box["state"] / "admin_authorized_keys").exists()
+
+
+def test_admin_key_is_added_while_the_window_is_open(box):
+    open_window(box)
+    result = access(box, "admin-set-key", stdin=ED25519 + "\n")
+    assert result.returncode == 0, result.stderr
+    st = doc(result)
+    assert st["admin"]["window_open"] is True and len(st["admin"]["keys"]) == 1
+    assert st["keys"] == []                                         # not a key for "eitri"
+    stored = (box["state"] / "admin_authorized_keys").read_text()
+    assert stored == ED25519 + "\n"
+    assert (box["state"] / "admin_authorized_keys").stat().st_mode & 0o777 == 0o644
+
+
+def test_closing_the_window_ends_admin_keys_for_good(box):
+    open_window(box)
+    assert access(box, "admin-set-key", stdin=ED25519 + "\n").returncode == 0
+    closed = access(box, "admin-close-window")
+    assert closed.returncode == 0 and doc(closed)["changed"] is True
+    assert doc(closed)["admin"]["window_open"] is False
+    assert access(box, "admin-set-key", stdin=ED25519_B + "\n").returncode == 3
+    again = access(box, "admin-close-window")                      # idempotent
+    assert again.returncode == 0 and doc(again)["changed"] is False
+    assert len(doc(access(box, "status"))["admin"]["keys"]) == 1    # closing keeps what was added
+
+
+def test_disable_never_touches_the_administrator_keys(box):
+    open_window(box)
+    access(box, "admin-set-key", stdin=ED25519 + "\n")
+    access(box, "set-key", stdin=ED25519_B + "\n")
+    assert access(box, "disable").returncode == 0
+    st = doc(access(box, "status"))
+    assert st["keys"] == [] and len(st["admin"]["keys"]) == 1
+
+
+def test_admin_key_parsing_is_as_strict_as_for_eitri(box):
+    open_window(box)
+    result = access(box, "admin-set-key", stdin='command="sh" ' + ED25519 + "\n")
+    assert result.returncode == 3
+
+
+@pytest.fixture
+def stick(box):
+    """A stand-in USB stick: mount copies its contents to the mount point, umount empties it."""
+    src = box["tmp"] / "stick"
+    src.mkdir()
+    log = box["tmp"] / "mount.log"
+    mount = box["tmp"] / "mount"
+    mount.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\nfor last; do :; done\ncp -r "{src}/." "$last"/\n')
+    umount = box["tmp"] / "umount"
+    umount.write_text(f'#!/bin/sh\necho umount "$@" >> "{log}"\nrm -rf "$1"/* "$1"/.[!.]* 2>/dev/null\nexit 0\n')
+    mount.chmod(0o755)
+    umount.chmod(0o755)
+    env = {"EITRI_ACCESS_MOUNT": str(mount), "EITRI_ACCESS_UMOUNT": str(umount)}
+    return {"src": src, "env": env, "log": log}
+
+
+def test_usb_stick_adds_administrator_keys_without_the_window(box, stick):
+    (stick["src"] / "eitri-admin-keys.txt").write_text("# my laptop\n\n" + ED25519 + "\n" + ED25519_B + "\n")
+    result = access(box, "admin-import-usb", "/dev/sda1", env=stick["env"])
+    assert result.returncode == 0, result.stderr
+    assert doc(result)["added"] == 2 and len(doc(result)["admin"]["keys"]) == 2
+    mounted = stick["log"].read_text()
+    assert "-o ro,nosuid,nodev,noexec" in mounted and "/dev/sda1" in mounted and "umount" in mounted
+
+
+def test_usb_stick_without_the_key_file_is_left_alone(box, stick):
+    (stick["src"] / "photos.txt").write_text("nothing here")
+    result = access(box, "admin-import-usb", "/dev/sda1", env=stick["env"])
+    assert result.returncode == 0 and doc(result)["changed"] is False
+    assert not (box["state"] / "admin_authorized_keys").exists()
+
+
+@pytest.mark.parametrize("content", ['command="sh" ' + ED25519 + "\n", "not a key\n"])
+def test_usb_key_file_with_anything_but_keys_is_refused_whole(box, stick, content):
+    (stick["src"] / "eitri-admin-keys.txt").write_text(ED25519 + "\n" + content)
+    result = access(box, "admin-import-usb", "/dev/sda1", env=stick["env"])
+    assert result.returncode == 3
+    assert not (box["state"] / "admin_authorized_keys").exists()
+
+
+def test_usb_key_file_with_only_comments_is_refused(box, stick):
+    (stick["src"] / "eitri-admin-keys.txt").write_text("# put your key here\n")
+    assert access(box, "admin-import-usb", "/dev/sda1", env=stick["env"]).returncode == 3
+
+
+@pytest.mark.parametrize("device", ["/dev/mmcblk0p1", "/data/x", "/dev/sda1;id", "sda1"])
+def test_usb_import_takes_only_a_usb_disk_device(box, stick, device):
+    assert access(box, "admin-import-usb", device, env=stick["env"]).returncode == 3

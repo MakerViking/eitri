@@ -274,6 +274,8 @@ async def reset(request: web.Request) -> web.Response:
 async def complete(request: web.Request) -> web.Response:
     ctx = ctx_of(request)
     ctx.state.update(completed=True, step="done")
+    # First setup is over, so is the window for administrator keys (one-way; a USB stick adds them later).
+    await ctx.access.close_admin_window()
     # Lock the configurator: other sessions end, this browser keeps a few minutes of grace, and pairing
     # closes until `eitri-configurator unlock` is run on the printer.
     ctx.auth.complete(request["session_token"])
@@ -392,10 +394,15 @@ async def access_status(request: web.Request) -> web.Response:
 
 async def access_set_key(request: web.Request) -> web.Response:
     ctx = ctx_of(request)
-    key = access_mod.parse_public_key((await body(request)).get("key"))
-    status = await ctx.access.set_key(key)
+    data = await body(request)
+    key = access_mod.parse_public_key(data.get("key"))
+    admin = data.get("admin", False)
+    if not isinstance(admin, bool):
+        raise opts.ValidationError({"admin": "must be true or false"})
+    status = await (ctx.access.set_admin_key(key) if admin else ctx.access.set_key(key))
     # The key itself is never echoed back, only what `ssh-keygen -l` would print for it.
-    return web.json_response({"ok": True, "added": {"type": key.type, "fingerprint": key.fingerprint, "comment": key.comment}, "status": status})
+    return web.json_response({"ok": True, "added": {"type": key.type, "fingerprint": key.fingerprint, "comment": key.comment,
+                                                    "user": access_mod.ADMIN_USER if admin else access_mod.SSH_USER}, "status": status})
 
 
 async def access_set_password(request: web.Request) -> web.Response:

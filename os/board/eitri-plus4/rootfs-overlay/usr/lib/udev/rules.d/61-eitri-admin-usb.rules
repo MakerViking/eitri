@@ -1,0 +1,4 @@
+# A FAT-formatted USB stick may carry eitri-admin-keys.txt: SSH keys for the "admin" account (root).
+# Plugging a stick into the printer is physical presence, which no program on the printer can fake.
+# eitri-admin-usb@.service mounts it read-only, reads only that file, and unmounts it again.
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{ID_FS_TYPE}=="vfat", TAG+="systemd", ENV{SYSTEMD_WANTS}+="eitri-admin-usb@%k.service"

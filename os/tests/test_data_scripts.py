@@ -201,6 +201,7 @@ def data_env(tmp_path):
         "EITRI_FACTORY": str(factory),
         "EITRI_BOOTFS": str(bootfs),
         "EITRI_OWNER": user,
+        "EITRI_ADMIN": user,
         "EITRI_NO_RESIZE": "1",
         "EITRI_CONFIGURATOR_SRC": str(tmp_path / "image-configurator"),
     }
@@ -228,6 +229,20 @@ def test_data_init_builds_the_whole_layout(data_env):
     assert (data / "eitri/state/layout-version").read_text().strip() == "1"
     assert (data / "eitri/state/first-boot").is_file()
     assert stat.S_IMODE((data / "eitri/home").stat().st_mode) == 0o750
+    assert stat.S_IMODE((data / "eitri/admin").stat().st_mode) == 0o700
+    window = data / "eitri/state/access/admin-window"
+    assert window.is_file() and stat.S_IMODE(window.stat().st_mode) == 0o644
+
+
+def test_data_init_opens_the_admin_window_on_the_first_boot_only(data_env):
+    data = Path(data_env["EITRI_DATA"])
+    data.mkdir()
+    Path(data_env["EITRI_CONFIGURATOR_SRC"]).mkdir()
+    assert run([LIBEXEC / "data-init"], env=data_env).returncode == 0
+    window = data / "eitri/state/access/admin-window"
+    window.unlink()                                       # setup finished: the configurator closed it
+    assert run([LIBEXEC / "data-init"], env=data_env).returncode == 0
+    assert not window.exists(), "a later boot must never reopen the first-setup window"
 
 
 def test_data_init_converts_the_old_ui_link_and_keeps_existing_flavor_and_channel(data_env):

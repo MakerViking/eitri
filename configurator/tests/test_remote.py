@@ -2,6 +2,7 @@
 and the retire-when-locked behaviour."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -242,6 +243,39 @@ def test_disable_needs_confirm_and_removes_everything(srv):
     assert srv.get("/api/access")[1]["enabled"]
     st, body = srv.post("/api/access/disable", {"confirm": True})
     assert st == 200 and body["status"] == {**body["status"], "keys": 0, "password": False, "enabled": False}
+
+
+def test_admin_key_goes_to_the_admin_account_during_first_setup(srv):
+    st, body = srv.get("/api/access")
+    assert body["admin"] == {"window_open": True, "keys": 0, "fingerprints": [], "user": "admin"}
+    key = ed25519(7, "owner@laptop")
+    st, body = srv.post("/api/access/key", {"key": key, "admin": True})
+    assert st == 200 and body["added"]["user"] == "admin"
+    assert body["status"]["admin"]["keys"] == 1 and body["status"]["admin"]["fingerprints"] == [fp_of(key)]
+    assert body["status"]["keys"] == 0                                   # not a key for the service account
+    assert key.split()[1] not in json.dumps(body)
+    assert srv.post("/api/access/key", {"key": key, "admin": "yes"})[0] == 422
+
+
+def test_completing_setup_closes_the_admin_window_for_good(srv):
+    srv.post("/api/access/key", {"key": ed25519(7), "admin": True})
+    srv.post("/api/complete")
+    status = asyncio.run(srv.ctx.access.status())                     # read directly: the configurator is locked now
+    assert status["admin"]["window_open"] is False and status["admin"]["keys"] == 1
+
+
+def test_admin_key_is_refused_once_the_window_is_closed(srv):
+    asyncio.run(srv.ctx.access.close_admin_window())
+    st, body = srv.post("/api/access/key", {"key": ed25519(8), "admin": True})
+    assert st == 422 and "first setup" in body["fields"]["key"]
+    assert srv.get("/api/access")[1]["admin"]["keys"] == 0
+
+
+def test_disable_keeps_the_administrator_keys(srv):
+    srv.post("/api/access/key", {"key": ed25519(7), "admin": True})
+    srv.post("/api/access/key", {"key": ed25519(9)})
+    st, body = srv.post("/api/access/disable", {"confirm": True})
+    assert st == 200 and body["status"]["keys"] == 0 and body["status"]["admin"]["keys"] == 1
 
 
 def test_reset_does_not_touch_remote_access(srv):
