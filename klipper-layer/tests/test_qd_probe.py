@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
 """qd_probe: the prepare_gcode hook runs once per probing session, fails closed."""
 import pytest
 
