@@ -41,6 +41,12 @@ def _slot_device_matches(device: str, part: str, partuuid: str) -> bool:
     return m is not None and part.isdigit() and int(m.group(1)) == int(part)
 
 
+# `python -I -c _RUN_MODULE <dir> <module> args...` runs <module> as __main__ with <dir> first on sys.path, and nothing
+# from the working directory, PYTHONPATH or the user site.
+_RUN_MODULE = ("import runpy, sys; sys.path.insert(0, sys.argv[1]); m = sys.argv[2]; del sys.argv[1:3]; "
+               "runpy.run_module(m, run_name='__main__', alter_sys=True)")
+
+
 @dataclass
 class Config:
     manifest_url: str = DEFAULT_MANIFEST_URL
@@ -469,7 +475,13 @@ class Updater:
                 recovery="Run `eitri-mcuflash plan` for the preflight table. The MCUs were not touched.")
 
     def _mcuflash(self, args: List[str], want_ok: bool = False, with_status: bool = False):
-        argv = [sys.executable, "-m", "eitri_mcuflash", args[0], "--json", "--stop-services",
+        # `-m eitri_mcuflash` must find the same copy we imported: matters when running from a checkout (bin/eitri-update).
+        # The child runs isolated (-I): this process may be root through sudo, started from a directory the caller owns,
+        # and a plain `python -m` would put that directory first on sys.path and import a planted eitri_mcuflash. The
+        # package directory is passed as an argument instead of through PYTHONPATH, which -I ignores.
+        import eitri_mcuflash
+        pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(eitri_mcuflash.__file__)))
+        argv = [sys.executable, "-I", "-c", _RUN_MODULE, pkg_parent, "eitri_mcuflash", args[0], "--json", "--stop-services",
                 "--flavor", self.state.flavor, "--firmware-root", self.cfg.mcu_firmware_root, "--state-dir", self.cfg.mcu_state_dir] + args[1:]
         result: Dict[str, Any] = {}
         self._mcu_partial: List[str] = []
@@ -485,11 +497,7 @@ class Updater:
                 ev["component"] = "mcuflash"
                 self.events.emit(ev.pop("type"), **{k: v for k, v in ev.items() if k not in ("schema", "ts", "run", "component")})
 
-        # `-m eitri_mcuflash` must find the same copy we imported: matters when running from a checkout (bin/eitri-update).
-        import eitri_mcuflash
-        pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(eitri_mcuflash.__file__)))
-        pythonpath = os.pathsep.join(p for p in (pkg_parent, os.environ.get("PYTHONPATH", "")) if p)
-        res = self.runner(argv, on_line=on_line, env={"PYTHONPATH": pythonpath})
+        res = self.runner(argv, on_line=on_line)
         if want_ok and (res.returncode != 0 or not result.get("ok")):
             self._mcu_partial = sorted(((result.get("data") or {}).get("results") or {}).keys())
             raise FlashError("MCU flashing failed: %s" % (result.get("msg") or res.output.strip().splitlines()[-1:] or "no result"),

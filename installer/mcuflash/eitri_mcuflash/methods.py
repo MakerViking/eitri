@@ -185,7 +185,7 @@ class KatapultMethod:
             raise FlashError("flashtool backend requested but %s does not exist" % tool, code="no_flashtool", board=self.board.name)
         if not have:
             return False
-        check = self.ctx.runner([sys.executable, "-c", "import serial"])
+        check = self.ctx.runner([sys.executable, "-I", "-c", "import serial"])   # -I: never import from the cwd as root
         if check.returncode != 0:
             if backend == "flashtool":
                 raise FlashError("flashtool.py needs pyserial, which is not installed", code="no_flashtool", board=self.board.name)
