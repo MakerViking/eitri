@@ -46,7 +46,7 @@ STATE_DIR="${EITRI_STATE_DIR:-$R/var/lib/eitri-install}"
 DISK="${EITRI_DISK:-/dev/mmcblk1}"
 # Partition device names: /dev/mmcblk1p2, but /dev/vda2 or /dev/sda2 for a disk whose name does not end in a digit.
 PART_PREFIX="$([[ "$DISK" =~ [0-9]$ ]] && echo p || true)"
-DEFAULT_BUNDLE_URL="${EITRI_BUNDLE_URL:-https://github.com/eitri-fw/eitri/releases/latest/download/}"
+DEFAULT_BUNDLE_URL="${EITRI_BUNDLE_URL:-https://github.com/MakerViking/eitri/releases/latest/download/}"
 CONFIRM_PHRASE="CONVERT"
 STOCK_SERVICES=(klipper.service moonraker.service makerbase-client.service QIDILink-client.service webcamd.service)
 

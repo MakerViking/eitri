@@ -459,7 +459,9 @@ def cmd_admin_import_usb(args: list[str]) -> int:
     device = args[0]
     mnt = Path(tempfile.mkdtemp(prefix="eitri-admin-usb."))
     try:
-        mounted = subprocess.run([MOUNT, "-t", "vfat", "-o", "ro,nosuid,nodev,noexec", device, str(mnt)],
+        # iocharset: without it the kernel's FAT default applies, and every stick failed to mount on the printer
+        # ("IO charset ascii not found", 2026-10-24); the boot partition's mount unit sets the same.
+        mounted = subprocess.run([MOUNT, "-t", "vfat", "-o", "ro,nosuid,nodev,noexec,iocharset=iso8859-1", device, str(mnt)],
                                  capture_output=True, text=True, timeout=30)
         if mounted.returncode != 0:
             raise Failed(f"cannot mount {device} read-only as FAT")

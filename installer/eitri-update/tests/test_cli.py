@@ -39,6 +39,21 @@ def test_failure_exit_codes_and_result_event(tmp_path, capsys):
     assert code == 3 and last["ok"] is False and last["data"]["code"] == "up_to_date"
 
 
+def test_a_check_that_cannot_reach_the_channel_is_not_a_failure(tmp_path, capsys):
+    # A LAN-only printer, or a channel with nothing published yet (the printer's first boot, 2026-10-24):
+    # the timer's unit must not fail every boot. Exit 3 is in its SuccessExitStatus; upgrade still fails with 1.
+    rig = Rig(tmp_path)
+    url = rig.channel_url()
+    path = url[len("file://"):] if url.startswith("file://") else url
+    import os
+    os.unlink(path)
+    code, out, _ = run_cli(rig, ["--json", "check"], capsys)
+    last = json.loads(out.splitlines()[-1])
+    assert code == 3 and last["ok"] is False and last["data"]["code"] == "network"
+    code, _, _ = run_cli(rig, ["--json", "upgrade", "--yes"], capsys)
+    assert code == 1
+
+
 def test_status_and_confirm(tmp_path, capsys):
     rig = Rig(tmp_path)
     rig.bootctl.update(eitri_state_A="unknown")

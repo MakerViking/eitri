@@ -535,7 +535,8 @@ def test_usb_stick_adds_administrator_keys_without_the_window(box, stick):
     assert result.returncode == 0, result.stderr
     assert doc(result)["added"] == 2 and len(doc(result)["admin"]["keys"]) == 2
     mounted = stick["log"].read_text()
-    assert "-o ro,nosuid,nodev,noexec" in mounted and "/dev/sda1" in mounted and "umount" in mounted
+    # iocharset: the kernel's FAT default is not built in; without it no stick mounted on the printer
+    assert "-o ro,nosuid,nodev,noexec,iocharset=iso8859-1" in mounted and "/dev/sda1" in mounted and "umount" in mounted
 
 
 def test_usb_stick_without_the_key_file_is_left_alone(box, stick):

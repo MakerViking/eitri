@@ -255,7 +255,7 @@ def spdx(comps: list[dict], version: str, ts: str, serial: str) -> dict:
     return {
         "spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "SPDXID": "SPDXRef-DOCUMENT",
         "name": f"eitri-plus4-{version}",
-        "documentNamespace": f"https://github.com/eitri-fw/eitri/sbom/{version}/{serial}",
+        "documentNamespace": f"https://github.com/MakerViking/eitri/sbom/{version}/{serial}",
         "creationInfo": {"created": ts, "creators": ["Tool: eitri-make-sbom"]},
         "packages": pk, "relationships": rel,
         "hasExtractedLicensingInfos": [{

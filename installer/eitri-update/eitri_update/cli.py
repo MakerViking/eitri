@@ -176,6 +176,10 @@ def main(argv: Optional[List[str]] = None, *, runner: Runner = run, opener=fetch
     except FlashError as exc:
         events.error(str(exc))
         events.result(False, msg=exc.message, data=exc.to_dict())
+        if args.cmd == "check" and exc.code == "network":
+            # An offline (LAN-only) printer, or a channel with nothing published yet, is not a fault of this system:
+            # the periodic check should not leave a failed unit behind every boot. The result is still in the log.
+            return 3
         return 3 if exc.code in ("up_to_date", "downgrade", "upstream_mode", "printing") else 1
     finally:
         events.close()

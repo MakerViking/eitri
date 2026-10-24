@@ -117,7 +117,7 @@ class MoonrakerClient:
                     "client_name": "klarity",
                     "version": __version__,
                     "type": "other",
-                    "url": "https://github.com/eitri-fw/eitri",
+                    "url": "https://github.com/MakerViking/eitri",
                 },
             )
         except MoonrakerError as exc:

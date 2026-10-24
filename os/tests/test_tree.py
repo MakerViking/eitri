@@ -533,3 +533,15 @@ def test_the_cpu_and_logic_rails_have_the_stock_ramp_delay():
         assert block, rail
         assert "regulator-ramp-delay = <12500>;" in block.group(1), rail
         assert f"regulator-min-microvolt = <{minimum}>;" in block.group(1), rail
+
+
+def test_the_fat_default_charset_is_one_the_kernel_has():
+    # "IO charset ascii not found": every FAT mount without iocharset= failed (the admin-key USB stick, 2026-10-24).
+    frag = (BOARD / "linux.fragment").read_text()
+    m = re.search(r'^CONFIG_FAT_DEFAULT_IOCHARSET="([^"]+)"$', frag, re.M)
+    assert m, "set the FAT default charset explicitly"
+    built = {"iso8859-1": "CONFIG_NLS_ISO8859_1=y", "utf8": "CONFIG_NLS_UTF8=y", "ascii": "CONFIG_NLS_ASCII=y"}
+    assert built[m.group(1)] in frag.splitlines()
+    unit = (UNIT_DIR / "eitri-update-check.service").read_text() if (UNIT_DIR / "eitri-update-check.service").exists() else \
+        (REPO_ROOT / "installer/eitri-update/systemd/eitri-update-check.service").read_text()
+    assert re.search(r"^SuccessExitStatus=3$", unit, re.M)

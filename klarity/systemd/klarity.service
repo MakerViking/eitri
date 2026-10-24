@@ -1,6 +1,6 @@
 [Unit]
 Description=Klarity - open screen daemon for the QIDI X-Plus 4 touchscreen
-Documentation=https://github.com/eitri-fw/eitri/tree/main/klarity
+Documentation=https://github.com/MakerViking/eitri/tree/main/klarity
 After=network.target moonraker.service
 Wants=moonraker.service
 ConditionPathExists=/data/eitri/klarity/venv/bin/klarity

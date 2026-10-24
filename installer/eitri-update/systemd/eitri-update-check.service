@@ -7,3 +7,6 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/eitri-update --json --events-file /data/eitri/logs/update.jsonl check
+# 3: the check could not reach the channel (offline printer, or nothing published yet), or there is nothing to do.
+# Logged in update.jsonl; not a failed system.
+SuccessExitStatus=3

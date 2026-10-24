@@ -22,7 +22,7 @@ from .manifest import Bundle, Manifest, parse_manifest, plan_flavor_switch, plan
 from .rauc import RaucClient
 from .state import State
 
-DEFAULT_MANIFEST_URL = "https://github.com/eitri-fw/eitri/releases/latest/download/manifest.json"
+DEFAULT_MANIFEST_URL = "https://github.com/MakerViking/eitri/releases/latest/download/manifest.json"
 # Only the keys that ship in the (RAUC-verified) OS image are trusted by default.  /data is writable by every service
 # on the printer, so a key directory there is opt-in: name it with `key_dir=` in /etc/eitri/update.conf.
 DEFAULT_KEY_DIRS = ["/usr/share/eitri/keys"]

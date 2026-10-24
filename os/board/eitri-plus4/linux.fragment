@@ -126,7 +126,9 @@ CONFIG_EXT4_FS=y
 CONFIG_EXT4_FS_POSIX_ACL=y
 CONFIG_EXT4_FS_SECURITY=y
 CONFIG_VFAT_FS=y
-CONFIG_FAT_DEFAULT_IOCHARSET="ascii"
+# The FAT default charset must be one that is built in (NLS_ASCII is not), or a mount without
+# iocharset= fails with "IO charset ascii not found" (the admin-key USB import did, 2026-10-24).
+CONFIG_FAT_DEFAULT_IOCHARSET="iso8859-1"
 CONFIG_NLS_CODEPAGE_437=y
 CONFIG_NLS_ISO8859_1=y
 CONFIG_TMPFS=y
