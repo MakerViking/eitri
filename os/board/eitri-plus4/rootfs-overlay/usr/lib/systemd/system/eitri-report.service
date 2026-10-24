@@ -1,0 +1,25 @@
+[Unit]
+Description=Collect a scrubbed diagnostics report into the Logs folder
+Documentation=file:///usr/share/doc/eitri/os/README.md
+# /usr/libexec/eitri/eitri-report explains what the report holds and what it removes. It runs as root
+# because the journal is root's, never with network access (nothing is sent anywhere), and at idle
+# priority so a report taken during a print cannot disturb Klipper.
+After=eitri-data-init.service eitri-journal.service
+Wants=eitri-data-init.service
+RequiresMountsFor=/data
+# Started only by eitri-report.path, never at boot, so it has no [Install] section.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/eitri/eitri-report
+TimeoutStartSec=5min
+PrivateNetwork=yes
+ProtectSystem=strict
+ReadWritePaths=/data/printer_data/logs /data/printer_data/comms
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+Nice=15
+CPUWeight=20
+IOSchedulingClass=idle
+

@@ -7,9 +7,16 @@ Documentation=file:///usr/share/doc/eitri/os/README.md
 # the next power cycle. This flush runs after tmpfiles has linked /var/log/journal to
 # /data/eitri/state/log/journal (tmpfiles.d/eitri-journal.conf), and hands the journal back
 # to /run before /data is unmounted at shutdown.
+#
+# journald also starts before eitri-etc.service mounts /etc from /data, so it runs under a
+# transient machine id of its own each boot, while /etc/machine-id (and journalctl, which reads
+# only the local machine's files) has the installation's id: every boot would land in a new
+# directory nobody lists. When the two differ, journald is restarted (its socket keeps every
+# message) so it takes the installation's id, then the journal is flushed
+# (/usr/libexec/eitri/journal-persist).
 DefaultDependencies=no
 Wants=systemd-journald.service
-After=systemd-journald.service systemd-journal-flush.service systemd-tmpfiles-setup.service eitri-data-init.service
+After=systemd-journald.service systemd-journal-flush.service systemd-tmpfiles-setup.service eitri-data-init.service eitri-etc.service
 RequiresMountsFor=/data/eitri/state/log/journal
 Before=sysinit.target shutdown.target
 Conflicts=shutdown.target
@@ -18,7 +25,7 @@ ConditionPathIsDirectory=/var/log/journal
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/journalctl --flush
+ExecStart=/usr/libexec/eitri/journal-persist
 ExecStop=/usr/bin/journalctl --relinquish-var
 
 [Install]

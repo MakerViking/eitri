@@ -17,6 +17,8 @@ LIBEXEC_DIR = OVERLAY / "usr/libexec/eitri"
 COMPONENT_UNITS = [REPO_ROOT / "klarity/systemd/klarity.service", REPO_ROOT / "configurator/systemd/eitri-configurator.service"]
 UNITS = sorted(UNIT_DIR.glob("*.service")) + COMPONENT_UNITS
 PATH_UNITS = sorted(UNIT_DIR.glob("*.path"))
+#: Services that only their .path unit starts (on request, never at boot), so they are not enabled.
+PATH_ONLY = {"eitri-report.service"}
 
 
 #: Sandbox options that systemd implements with seccomp. For a unit whose user lacks CAP_SYS_ADMIN, systemd then sets
@@ -40,7 +42,7 @@ def parse(path):
 def test_unit_is_well_formed(unit):
     parser = parse(unit)
     # A template (name@.service) is started per device by udev, never enabled, so it has no [Install].
-    wanted = {"Unit", "Service"} if "@." in unit.name else {"Unit", "Service", "Install"}
+    wanted = {"Unit", "Service"} if "@." in unit.name or unit.name in PATH_ONLY else {"Unit", "Service", "Install"}
     assert wanted <= set(parser.sections()), unit.name
     assert parser["Unit"]["Description"]
 
@@ -77,6 +79,10 @@ def test_all_units_we_ship_are_preset_enabled_unless_optional():
     for unit in UNITS:
         if "@." in unit.name:
             continue  # templates are started by udev (61-eitri-admin-usb.rules), not enabled
+        if unit.name in PATH_ONLY:
+            assert f"Unit={unit.name}" in (UNIT_DIR / unit.name.replace(".service", ".path")).read_text()
+            assert f"enable {unit.name}" not in preset, f"{unit.name} must not run at every boot"
+            continue
         assert f"enable {unit.name}" in preset, f"{unit.name} is not enabled by the preset"
 
 
@@ -101,7 +107,7 @@ def test_no_unit_weakens_heater_safety():
 
 
 # Tools in the overlay that are Python, not sh: the root helpers behind the sudo rules.
-PYTHON_TOOLS = {"eitri-access", "eitri-hosts"}
+PYTHON_TOOLS = {"eitri-access", "eitri-hosts", "eitri-report"}
 
 
 def test_overlay_scripts_are_executable_and_pass_sh_syntax():
@@ -453,9 +459,15 @@ def test_the_journal_is_flushed_to_data_after_tmpfiles_links_it():
     # never sees /var/log/journal and the journal stayed in RAM: the 2026-10-24 host lockup left no log at all.
     unit = parse(UNIT_DIR / "eitri-journal.service")
     after = unit["Unit"]["After"].split()
-    assert {"systemd-tmpfiles-setup.service", "systemd-journal-flush.service", "eitri-data-init.service"} <= set(after)
+    assert {"systemd-tmpfiles-setup.service", "systemd-journal-flush.service", "eitri-data-init.service",
+            "eitri-etc.service"} <= set(after)
+    # journald starts under a transient machine id (before /etc comes from /data); it must take the installation's
+    # id, or each boot lands in a directory journalctl never lists (QEMU smoke, 2026-10-24: "1 boots listed").
+    assert unit["Service"]["ExecStart"] == "/usr/libexec/eitri/journal-persist"
+    helper = (LIBEXEC_DIR / "journal-persist").read_text()
+    assert 'cat /etc/machine-id' in helper and '[ ! -d "/run/log/journal/$id" ]' in helper
+    assert "systemctl restart systemd-journald.service" in helper and helper.rstrip().endswith("exec journalctl --flush")
     assert "/data/eitri/state/log/journal" in unit["Unit"]["RequiresMountsFor"]
-    assert unit["Service"]["ExecStart"] == "/usr/bin/journalctl --flush"
     assert unit["Service"]["ExecStop"] == "/usr/bin/journalctl --relinquish-var"   # off /data before it unmounts
     assert unit["Install"]["WantedBy"] == "sysinit.target"
     preset = (OVERLAY / "usr/lib/systemd/system-preset/50-eitri.preset").read_text().splitlines()

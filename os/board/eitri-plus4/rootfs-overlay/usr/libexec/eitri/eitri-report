@@ -1,0 +1,502 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: Apache-2.0
+"""eitri-report: a scrubbed diagnostics bundle for bug reports. Nothing is sent anywhere.
+
+The report collects what is needed to find a crash or a misbehaving printer: the system journal of this
+and the previous boot (the previous one is where a hang or a crash shows up), the kernel's crash records
+(ramoops, through systemd-pstore), the Klipper and Moonraker logs, the printer configuration and a
+snapshot of the system state. Before anything is written it removes what identifies the printer, its
+owner or their network: IP and MAC addresses, the host name and any extra host names, Wi-Fi network
+names, the board's serial number and machine id, MCU serial numbers, e-mail addresses, credentials in
+URLs, tokens, passwords and keys, the camera password, and the names of the G-code files. What was
+removed is counted in manifest.json; README.txt in the bundle says what it contains.
+
+    eitri-report              collect into /data/printer_data/logs/eitri-report-<UTC time>.tar.gz
+                              (the Logs panel of Fluidd/Mainsail; the newest three are kept). This is
+                              what eitri-report.service runs when the EITRI_REPORT macro asks for one.
+    eitri-report --stdout     write the bundle to standard output (over SSH, as the administrator)
+    eitri-report --list       show what would be collected and removed, without writing a bundle
+
+It runs as root (the journal is root's) and reads and writes the service user's trees on /data without
+following symbolic links, so a link planted there cannot make it read or overwrite another file.
+eitri-report.service runs it without network access.
+
+Exit status: 0 written (or skipped because a report was made under a minute ago); 1 failed.
+"""
+from __future__ import annotations
+
+import datetime
+import io
+import json
+import os
+import re
+import secrets
+import stat
+import subprocess
+import sys
+import tarfile
+import time
+from pathlib import Path
+
+REPORT_FORMAT = 1
+
+# Test hooks, honoured only when this runs unprivileged (systemd starts it as root with a clean environment).
+_TESTING = os.geteuid() != 0
+ROOT = Path(os.environ["EITRI_REPORT_ROOT"]) if _TESTING and os.environ.get("EITRI_REPORT_ROOT") else Path("/")
+PATH = os.environ["EITRI_REPORT_PATH"] if _TESTING and os.environ.get("EITRI_REPORT_PATH") else "/usr/bin:/bin:/usr/sbin:/sbin"
+OWNER_CHECK = not _TESTING
+
+DATA = ROOT / "data"
+LOGS = ("printer_data", "logs")                 # under /data, walked without following links
+COMMS = ("printer_data", "comms")
+REQUEST = "eitri-report.request"
+KEEP = 3
+MIN_INTERVAL_S = 60
+
+MAX_LOG_BYTES = 4 << 20                         # the end of klippy.log is what matters
+MAX_OLD_LOG_BYTES = 2 << 20
+MAX_CONFIG_BYTES = 512 << 10
+MAX_CONFIG_FILES = 24
+JOURNAL_LINES = 20000
+COMMAND_TIMEOUT = 60
+
+#: printer_data/config files that are never included: moonraker.conf can hold API keys and notifier URLs,
+#: eitri-hosts.txt is a list of host names.
+CONFIG_EXCLUDED = {"moonraker.conf", "moonraker.secrets", "eitri-hosts.txt", ".moonraker.uuid"}
+CONFIG_SUFFIXES = (".cfg", ".toml", ".ini")
+
+
+# --- reading the service user's trees without following links -----------------------------------------------
+
+def _open_dir(parts: tuple[str, ...]) -> int:
+    """An fd for /data/<parts...>; every component is opened with O_NOFOLLOW, so none can be a link."""
+    fd = os.open(DATA, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for part in parts:
+            nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            os.close(fd)
+            fd = nfd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _read_at(dir_fd: int, name: str, limit: int) -> tuple[bytes, int] | None:
+    """The last `limit` bytes of a regular file and its full size, or None if it is not a regular file."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        size = st.st_size
+        if size > limit:
+            os.lseek(fd, size - limit, os.SEEK_SET)
+        chunks, left = [], min(size, limit)
+        while left > 0:
+            chunk = os.read(fd, min(left, 1 << 20))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            left -= len(chunk)
+        return b"".join(chunks), size
+    finally:
+        os.close(fd)
+
+
+def read_data_file(parts: tuple[str, ...], name: str, limit: int) -> tuple[bytes, int] | None:
+    try:
+        fd = _open_dir(parts)
+    except OSError:
+        return None
+    try:
+        return _read_at(fd, name, limit)
+    finally:
+        os.close(fd)
+
+
+def list_data_dir(parts: tuple[str, ...]) -> list[str]:
+    try:
+        fd = _open_dir(parts)
+    except OSError:
+        return []
+    try:
+        return sorted(os.listdir(fd))
+    finally:
+        os.close(fd)
+
+
+def read_root_file(path: str, limit: int = 1 << 16) -> str:
+    """A small root-owned system file (identity facts, /proc, /sys); empty if absent."""
+    try:
+        with open(ROOT / path.lstrip("/"), "rb") as fh:
+            return fh.read(limit).decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+# --- what identifies the printer ---------------------------------------------------------------------------
+
+def gcode_names() -> set[str]:
+    """Names of the G-code files (and their paths under gcodes/), walked without following links."""
+    names: set[str] = set()
+    try:
+        top = _open_dir(("printer_data", "gcodes"))
+    except OSError:
+        return names
+    stack = [(top, "")]
+    while stack and len(names) < 20000:
+        fd, prefix = stack.pop()
+        try:
+            for entry in os.scandir(fd):
+                if entry.name.startswith("."):
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    try:
+                        sub = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+                    except OSError:
+                        continue
+                    stack.append((sub, f"{prefix}{entry.name}/"))
+                    names.add(f"{prefix}{entry.name}".rstrip("/"))
+                else:
+                    names.add(entry.name)
+                    names.add(f"{prefix}{entry.name}")
+        finally:
+            os.close(fd)
+    for fd, _ in stack:
+        os.close(fd)
+    return {n for n in names if len(n) >= 3}
+
+
+def identifiers() -> dict[str, set[str]]:
+    """Exact strings to remove, by kind. Patterns (addresses, tokens) are handled by Scrubber.PATTERNS."""
+    found: dict[str, set[str]] = {k: set() for k in ("hostname", "ssid", "serial", "machine_id", "secret", "gcode")}
+    for path in ("etc/hostname", "proc/sys/kernel/hostname"):
+        name = read_root_file(path).strip()
+        if name and name not in ("localhost", "eitri"):
+            found["hostname"].add(name)
+    text = read_data_file(("printer_data", "config"), "eitri-hosts.txt", 16384)
+    if text:
+        for line in text[0].decode("utf-8", "replace").splitlines():
+            for entry in re.split(r"[\s,]+", line.split("#", 1)[0].strip()):
+                if entry:
+                    found["hostname"].add(entry.rstrip("."))
+    for d in ("etc/NetworkManager/system-connections", "data/eitri/state/etc/upper/NetworkManager/system-connections"):
+        try:
+            for f in sorted((ROOT / d).iterdir()):
+                for m in re.finditer(r"^(?:ssid|id)=(.+)$", f.read_text(errors="replace"), re.M):
+                    found["ssid"].add(m.group(1).strip())
+                for m in re.finditer(r"^psk=(.+)$", f.read_text(errors="replace"), re.M):
+                    found["secret"].add(m.group(1).strip())
+        except OSError:
+            pass
+    serial = read_root_file("proc/device-tree/serial-number").strip("\x00\n ")
+    if serial:
+        found["serial"].add(serial)
+    for path in ("etc/machine-id", "var/lib/dbus/machine-id"):
+        mid = read_root_file(path).strip()
+        if mid:
+            found["machine_id"].add(mid)
+    cam = read_root_file("data/eitri/camera/go2rtc-auth.env")
+    for m in re.finditer(r"^\w*(?:PASS|PASSWORD|SECRET|TOKEN)\w*=(.+)$", cam, re.M):
+        found["secret"].add(m.group(1).strip().strip("'\""))
+    found["gcode"] = gcode_names()
+    # Generic words would be replaced everywhere; a value must be distinctive to be removed as a literal.
+    return {k: {v for v in vs if len(v) >= 3 and v.lower() not in {"wifi", "eth0", "wlan0", "eitri"}} for k, vs in found.items()}
+
+
+class Scrubber:
+    """Replaces identifying text with stable placeholders (the same address becomes the same <ip-N>)."""
+
+    PATTERNS = [
+        # credentials in URLs: scheme://user:pass@host
+        ("url_credentials", re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@'\"]+:[^/\s@'\"]+@"), lambda m, s: m.group(1) + "<credentials>@"),
+        # Not systemd unit instances (modprobe@configfs.service, getty@tty1.service), which look the same.
+        ("email", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(?!(?:service|socket|mount|automount|target|timer|path|slice|device|scope|swap)\b)[A-Za-z]{2,}\b"),
+         lambda m, s: "<email>"),
+        # key=value / key: value secrets (API keys, tokens, passwords, Wi-Fi keys)
+        ("secret", re.compile(r"(?i)\b((?:api[_-]?key|access[_-]?token|token|password|passwd|secret|psk|auth[_-]?key)\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;&]+)"),
+         lambda m, s: m.group(1) + "<redacted>"),
+        ("authorization", re.compile(r"(?i)\b(authorization:\s*(?:bearer|basic)\s+)\S+"), lambda m, s: m.group(1) + "<redacted>"),
+        # USB serial numbers of the MCUs and other devices (/dev/serial/by-id/usb-Klipper_stm32f401xc_3E00...-if00)
+        ("device_serial", re.compile(r"(by-id/[^\s'\"/]*?_)([0-9A-Fa-f]{8,})(?=[-_\s'\"]|$)"), lambda m, s: m.group(1) + s.token("serial", m.group(2))),
+        ("mac", re.compile(r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b"), lambda m, s: s.token("mac", m.group(0).lower())),
+        # At least two colons and either a hex letter or "::", so times (12:34:56) are not addresses.
+        ("ipv6", re.compile(r"(?i)(?<![\w:.])(?=[0-9a-f:]*[a-f]|[0-9a-f:]*::)(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?:%\w+)?(?![\w:.])"),
+         lambda m, s: m.group(0) if m.group(0) in ("::", "::1") else s.token("ipv6", m.group(0).lower())),
+        ("ipv4", re.compile(r"(?<![\w.])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?!\w|\.\d)"), lambda m, s: s.ipv4(m.group(1))),   # a full stop may end the sentence
+    ]
+
+    def __init__(self, literal: dict[str, set[str]]):
+        self.counts: dict[str, int] = {}
+        self._tokens: dict[tuple[str, str], str] = {}
+        self._literal: list[tuple[str, str, re.Pattern]] = []
+        # Longest first, so "printer.home.arpa" is replaced before "printer".
+        for kind, values in literal.items():
+            for value in values:
+                self._literal.append((kind, value, re.compile(re.escape(value), re.I if kind == "hostname" else 0)))
+        self._literal.sort(key=lambda t: -len(t[1]))
+
+    def token(self, kind: str, value: str) -> str:
+        key = (kind, value)
+        if key not in self._tokens:
+            self._tokens[key] = f"<{kind}-{sum(1 for k in self._tokens if k[0] == kind) + 1}>"
+        return self._tokens[key]
+
+    def ipv4(self, ip: str) -> str:
+        first = ip.split(".")
+        if ip.startswith("127.") or ip in ("0.0.0.0", "255.255.255.255") or first[0] == "0":
+            return ip
+        # Keep the address class, which helps debugging, but never the address.
+        a, b = int(first[0]), int(first[1])
+        private = a == 10 or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168) or (a == 169 and b == 254)
+        if a >= 224:
+            return ip                                       # multicast/broadcast (mDNS 224.0.0.251), not a host
+        self.counts["ipv4"] = self.counts.get("ipv4", 0) + 1
+        return self.token("lan-ip" if private else "ip", ip)
+
+    def scrub(self, text: str) -> str:
+        for kind, value, rx in self._literal:
+            text, n = rx.subn(lambda m, k=kind, v=value: self.token(k, v), text)
+            if n:
+                self.counts[kind] = self.counts.get(kind, 0) + n
+        for kind, rx, repl in self.PATTERNS:
+            def sub(m, kind=kind, repl=repl):
+                out = repl(m, self)
+                if out != m.group(0) and kind != "ipv4":
+                    self.counts[kind] = self.counts.get(kind, 0) + 1
+                return out
+            text = rx.sub(sub, text)
+        return text
+
+
+# --- collecting ---------------------------------------------------------------------------------------------
+
+def run(argv: list[str], timeout: int = COMMAND_TIMEOUT) -> str:
+    env = {"PATH": PATH, "LANG": "C.UTF-8", "SYSTEMD_PAGER": "", "SYSTEMD_COLORS": "0"}
+    try:
+        p = subprocess.run(argv, capture_output=True, timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+    except FileNotFoundError:
+        return f"[{argv[0]}: not installed]\n"
+    except subprocess.TimeoutExpired:
+        return f"[{' '.join(argv)}: timed out after {timeout} s]\n"
+    out = p.stdout.decode("utf-8", "replace")
+    if p.returncode:
+        out += f"[exit status {p.returncode}] {p.stderr.decode('utf-8', 'replace')[-2000:]}"
+    return out
+
+
+def system_snapshot() -> str:
+    sections = [
+        ("os-release", read_root_file("etc/os-release")),
+        ("eitri flavor", (read_data_file(("eitri",), "flavor", 4096) or (b"", 0))[0].decode("utf-8", "replace")),
+        ("uname", run(["uname", "-a"])),
+        ("kernel command line", read_root_file("proc/cmdline")),
+        ("uptime and load", read_root_file("proc/uptime") + read_root_file("proc/loadavg")),
+        ("boots in the journal", run(["journalctl", "--list-boots", "--no-pager", "-q"])),
+        ("system state", run(["systemctl", "is-system-running"])),
+        ("failed units", run(["systemctl", "--failed", "--no-pager", "--no-legend"])),
+        ("boot time", run(["systemd-analyze", "time"])),
+        ("memory", run(["free", "-m"]) + read_root_file("proc/meminfo")),
+        ("disks", run(["df", "-h", "/", "/data"])),
+        ("temperatures (millidegrees)", "".join(f"{z.name}: {read_root_file(str(z.relative_to(ROOT) / 'temp')).strip()}\n"
+                                                 for z in sorted((ROOT / "sys/class/thermal").glob("thermal_zone*")))),
+        ("cpu frequency", "".join(f"{c.name}: {read_root_file(str(c.relative_to(ROOT) / 'cpufreq/scaling_cur_freq')).strip()} kHz, "
+                                  f"{read_root_file(str(c.relative_to(ROOT) / 'cpufreq/scaling_governor')).strip()}\n"
+                                  for c in sorted((ROOT / "sys/devices/system/cpu").glob("cpu[0-9]*")))),
+        ("boot slots", run(["/usr/libexec/eitri/eitri-bootctl", "status"])),
+        ("services", run(["systemctl", "list-units", "--type=service", "--all", "--no-pager", "--no-legend"])),
+        ("usb devices", run(["lsusb"])),
+        ("network interfaces", run(["ip", "-brief", "address"])),
+    ]
+    return "".join(f"===== {title}\n{body.rstrip()}\n\n" for title, body in sections)
+
+
+def collect() -> tuple[list[tuple[str, bytes]], dict]:
+    """The bundle's files (name, scrubbed bytes) and the manifest, before the manifest is added."""
+    scrubber = Scrubber(identifiers())
+    files: list[tuple[str, str]] = []
+    notes: list[str] = []
+
+    files.append(("system.txt", system_snapshot()))
+    jflags = ["--no-pager", "-q", "-o", "short-iso-precise", "-n", str(JOURNAL_LINES)]
+    files.append(("journal-this-boot.txt", run(["journalctl", "-b", "0", *jflags])))
+    files.append(("journal-previous-boot.txt", run(["journalctl", "-b", "-1", *jflags])))
+    files.append(("kernel-previous-boot.txt", run(["journalctl", "-k", "-b", "-1", *jflags])))
+    files.append(("kernel-crash-records.txt", run(["journalctl", "-t", "systemd-pstore", "--no-pager", "-q", "-o", "short-iso-precise", "-n", "5000"])))
+
+    logs = list_data_dir(LOGS)
+    for name, limit in [("klippy.log", MAX_LOG_BYTES), ("moonraker.log", MAX_LOG_BYTES)]:
+        older = sorted((n for n in logs if n.startswith(name + ".") and not n.endswith((".gz", ".tar"))), reverse=True)
+        for which, limit_ in [(name, limit)] + ([(older[0], MAX_OLD_LOG_BYTES)] if older else []):
+            got = read_data_file(LOGS, which, limit_)
+            if got is None:
+                notes.append(f"{which}: not found or not a regular file")
+                continue
+            data, size = got
+            head = f"[last {len(data)} of {size} bytes]\n" if size > len(data) else ""
+            files.append((f"logs/{which}", head + data.decode("utf-8", "replace")))
+
+    configs = [n for n in list_data_dir(("printer_data", "config"))
+               if n.endswith(CONFIG_SUFFIXES) and n not in CONFIG_EXCLUDED and not n.startswith(".")
+               and not re.match(r"printer-\d{8}_\d{6}\.cfg$", n)][:MAX_CONFIG_FILES]
+    for name in configs:
+        got = read_data_file(("printer_data", "config"), name, MAX_CONFIG_BYTES)
+        if got is not None:
+            files.append((f"config/{name}", got[0].decode("utf-8", "replace")))
+
+    scrubbed = [(name, scrubber.scrub(text).encode()) for name, text in files]
+    manifest = {
+        "format": REPORT_FORMAT,
+        "report_id": secrets.token_hex(8),           # random per report; links nothing to the printer
+        "created_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "eitri_version": re.search(r'^VERSION_ID="?([^"\n]*)', read_root_file("etc/os-release"), re.M).group(1)
+        if re.search(r'^VERSION_ID=', read_root_file("etc/os-release"), re.M) else None,
+        "files": [{"name": n, "bytes": len(b)} for n, b in scrubbed],
+        "removed": dict(sorted(scrubber.counts.items())),
+        "not_included": sorted(CONFIG_EXCLUDED) + ["G-code files", "the Moonraker database", "SSH keys and access state",
+                                                   "network connection files", "camera images"],
+        "notes": notes,
+    }
+    return scrubbed, manifest
+
+
+README = """Eitri diagnostics report
+========================
+
+This bundle was made by eitri-report on the printer, to help find and fix a problem. Nothing was
+sent anywhere: it was written to the printer's Logs folder (or to the terminal), and it is yours to
+share or delete.
+
+What it contains:
+  system.txt                    versions, uptime, memory, disks, temperatures, service states, boot slots
+  journal-this-boot.txt         the system log of this boot (the last {lines} lines)
+  journal-previous-boot.txt     the system log of the boot before (where a hang or crash shows up)
+  kernel-previous-boot.txt      the kernel's messages of the boot before
+  kernel-crash-records.txt      crash records the kernel kept across a reset (ramoops), if any
+  logs/                         the end of the Klipper and Moonraker logs, and of the previous ones
+  config/                       the printer configuration files (not moonraker.conf)
+  manifest.json                 what is in here, and how many identifying items were removed
+
+Removed before writing: IP and MAC addresses, the host name and extra host names, Wi-Fi network
+names, the board's serial number and machine id, MCU serial numbers, e-mail addresses, credentials
+in URLs, tokens, passwords and keys, the camera password, and G-code file names. Each was replaced
+by a placeholder such as <lan-ip-1>; the same address keeps the same placeholder, so the logs still
+read correctly. Not included at all: G-code files, the Moonraker database, SSH keys and access state,
+network connection files, camera images. Please still look through it before you share it.
+"""
+
+
+def build_tar(scrubbed: list[tuple[str, bytes]], manifest: dict) -> bytes:
+    prefix = f"eitri-report-{manifest['created_utc'].replace(':', '').replace('-', '')}"
+    buf = io.BytesIO()
+    now = int(time.time())
+    with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=6) as tar:
+        entries = [("README.txt", README.format(lines=JOURNAL_LINES).encode())] + scrubbed
+        entries.append(("manifest.json", json.dumps(manifest, indent=2).encode() + b"\n"))
+        for name, data in entries:
+            info = tarfile.TarInfo(f"{prefix}/{name}")
+            info.size, info.mtime, info.mode, info.uname, info.gname = len(data), now, 0o644, "eitri", "eitri"
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+# --- writing into the Logs folder ---------------------------------------------------------------------------
+
+REPORT_NAME = re.compile(r"eitri-report-\d{8}T\d{6}Z\.tar\.gz")
+
+
+def write_into_logs(data: bytes, created_utc: str) -> str:
+    fd = _open_dir(LOGS)
+    try:
+        dst = os.fstat(fd)
+        name = f"eitri-report-{created_utc.replace(':', '').replace('-', '')}.tar.gz"
+        tmp = f".{name}.{secrets.token_hex(4)}"
+        out = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=fd)
+        try:
+            os.write(out, data)
+            os.fsync(out)
+            if OWNER_CHECK:
+                os.fchown(out, dst.st_uid, dst.st_gid)          # the Logs folder's owner (the service user)
+            os.fchmod(out, 0o644)
+        finally:
+            os.close(out)
+        os.rename(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
+        os.fsync(fd)
+        # Keep the newest KEEP reports; only regular files with exactly the report name are ever removed.
+        reports = sorted(n for n in os.listdir(fd) if REPORT_NAME.fullmatch(n))
+        for old in reports[:-KEEP]:
+            try:
+                if stat.S_ISREG(os.stat(old, dir_fd=fd, follow_symlinks=False).st_mode):
+                    os.unlink(old, dir_fd=fd)
+            except OSError:
+                pass
+        return name
+    finally:
+        os.close(fd)
+
+
+def newest_report_age() -> float | None:
+    try:
+        fd = _open_dir(LOGS)
+    except OSError:
+        return None
+    try:
+        ages = [time.time() - os.stat(n, dir_fd=fd, follow_symlinks=False).st_mtime
+                for n in os.listdir(fd) if REPORT_NAME.fullmatch(n)]
+        return min(ages) if ages else None
+    finally:
+        os.close(fd)
+
+
+def consume_request() -> None:
+    try:
+        fd = _open_dir(COMMS)
+    except OSError:
+        return
+    try:
+        os.unlink(REQUEST, dir_fd=fd)                         # unlink never follows a link
+    except FileNotFoundError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def main(argv: list[str]) -> int:
+    mode = argv[1] if len(argv) > 1 else "--logs"
+    if mode not in ("--logs", "--stdout", "--list"):
+        print(__doc__.split("\n\n")[2], file=sys.stderr)
+        return 1
+    if mode == "--logs":
+        consume_request()
+        age = newest_report_age()
+        if age is not None and age < MIN_INTERVAL_S:
+            print(f"eitri-report: a report was made {age:.0f} s ago; not making another yet", file=sys.stderr)
+            return 0
+    scrubbed, manifest = collect()
+    if mode == "--list":
+        for f in manifest["files"]:
+            print(f"{f['bytes']:>10}  {f['name']}")
+        print("removed:", json.dumps(manifest["removed"]))
+        print("not included:", ", ".join(manifest["not_included"]))
+        return 0
+    data = build_tar(scrubbed, manifest)
+    if mode == "--stdout":
+        sys.stdout.buffer.write(data)
+        return 0
+    try:
+        name = write_into_logs(data, manifest["created_utc"])
+    except OSError as exc:
+        print(f"eitri-report: cannot write into the Logs folder: {exc}", file=sys.stderr)
+        return 1
+    print(f"eitri-report: {name} ({len(data)} bytes) is in the Logs folder; removed {json.dumps(manifest['removed'])}",
+          file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    os.umask(0o077)
+    sys.exit(main(sys.argv))

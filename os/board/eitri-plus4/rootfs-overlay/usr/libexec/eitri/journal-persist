@@ -1,0 +1,16 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Move the journal to /data (eitri-journal.service, which explains why it is needed).
+#
+# journald started before /etc was mounted from /data, under a transient machine id; journalctl
+# reads only the files of /etc/machine-id, the installation's id. If journald's runtime journal is
+# not under that id, restart journald (its socket keeps every message) so it takes it. Then ask it
+# to write to /var/log/journal, which tmpfiles has linked to /data/eitri/state/log/journal.
+
+set -eu
+
+id=$(cat /etc/machine-id 2>/dev/null || true)
+if [ -n "$id" ] && [ ! -d "/run/log/journal/$id" ]; then
+	systemctl restart systemd-journald.service
+fi
+exec journalctl --flush

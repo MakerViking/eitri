@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch for requests for a diagnostics report
+Documentation=file:///usr/share/doc/eitri/os/README.md
+RequiresMountsFor=/data
+
+[Path]
+# The EITRI_REPORT macro (klipper-layer/config/macros.cfg) creates this file; eitri-report removes it.
+PathExists=/data/printer_data/comms/eitri-report.request
+Unit=eitri-report.service
+
+[Install]
+WantedBy=multi-user.target

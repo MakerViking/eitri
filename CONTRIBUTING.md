@@ -75,7 +75,9 @@ Unless you say otherwise, your contribution is licensed under **Apache-2.0** whe
 
 ## Reporting bugs
 
-Include the Eitri version or commit, the printer's firmware flavor (Klipper or Kalico), the relevant `systemctl status` output, and the log excerpt. Remove serial numbers, IP addresses, and tokens before you paste anything.
+Attach a diagnostics report. Run the **`EITRI_REPORT`** macro (the macro button in Fluidd or Mainsail, or type it in the console); about a minute later `eitri-report-<time>.tar.gz` appears in the **Logs** folder, ready to download. It holds the system log of this and the previous boot, the kernel's crash records, the Klipper and Moonraker logs and the printer configuration, with IP and MAC addresses, host and Wi-Fi names, serial numbers, keys, passwords and G-code file names already replaced by placeholders. Nothing is sent anywhere; look through it before you share it. Over SSH, the administrator can run `sudo /usr/libexec/eitri/eitri-report --list` to see what it would contain, or `--stdout > report.tar.gz`.
+
+Without a report, include the Eitri version or commit, the firmware flavor (Klipper or Kalico), the relevant `systemctl status` output, and the log excerpt, and remove serial numbers, IP addresses, and tokens before you paste anything.
 
 Security issues do not belong in the public tracker. Follow [`SECURITY.md`](SECURITY.md).
 

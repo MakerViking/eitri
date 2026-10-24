@@ -161,6 +161,8 @@ Read [`SAFETY.md`](SAFETY.md) first: how to stop the printer, what is not verifi
 
 ## Troubleshooting
 
+Start with a diagnostics report: run the `EITRI_REPORT` macro and download `eitri-report-<time>.tar.gz` from the **Logs** folder a minute later. It keeps the log of the boot before the current one, which is where a crash or a hang shows up, and it has identifying details removed ([`CONTRIBUTING.md`](../CONTRIBUTING.md#reporting-bugs)).
+
 - **The installer stops at the backup step.** Fix the backup target. The installer will not continue without a verified backup.
 - **An MCU readback does not match.** Do not retry in a loop. Stop, keep the log, and follow [`RECOVERY.md`](RECOVERY.md#3-mcu-recovery-over-serial).
 - **`klipper` and `moonraker` are `inactive (dead)` after the first boot.** The data seed is missing or incomplete (the units start only when it is there). Check `/data/eitri/state/seed-installed.env` and `journalctl -u eitri-data-init`; reinstall the seed with `eitri-seed-install` ([`seed/SPEC.md`](../seed/SPEC.md#10-installing-a-seed)).
