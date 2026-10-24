@@ -325,6 +325,30 @@ def test_first_boot_mcu_failure_reboots_towards_the_stock_system(tmp_path):
     assert not rig.state.load().get("firstboot_mcu_done")
 
 
+@pytest.mark.parametrize("mode", ["skip", "manual"])
+def test_an_update_leaves_the_mcus_alone_when_the_owner_chose_so(tmp_path, mode):
+    # A keep-stock install (mcu_flash=skip; the X-Plus 4's toolhead has no bootloader yet) must take OS updates
+    # without flashing a board, or rolling back because one cannot be flashed.
+    rig = _staged(tmp_path)
+    with open(os.path.join(rig.data, "eitri", "state", "install.env"), "w") as fh:
+        fh.write("flavor=klipper\nmcu_flash=%s\ntoolhead_firmware=stock\n" % mode)
+    before = dict(rig.run.mcu_boards)
+    rig.updater.post_boot()
+    assert not [c for c in rig.run.calls if "eitri_mcuflash" in c and "flash" in c]
+    assert rig.run.mcu_boards == before                                  # untouched, still "needs a flash"
+    assert any("MCU flashing is %s" % mode in (e.get("msg") or "") for e in rig.events.events)
+    assert rig.state.installed_version == "2026.10.0" and rig.state.load()["pending"] is None
+    assert rig.boot_env()["eitri_state_B"] == "good" and rig.rebooted == 0
+
+
+def test_an_update_still_syncs_the_mcus_when_install_env_says_auto(tmp_path):
+    rig = _staged(tmp_path)
+    with open(os.path.join(rig.data, "eitri", "state", "install.env"), "w") as fh:
+        fh.write("flavor=klipper\nmcu_flash=auto\n")
+    rig.updater.post_boot()
+    assert len([c for c in rig.run.calls if "flash" in c and "eitri_mcuflash" in c]) == 1
+
+
 def test_verify_without_pending_and_good_slot_is_a_noop(tmp_path):
     rig = Rig(tmp_path)
     assert rig.updater.verify() == {"pending": False}

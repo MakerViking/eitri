@@ -379,7 +379,8 @@ class Updater:
                     self.events.step("install-data", "ok")
                 self._install_mcu_firmware(pending, "pending")
                 self._install_seed(pending, "pending")
-                self._mcu_sync(pending)
+                if self._mcu_flash_allowed():
+                    self._mcu_sync(pending)
             except FlashError as exc:
                 self.events.step("post-boot", "failed", msg=exc.message)
                 return self._roll_back(pending, slot, "post-boot step failed: %s" % exc.message)
@@ -417,6 +418,20 @@ class Updater:
         if res.get("rolled_back"):
             return res
         return self.verify(start_services=True)
+
+    def _mcu_flash_allowed(self) -> bool:
+        """Whether an update may flash the MCUs. The in-place install records the owner's choice in install.env:
+        mcu_flash=auto lets Eitri keep the MCU firmware in step with the host; manual and skip mean the boards keep
+        whatever they run until the owner flashes them (eitri-mcuflash). An update used to sync the MCUs regardless,
+        so on a keep-stock printer it would either flash a board the owner had chosen not to touch or, with the
+        toolhead not flashable, refuse and roll the whole update back. No install.env (a flash-once image): sync, as
+        before. The firmware itself is still installed, ready for a manual flash."""
+        mode = self._install_env().get("mcu_flash", "auto")
+        if mode in ("manual", "skip"):
+            self.events.info("MCU flashing is %s on this printer (install.env): the MCUs keep their firmware; "
+                             "flash them with eitri-mcuflash when you choose" % mode)
+            return False
+        return True
 
     def mcu_sync(self) -> Dict[str, Any]:
         """Flash whichever MCU does not run the firmware that belongs to this host."""
