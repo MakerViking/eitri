@@ -135,9 +135,9 @@ The full per-component picture, with test counts and what each piece still needs
 ## Performance
 
 Measured on the developer's X-Plus 4 (RK3328, 4 × Cortex-A53, 976 MB RAM). The table is
-idle, with Klipper ready and the camera and touchscreen running; a print follows below. Stock QIDI firmware was measured on
-the same printer before the install; its CPU use was not, so that column cites what other
-owners report.
+idle, with Klipper ready and the camera and touchscreen running; a print follows below.
+Stock QIDI firmware was measured on the same printer before the install; its CPU use was
+not, so that column cites what other owners report.
 
 | | Stock QIDI firmware (v1.7) | Eitri |
 |---|---:|---:|
