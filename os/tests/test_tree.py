@@ -514,3 +514,11 @@ def test_ramoops_is_clear_of_the_boot_firmware_and_everything_u_boot_loads():
     used += [(int(env["kernel_addr_r"], 16), 0x4000000), (int(env["ramdisk_addr_r"], 16), 0x2000000)]
     for base, length in used:
         assert start + size <= base or start >= base + length, (hex(base), hex(length))
+
+
+def test_two_interfaces_on_one_network_do_not_answer_for_each_other():
+    # Cable and Wi-Fi on one LAN: without these, wlan0 answers ARP for eth0's address (2026-10-24).
+    conf = (OVERLAY / "usr/lib/sysctl.d/90-eitri.conf").read_text()
+    for key, value in (("arp_ignore", "1"), ("arp_announce", "2")):
+        for scope in ("all", "default"):
+            assert re.search(rf"^net\.ipv4\.conf\.{scope}\.{key} = {value}$", conf, re.M), (scope, key)
