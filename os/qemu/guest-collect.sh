@@ -109,6 +109,10 @@ sh_sec cgroup_memory 'for u in klipper moonraker klarity eitri-configurator ngin
 
 # --- services ------------------------------------------------------------------------------
 sec failed systemctl --failed --no-pager --no-legend
+# EITRI_REPORT's path: the service user asks, the root service writes a scrubbed bundle into Logs.
+if [ "$mode" = full ]; then
+	sh_sec report_request 'L=/data/printer_data/logs; sudo -u eitri touch /data/printer_data/comms/eitri-report.request; for i in $(seq 1 90); do f=$(ls $L/eitri-report-*.tar.gz 2>/dev/null | tail -1); [ -n "$f" ] && [ ! -e /data/printer_data/comms/eitri-report.request ] && break; sleep 2; done; echo "REPORT ${f:-none}"; [ -n "$f" ] && { stat -c "%U %a %s" "$f"; tar -tzf "$f" | sed "s|^[^/]*/||" | sort | tr "\n" " "; echo; }; systemctl show -p Result -p ActiveState eitri-report.service'
+fi
 # Boots the journal on /data holds (eitri-journal.service): a second boot must also see the first.
 sh_sec journal_boots 'echo "BOOTS $(journalctl --list-boots --no-pager -q 2>/dev/null | grep -c .)"; ls -la /var/log/journal/ /data/eitri/state/log/journal/*/ 2>&1 | head -12; systemctl is-active eitri-journal.service'
 sh_sec failed_unit_journals 'for u in $(systemctl --failed --no-pager --no-legend --plain | awk "{print \$1}"); do echo "=== $u"; systemctl show -p Result,ExecMainStatus,ExecMainCode,NRestarts $u | tr "\n" " "; echo; journalctl -b -u $u --no-pager -o short-monotonic -n 25; done'
