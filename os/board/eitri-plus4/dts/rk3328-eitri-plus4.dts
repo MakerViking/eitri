@@ -159,3 +159,27 @@
 		};
 	};
 };
+
+/*
+ * CPU and logic rail ramp delay (bench-validate; suspected cause of the 2026-10-24 freezes).
+ *
+ * The RK805's DCDC regulators take time to reach a new voltage. Without regulator-ramp-delay
+ * the kernel assumes the change is instant, so cpufreq raises the CPU clock while vdd_arm is
+ * still ramping up, and for a few microseconds the cores run faster than their voltage
+ * supports: a classic cause of silent RK3328 hard freezes (no panic, no log line, screen
+ * frozen, network gone), which is what the printer did twice that day, once idle. The
+ * mainline ROC-RK3328-CC board file this tree builds on does not set it; the stock QIDI
+ * device tree ("Makerbase mks-pi") and mainline's rk3328-rock64.dts both use 12500 uV/us.
+ * The voltage windows are the stock ones too: the OPP tables need 0.95-1.30 V on vdd_arm
+ * and 1.075 V on vdd_logic, and the stock tree never let the rails outside that.
+ */
+&vdd_arm {
+	regulator-min-microvolt = <950000>;
+	regulator-ramp-delay = <12500>;
+};
+
+&vdd_logic {
+	regulator-min-microvolt = <900000>;
+	regulator-max-microvolt = <1175000>;
+	regulator-ramp-delay = <12500>;
+};

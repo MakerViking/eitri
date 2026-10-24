@@ -522,3 +522,14 @@ def test_two_interfaces_on_one_network_do_not_answer_for_each_other():
     for key, value in (("arp_ignore", "1"), ("arp_announce", "2")):
         for scope in ("all", "default"):
             assert re.search(rf"^net\.ipv4\.conf\.{scope}\.{key} = {value}$", conf, re.M), (scope, key)
+
+
+def test_the_cpu_and_logic_rails_have_the_stock_ramp_delay():
+    # Without it cpufreq clocks the cores up before vdd_arm has settled; the stock QIDI tree and
+    # rk3328-rock64.dts set 12500 uV/us (suspected cause of the 2026-10-24 silent freezes).
+    dts = (BOARD / "dts/rk3328-eitri-plus4.dts").read_text()
+    for rail, minimum in (("vdd_arm", 950000), ("vdd_logic", 900000)):
+        block = re.search(rf"^&{rail} \{{(.*?)^\}};", dts, re.M | re.S)
+        assert block, rail
+        assert "regulator-ramp-delay = <12500>;" in block.group(1), rail
+        assert f"regulator-min-microvolt = <{minimum}>;" in block.group(1), rail
