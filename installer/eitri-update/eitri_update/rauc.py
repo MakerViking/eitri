@@ -36,6 +36,22 @@ class RaucStatus:
         return None
 
 
+def _json_document(output: str) -> dict:
+    """The JSON object in rauc's output. The runner hands over stdout and stderr together, and on the printer rauc
+    logs informational lines to stderr first ("rauc-Message: ... Using central status file ..."), so the output
+    is not JSON from its first character: every update failed there on real hardware (2026-10-24) while the test
+    and QEMU runs, which print no such lines, passed. Take the first line that opens an object and decode one
+    document from it, ignoring anything around it."""
+    lines = output.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("{"):
+            doc, _ = json.JSONDecoder().raw_decode("".join(lines[i:]).lstrip())
+            if isinstance(doc, dict):
+                return doc
+            break
+    raise ValueError("no JSON object in rauc output")
+
+
 class RaucClient:
     def __init__(self, runner: Runner = run, binary: str = "rauc") -> None:
         self.runner = runner
@@ -46,7 +62,7 @@ class RaucClient:
         if res.returncode != 0:
             raise FlashError("rauc status failed: %s" % res.output.strip(), code="rauc")
         try:
-            doc = json.loads(res.output)
+            doc = _json_document(res.output)
         except ValueError as exc:
             raise FlashError("rauc status returned unparsable output", code="rauc") from exc
         slots: List[Slot] = []
