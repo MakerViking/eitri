@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch for a crash report waiting to be sent or discarded
+Documentation=file:///usr/share/doc/eitri/os/README.md
+RequiresMountsFor=/data
+
+[Path]
+# eitri-report (root) writes it when the previous boot crashed or the owner asked for a report.
+PathExists=/data/printer_data/comms/eitri-crash.pending
+Unit=eitri-report-sender.service
+
+[Install]
+WantedBy=multi-user.target

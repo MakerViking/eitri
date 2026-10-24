@@ -18,7 +18,7 @@ COMPONENT_UNITS = [REPO_ROOT / "klarity/systemd/klarity.service", REPO_ROOT / "c
 UNITS = sorted(UNIT_DIR.glob("*.service")) + COMPONENT_UNITS
 PATH_UNITS = sorted(UNIT_DIR.glob("*.path"))
 #: Services that only their .path unit starts (on request, never at boot), so they are not enabled.
-PATH_ONLY = {"eitri-report.service"}
+PATH_ONLY = {"eitri-report.service", "eitri-report-sender.service"}
 
 
 #: Sandbox options that systemd implements with seccomp. For a unit whose user lacks CAP_SYS_ADMIN, systemd then sets
@@ -107,7 +107,7 @@ def test_no_unit_weakens_heater_safety():
 
 
 # Tools in the overlay that are Python, not sh: the root helpers behind the sudo rules.
-PYTHON_TOOLS = {"eitri-access", "eitri-hosts", "eitri-report"}
+PYTHON_TOOLS = {"eitri-access", "eitri-hosts", "eitri-report", "eitri-report-sender"}
 
 
 def test_overlay_scripts_are_executable_and_pass_sh_syntax():

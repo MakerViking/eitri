@@ -52,6 +52,7 @@ def render_all(settings: Settings, context: dict[str, Any]) -> dict[str, str]:
         "klarity.cfg": klarity_cfg(settings, context["o"]),
         ACCESS_CONF_NAME: access_conf(settings, context["o"], context.get("hostname") or "eitri"),
         HOSTS_FILE_NAME: hosts_file(context["o"]),
+        REPORTS_FILE_NAME: reports_file(context["o"]),
     }
     for rel, text in seed_files(settings, context["o"]).items():
         if not (settings.config_dir / rel).exists():    # yours after the first write: never regenerated
@@ -82,6 +83,24 @@ def hosts_file(options: dict[str, Any]) -> str:
             "# single names such as eitri, and names ending in .local. Written by the setup wizard (Options);\n"
             "# you may edit it here, but the wizard's next Apply replaces it. Applied within seconds.\n"
             + "".join(f"{name}\n" for name in names))
+REPORTS_FILE_NAME = "eitri-reports.txt"
+REPORT_MODES = ("off", "ask", "always")
+
+
+def reports_file(options: dict[str, Any]) -> str:
+    """Whether crash reports may be sent; eitri-report-sender reads it (anything else counts as off)."""
+    mode = options.get("crash_reports", "off")
+    mode = mode if mode in REPORT_MODES else "off"
+    return ("# Crash reports: what Eitri does when it recovers from a crash.\n"
+            "#   off     nothing is ever sent (you can still make a report with the EITRI_REPORT macro)\n"
+            "#   ask     the web interface asks before each report is sent\n"
+            "#   always  reports are sent to the Eitri developers (tinkeratlas.com) without asking\n"
+            "# Reports are scrubbed on the printer first; each one is in the Logs folder as\n"
+            "# eitri-crash-report-<time>.json, exactly as it would be sent. Change this here, with the\n"
+            "# EITRI_CRASH_REPORTS macro (MODE=off, ask or always), or in the setup wizard.\n"
+            f"{mode}\n")
+
+
 ACCESS_INCLUDE = f"[include {ACCESS_CONF_NAME}]"
 LOOPBACK_CLIENTS = ("127.0.0.0/8", "::1/128")
 LAN_CLIENTS = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "FE80::/10")

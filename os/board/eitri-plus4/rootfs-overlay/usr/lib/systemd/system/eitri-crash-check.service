@@ -1,0 +1,26 @@
+[Unit]
+Description=Find out whether the previous boot crashed, and prepare a crash report
+Documentation=file:///usr/share/doc/eitri/os/README.md
+# /usr/libexec/eitri/eitri-report ("crash reports") explains what counts as a crash: a kernel crash record,
+# or a boot that ended without a clean shutdown while a heater was on. Before Klipper starts, so the end
+# of klippy.log is still the previous boot's. At shutdown it records that this boot ended cleanly. It
+# writes the report into the Logs folder and never sends anything (eitri-report-sender does, if allowed).
+After=eitri-data-init.service eitri-journal.service systemd-pstore.service
+Wants=eitri-data-init.service
+Before=klipper.service eitri-report-sender.path
+RequiresMountsFor=/data
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/eitri/eitri-report --boot-check
+ExecStop=/usr/libexec/eitri/eitri-report --mark-clean
+PrivateNetwork=yes
+ProtectSystem=strict
+ReadWritePaths=/data/printer_data/logs /data/printer_data/comms /data/eitri/state
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

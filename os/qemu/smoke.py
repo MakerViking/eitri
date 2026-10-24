@@ -599,6 +599,7 @@ def collect(boot: Boot, mode: str, tag: str, report_dir: Path, args) -> dict:
     r["unit_state"] = parse_unit_state(s.get("unit_state", {}).get("text", ""))
     r["failed_units"] = [l.split()[1] if l.startswith("●") else l.split()[0] for l in s.get("failed", {}).get("text", "").split("\n") if l.strip()]
     r["report_request"] = s.get("report_request", {}).get("text", "")
+    r["crash_check"] = s.get("crash_check", {}).get("text", "")
     mb = re.search(r"^BOOTS (\d+)", s.get("journal_boots", {}).get("text", ""), re.M)
     r["journal_boots"] = int(mb.group(1)) if mb else 0
     r["sections_missing"] = [k for k in ("analyze_time", "free", "memory_by_unit", "failed", "unit_state") if k not in s]
@@ -739,6 +740,9 @@ def checks(first: dict, second: dict | None, known: dict[str, tuple[str, str]]) 
         h = second.get("host_http", {})
         c.append((not h.get("configurator_8099", "").startswith("2"), f"second boot: nothing answers on the configurator port ({h.get('configurator_8099')})"))
         c.append((h.get("nginx_80", "").startswith("2") and h.get("nginx_server_info", "").startswith("2"), f"second boot: nginx and /server/info answer through the forwarded port ({h.get('nginx_80')}, {h.get('nginx_server_info')})"))
+        cc = sd.get("crash_check", "")
+        c.append(("previous boot: clean shutdown; no crash report" in cc and "\nactive\n" in cc and cc.rstrip().endswith("\n0"),
+                  "second boot: the crash check saw the clean power-off and made no crash report"))
         rr = sd.get("report_request", "")
         c.append(("REPORT /data/printer_data/logs/eitri-report-" in rr and "\neitri 644 " in rr and "manifest.json" in rr
                   and "journal-previous-boot.txt" in rr and "Result=success" in rr,

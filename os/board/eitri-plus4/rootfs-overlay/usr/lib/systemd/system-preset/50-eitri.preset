@@ -10,6 +10,8 @@ enable eitri-access.service
 enable eitri-hosts.path
 enable eitri-hosts.service
 enable eitri-report.path
+enable eitri-crash-check.service
+enable eitri-report-sender.path
 enable eitri-mark-good.service
 enable klipper.service
 enable moonraker.service

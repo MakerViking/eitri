@@ -16,6 +16,9 @@ removed is counted in manifest.json; README.txt in the bundle says what it conta
                               what eitri-report.service runs when the EITRI_REPORT macro asks for one.
     eitri-report --stdout     write the bundle to standard output (over SSH, as the administrator)
     eitri-report --list       show what would be collected and removed, without writing a bundle
+    eitri-report --boot-check at boot: if the previous boot crashed, write the crash report that could be
+                              sent (eitri-crash-check.service; see "crash reports" below)
+    eitri-report --mark-clean at shutdown: record that this boot ended cleanly
 
 It runs as root (the journal is root's) and reads and writes the service user's trees on /data without
 following symbolic links, so a link planted there cannot make it read or overwrite another file.
@@ -409,34 +412,39 @@ def build_tar(scrubbed: list[tuple[str, bytes]], manifest: dict) -> bytes:
 REPORT_NAME = re.compile(r"eitri-report-\d{8}T\d{6}Z\.tar\.gz")
 
 
-def write_into_logs(data: bytes, created_utc: str) -> str:
-    fd = _open_dir(LOGS)
+def write_into(parts: tuple[str, ...], name: str, data: bytes, keep: re.Pattern | None = None) -> str:
+    """Write `name` atomically into /data/<parts>, owned by that folder's owner, without following links.
+    With `keep`, only the newest KEEP regular files whose names match it are kept."""
+    fd = _open_dir(parts)
     try:
         dst = os.fstat(fd)
-        name = f"eitri-report-{created_utc.replace(':', '').replace('-', '')}.tar.gz"
         tmp = f".{name}.{secrets.token_hex(4)}"
         out = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=fd)
         try:
             os.write(out, data)
             os.fsync(out)
             if OWNER_CHECK:
-                os.fchown(out, dst.st_uid, dst.st_gid)          # the Logs folder's owner (the service user)
+                os.fchown(out, dst.st_uid, dst.st_gid)          # the folder's owner (the service user)
             os.fchmod(out, 0o644)
         finally:
             os.close(out)
         os.rename(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
         os.fsync(fd)
-        # Keep the newest KEEP reports; only regular files with exactly the report name are ever removed.
-        reports = sorted(n for n in os.listdir(fd) if REPORT_NAME.fullmatch(n))
-        for old in reports[:-KEEP]:
-            try:
-                if stat.S_ISREG(os.stat(old, dir_fd=fd, follow_symlinks=False).st_mode):
-                    os.unlink(old, dir_fd=fd)
-            except OSError:
-                pass
+        if keep is not None:
+            for old in sorted(n for n in os.listdir(fd) if keep.fullmatch(n))[:-KEEP]:
+                try:
+                    if stat.S_ISREG(os.stat(old, dir_fd=fd, follow_symlinks=False).st_mode):
+                        os.unlink(old, dir_fd=fd)
+                except OSError:
+                    pass
         return name
     finally:
         os.close(fd)
+
+
+def write_into_logs(data: bytes, created_utc: str) -> str:
+    stamp = created_utc.replace(":", "").replace("-", "")
+    return write_into(LOGS, f"eitri-report-{stamp}.tar.gz", data, REPORT_NAME)
 
 
 def newest_report_age() -> float | None:
@@ -452,41 +460,206 @@ def newest_report_age() -> float | None:
         os.close(fd)
 
 
-def consume_request() -> None:
+def consume_request(name: str = REQUEST) -> bool:
+    """Remove a request file from comms/; whether there was one."""
     try:
         fd = _open_dir(COMMS)
     except OSError:
-        return
+        return False
     try:
-        os.unlink(REQUEST, dir_fd=fd)                         # unlink never follows a link
+        os.unlink(name, dir_fd=fd)                            # unlink never follows a link
+        return True
     except FileNotFoundError:
-        pass
+        return False
     finally:
         os.close(fd)
 
 
-def main(argv: list[str]) -> int:
-    mode = argv[1] if len(argv) > 1 else "--logs"
-    if mode not in ("--logs", "--stdout", "--list"):
-        print(__doc__.split("\n\n")[2], file=sys.stderr)
+# --- crash reports (opt-in; eitri-report-sender asks and sends) ---------------------------------------------
+#
+# At boot (eitri-crash-check.service, before Klipper starts) this decides whether the previous boot crashed.
+# A printer is often switched off at the mains, so "the previous boot did not shut down cleanly" alone is
+# not a crash. It counts as one when the kernel left a crash record (ramoops, through systemd-pstore), or
+# when the previous boot ended without a clean shutdown while a heater was on, i.e. while the printer was
+# in use. Then the report that would be sent is written, scrubbed, into the Logs folder as
+# eitri-crash-report-<UTC>.json (exactly the bytes eitri-report-sender would post, so it can be read
+# first), and comms/eitri-crash.pending names it. Whether it is ever sent is the owner's choice
+# (printer_data/config/eitri-reports.txt: off, ask or always); this root side has no network at all.
+
+STATE = ("data", "eitri", "state", "report")                 # root's own, under ROOT
+CRASH_NAME = re.compile(r"eitri-crash-report-\d{8}T\d{6}Z(?:\.sent)?\.json")
+PENDING = "eitri-crash.pending"
+SEND_REQUEST = "eitri-report-send.request"
+MAX_DESCRIPTION = 3800
+MAX_LOG_TAIL = 110000
+MAX_BREADCRUMBS = 20
+
+
+def state_dir() -> Path:
+    d = ROOT.joinpath(*STATE)
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return d
+
+
+def previous_klippy_session() -> str:
+    """The end of the Klipper log of the session before the current one (before Klipper starts this boot,
+    that is the previous boot's). klippy.log starts every session with "Start printer at"."""
+    logs = list_data_dir(LOGS)
+    got = read_data_file(LOGS, "klippy.log", MAX_LOG_BYTES)
+    text = got[0].decode("utf-8", "replace") if got else ""
+    if "Start printer at" in text:
+        return text[text.rindex("Start printer at"):]
+    older = sorted((n for n in logs if n.startswith("klippy.log.") and not n.endswith((".gz", ".tar"))), reverse=True)
+    if older:
+        got = read_data_file(LOGS, older[0], MAX_OLD_LOG_BYTES)
+        if got:
+            old = got[0].decode("utf-8", "replace")
+            return old[old.rindex("Start printer at"):] if "Start printer at" in old else old
+    return text
+
+
+def heaters_on(session: str) -> list[str]:
+    """The heaters with a target above zero in the session's last Stats line (Klipper writes one a second)."""
+    stats = [line for line in session.splitlines() if line.startswith("Stats ")]
+    if not stats:
+        return []
+    return [f"{m.group(1)}={m.group(2)}" for m in re.finditer(r"(\w+): target=(\d+(?:\.\d+)?)", stats[-1])
+            if float(m.group(2)) > 0]
+
+
+def kernel_crash_records() -> str:
+    """systemd-pstore's records of this boot, or "" (also when journalctl fails: an error is not a crash)."""
+    try:
+        p = subprocess.run(["journalctl", "-b", "0", "-t", "systemd-pstore", "--no-pager", "-q", "-o", "cat"],
+                           capture_output=True, timeout=COMMAND_TIMEOUT, stdin=subprocess.DEVNULL,
+                           env={"PATH": PATH, "LANG": "C.UTF-8", "SYSTEMD_PAGER": ""})
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return p.stdout.decode("utf-8", "replace") if p.returncode == 0 else ""
+
+
+def klippy_digest(session: str) -> str:
+    """Klipper's own messages from the end of a session, and only its last few once-a-second Stats lines."""
+    lines = session.splitlines()
+    stats = [line for line in lines if line.startswith("Stats ")]
+    other = [line for line in lines if not line.startswith("Stats ")]
+    return "\n".join(other[-200:] + ["[last Stats lines]"] + stats[-3:]) + "\n"
+
+
+def fnv1a64(text: str) -> str:
+    h = 0xcbf29ce484222325
+    for byte in text.encode():
+        h = ((h ^ byte) * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016x}"
+
+
+def crash_payload(reason: str, title: str) -> dict:
+    """The JSON body for /api/desktop/bug-report (the SindriCAD/BrokkrSculpt contract, product "eitri")."""
+    scrubber = Scrubber(identifiers())
+    osr = read_root_file("etc/os-release")
+    m = re.search(r'^VERSION_ID="?([^"\n]*)', osr, re.M)
+    version = m.group(1) if m and m.group(1) else "unknown"
+    session = previous_klippy_session()
+    heaters = heaters_on(session)
+    stats = [line for line in session.splitlines() if line.startswith("Stats ")]
+    flavor = (read_data_file(("eitri",), "flavor", 4096) or (b"?", 0))[0].decode("utf-8", "replace").strip()
+    boots = run(["journalctl", "--list-boots", "--no-pager", "-q"]).strip().splitlines()[-3:]
+    description = "\n".join([
+        f"Eitri {version} ({flavor}) found that its previous boot crashed: {reason}.",
+        "This report was made on the printer and scrubbed of addresses, names, serial numbers and keys.",
+        "",
+        "Recent boots:", *boots,
+        "",
+        "Klipper's last statistics before the crash:", (stats[-1][:1500] if stats else "(none)"),
+        "",
+        "Failed units now:", run(["systemctl", "--failed", "--no-pager", "--no-legend"]).strip() or "(none)",
+    ])
+    # Each part keeps its own end; the most telling come first and the whole fits the endpoint's limit.
+    parts = [
+        ("kernel crash records (this boot, from ramoops)", kernel_crash_records() or "(none)\n", 30000),
+        ("kernel messages, previous boot (end)",
+         run(["journalctl", "-k", "-b", "-1", "--no-pager", "-q", "-o", "short-monotonic", "-n", "300"]), 25000),
+        ("system log, previous boot (end)",
+         run(["journalctl", "-b", "-1", "--no-pager", "-q", "-o", "short-iso-precise", "-n", "600"]), 30000),
+        ("klippy.log, previous session (end)", klippy_digest(session), 25000),
+    ]
+    log_tail = "".join(f"===== {name}\n{scrubber.scrub(body)[-budget:]}\n" for name, body, budget in parts)
+    crumbs = [
+        f"eitri {version}", f"flavor {flavor}", f"kernel {run(['uname', '-r']).strip()}", f"crash: {reason}",
+        f"heaters on at the end: {', '.join(heaters) or 'none'}",
+        f"klipper session lines: {len(session.splitlines())}",
+    ]
+    m = re.search(r"sysload=(\S+) cputime=(\S+) memavail=(\d+)", stats[-1]) if stats else None
+    if m:
+        crumbs.append(f"last sysload {m.group(1)}, memavail {int(m.group(3)) // 1024} MB")
+    for name in ("host", "mainboard", "extruder", "heater_bed", "chamber"):
+        mt = re.search(rf"\b{name}: (?:target=\S+ )?temp=(\S+)", stats[-1]) if stats else None
+        if mt:
+            crumbs.append(f"{name} {mt.group(1)} C")
+    description = scrubber.scrub(description)[:MAX_DESCRIPTION]
+    log_tail = log_tail[-MAX_LOG_TAIL:]
+    crumbs = [scrubber.scrub(c)[:300] for c in crumbs][:MAX_BREADCRUMBS]
+    return {
+        "product": "eitri",
+        "title": title[:200],
+        "description": description,
+        "app_version": version[:40],
+        "os": "linux",
+        "arch": os.uname().machine[:20],
+        # The field SindriCAD uses for its engine; for Eitri: Klipper had connected to its MCUs.
+        "sidecar_connected": "Configured MCU" in session,
+        "log_tail": log_tail,
+        "breadcrumbs": crumbs,
+        "fingerprint": fnv1a64(f"{version}|{title}"),
+    }
+
+
+def write_pending(payload: dict, why: str = "crash") -> str:
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    name = write_into(LOGS, f"eitri-crash-report-{stamp}.json",
+                      json.dumps(payload, indent=2, ensure_ascii=False).encode() + b"\n", CRASH_NAME)
+    write_into(COMMS, PENDING, f"{name}\n{why}\n".encode())     # "requested": always asked, whatever the setting
+    return name
+
+
+def boot_check() -> int:
+    d = state_dir()
+    seen, clean = d / "boot-seen", d / "clean-shutdown"
+    previous, was_clean = seen.exists(), clean.exists()
+    clean.unlink(missing_ok=True)
+    seen.write_text(datetime.datetime.now(datetime.timezone.utc).isoformat() + "\n")
+    records = kernel_crash_records().strip()
+    heaters = heaters_on(previous_klippy_session()) if previous and not was_clean else []
+    if records:
+        reason, title = "the kernel left a crash record (panic or lockup)", "Crash: kernel panic or lockup"
+    elif heaters:
+        reason = f"it stopped without shutting down while heaters were on ({', '.join(heaters)})"
+        title = "Crash: the printer stopped while in use (hang, reset or power loss)"
+    else:
+        state = "first boot" if not previous else ("clean shutdown" if was_clean else "unclean, but idle (a power switch)")
+        print(f"eitri-report: previous boot: {state}; no crash report", file=sys.stderr)
+        return 0
+    try:
+        name = write_pending(crash_payload(reason, title))
+    except OSError as exc:
+        print(f"eitri-report: crash found ({reason}) but the report cannot be written: {exc}", file=sys.stderr)
         return 1
-    if mode == "--logs":
-        consume_request()
-        age = newest_report_age()
-        if age is not None and age < MIN_INTERVAL_S:
-            print(f"eitri-report: a report was made {age:.0f} s ago; not making another yet", file=sys.stderr)
-            return 0
+    print(f"eitri-report: previous boot crashed: {reason}; {name} is in the Logs folder", file=sys.stderr)
+    return 0
+
+
+def mark_clean() -> int:
+    (state_dir() / "clean-shutdown").write_text(datetime.datetime.now(datetime.timezone.utc).isoformat() + "\n")
+    return 0
+
+
+def bundle_into_logs() -> int:
+    age = newest_report_age()
+    if age is not None and age < MIN_INTERVAL_S:
+        print(f"eitri-report: a report was made {age:.0f} s ago; not making another yet", file=sys.stderr)
+        return 0
     scrubbed, manifest = collect()
-    if mode == "--list":
-        for f in manifest["files"]:
-            print(f"{f['bytes']:>10}  {f['name']}")
-        print("removed:", json.dumps(manifest["removed"]))
-        print("not included:", ", ".join(manifest["not_included"]))
-        return 0
     data = build_tar(scrubbed, manifest)
-    if mode == "--stdout":
-        sys.stdout.buffer.write(data)
-        return 0
     try:
         name = write_into_logs(data, manifest["created_utc"])
     except OSError as exc:
@@ -494,6 +667,45 @@ def main(argv: list[str]) -> int:
         return 1
     print(f"eitri-report: {name} ({len(data)} bytes) is in the Logs folder; removed {json.dumps(manifest['removed'])}",
           file=sys.stderr)
+    return 0
+
+
+def send_request_into_logs() -> int:
+    """EITRI_REPORT_SEND: the owner asks for a report to be sent now; it waits in the same pending step."""
+    try:
+        name = write_pending(crash_payload("none; the owner asked for a report to be sent", "Report from a printer"),
+                             "requested")
+    except OSError as exc:
+        print(f"eitri-report: cannot write the report: {exc}", file=sys.stderr)
+        return 1
+    print(f"eitri-report: {name} is in the Logs folder and waits to be sent", file=sys.stderr)
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    mode = argv[1] if len(argv) > 1 else "--logs"
+    if mode == "--boot-check":
+        return boot_check()
+    if mode == "--mark-clean":
+        return mark_clean()
+    if mode == "--logs":
+        # Started by eitri-report.path for either request; without one (run by hand) it makes a bundle.
+        wants_send, wants_bundle = consume_request(SEND_REQUEST), consume_request(REQUEST)
+        rc = send_request_into_logs() if wants_send else 0
+        if wants_bundle or not wants_send:
+            rc = bundle_into_logs() or rc
+        return rc
+    if mode not in ("--stdout", "--list"):
+        print(__doc__.split("\n\n")[2], file=sys.stderr)
+        return 1
+    scrubbed, manifest = collect()
+    if mode == "--list":
+        for f in manifest["files"]:
+            print(f"{f['bytes']:>10}  {f['name']}")
+        print("removed:", json.dumps(manifest["removed"]))
+        print("not included:", ", ".join(manifest["not_included"]))
+        return 0
+    sys.stdout.buffer.write(build_tar(scrubbed, manifest))
     return 0
 
 

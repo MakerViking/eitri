@@ -1,0 +1,22 @@
+[Unit]
+Description=Send a crash report if the owner allows it (eitri-reports.txt)
+Documentation=file:///usr/share/doc/eitri/os/README.md
+# /usr/libexec/eitri/eitri-report-sender: off sends nothing, ask shows a dialog in Fluidd/Mainsail,
+# always sends. The only part of the crash-report path with network access, and it runs as the service
+# user: it can read the scrubbed report and the setting, never the journal. Started only by its .path unit.
+After=moonraker.service network-online.target eitri-crash-check.service
+Wants=network-online.target
+RequiresMountsFor=/data
+
+[Service]
+Type=simple
+User=eitri
+Group=eitri
+ExecStart=/usr/libexec/eitri/eitri-report-sender
+Restart=on-failure
+RestartSec=60
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/data/printer_data/logs /data/printer_data/comms /data/printer_data/config
+ProtectHome=yes
+PrivateTmp=yes

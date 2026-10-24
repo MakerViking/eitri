@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -202,5 +203,5 @@ def test_the_report_service_has_no_network_and_cannot_disturb_a_print():
     assert svc["PrivateNetwork"] == "yes" and svc["ProtectSystem"] == "strict" and svc["NoNewPrivileges"] == "yes"
     assert set(svc["ReadWritePaths"].split()) == {"/data/printer_data/logs", "/data/printer_data/comms"}
     assert svc["IOSchedulingClass"] == "idle" and int(svc["Nice"]) > 0
-    path = parse(UNIT_DIR / "eitri-report.path")
-    assert path["Path"]["PathExists"] == "/data/printer_data/comms/eitri-report.request"
+    watched = re.findall(r"^PathExists=(\S+)$", (UNIT_DIR / "eitri-report.path").read_text(), re.M)
+    assert watched == ["/data/printer_data/comms/eitri-report.request", "/data/printer_data/comms/eitri-report-send.request"]

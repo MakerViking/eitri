@@ -4,8 +4,10 @@ Documentation=file:///usr/share/doc/eitri/os/README.md
 RequiresMountsFor=/data
 
 [Path]
-# The EITRI_REPORT macro (klipper-layer/config/macros.cfg) creates this file; eitri-report removes it.
+# The EITRI_REPORT and EITRI_REPORT_SEND macros (klipper-layer/config/macros.cfg) create these files;
+# eitri-report removes them.
 PathExists=/data/printer_data/comms/eitri-report.request
+PathExists=/data/printer_data/comms/eitri-report-send.request
 Unit=eitri-report.service
 
 [Install]

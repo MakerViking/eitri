@@ -70,6 +70,10 @@ Eitri assumes a printer on a home LAN that its owner controls, with a physical o
 * The data seed (Klipper or Kalico, Moonraker, the Python environments, Klarity, the extras) is built by CI from hash-pinned inputs, announced by a signed document, verified by SHA-256 before it is read, and unpacked with a strict member policy. An offline first boot therefore executes only code that is in the release.
 * **Release signing keys are never in a build job.** CI builds unsigned artifacts; a separate job in a protected GitHub environment, approved by the maintainer, signs them. The root keys are held offline. How this works, and what it does not protect against, is in [`docs/RELEASING.md`](docs/RELEASING.md).
 
+**What leaves the printer**
+
+* **Nothing is sent to anyone unless the owner allows it.** There is no telemetry and no cloud service. Crash reports are **off** by default; the owner can choose *ask* (a dialog before each one) or *always* in setup or later (`eitri-reports.txt`, `EITRI_CRASH_REPORTS`). A report is scrubbed of addresses, names, serial numbers, keys and file names on the printer, written to the Logs folder first, and sent byte for byte as written, without an account, to the Eitri developers through TinkerAtlas. The root part that reads the journal has no network access; the part that sends runs as the service user ([`docs/CRASH-REPORTS.md`](docs/CRASH-REPORTS.md)).
+
 **What is not defended**
 
 * Someone on your LAN who can send requests themselves (not just through a web page), when you chose *Trust my home network*: that choice trusts the network.

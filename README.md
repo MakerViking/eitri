@@ -304,6 +304,7 @@ docs/            architecture, install, recovery, safety, releasing, clean-room 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md): layers, partitions, services, ports, the `/data` layout and data seed, MCU flashing, and safety invariants
 - [INSTALL.md](docs/INSTALL.md): install paths, the offline data seed, first boot and remote access, Klipper vs Kalico, and update channels
 - [SAFETY.md](docs/SAFETY.md): how to stop the printer, the heater protections, and what is not verified on a machine yet
+- [CRASH-REPORTS.md](docs/CRASH-REPORTS.md): diagnostics reports, crash reports, what is removed, and what leaves the printer (nothing, unless you allow it)
 - [RECOVERY.md](docs/RECOVERY.md): eMMC backup and restore, microSD boot, maskrom recovery, and ST-Link as the last resort
 - [RELEASING.md](docs/RELEASING.md): how releases are built and signed, key custody, rotation and revocation
 - [CLEAN-ROOM.md](docs/CLEAN-ROOM.md): the reverse-engineering and clean-room policy

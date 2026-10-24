@@ -71,6 +71,22 @@ def test_extra_hostnames_are_rendered_for_nginx_and_allowed_as_origins(tmp_path)
     assert [ln for ln in empty["eitri-hosts.txt"].splitlines() if ln and not ln.startswith("#")] == []
 
 
+def test_crash_reports_are_off_unless_the_owner_chooses(tmp_path):
+    settings = Settings(data_dir=tmp_path)
+
+    def mode(options):
+        files = render.render_all(settings, render.build_context(flavor="klipper", options=opts.validate(options),
+                                                                 detect=None, lock={}, hostname="eitri"))
+        return [ln for ln in files["eitri-reports.txt"].splitlines() if ln and not ln.startswith("#")]
+
+    assert opts.defaults()["crash_reports"] == "off"
+    assert mode({}) == ["off"]
+    assert mode({"crash_reports": "ask"}) == ["ask"]
+    assert mode({"crash_reports": "always"}) == ["always"]
+    with pytest.raises(opts.ValidationError):
+        opts.validate({"crash_reports": "sometimes"})
+
+
 # --- release.lock -------------------------------------------------------------
 def test_release_lock_real_file_and_fallback(tmp_path):
     p = tmp_path / "release.lock"

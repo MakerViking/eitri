@@ -101,7 +101,7 @@ def test_preview_apply_flow(detected):
     st, pv = s.post("/api/preview")
     paths = {f["path"]: f for f in pv["files"]}
     assert set(paths) == {"printer.cfg", "klarity.cfg", "moonraker.conf", "eitri-update-manager.conf", "eitri-access.conf",
-                          "eitri-hosts.txt"}
+                          "eitri-hosts.txt", "eitri-reports.txt"}
     assert paths["printer.cfg"]["foreign"] and paths["printer.cfg"]["status"] == "modified"
     assert paths["klarity.cfg"]["status"] == "new"
     assert "new_content" not in paths["klarity.cfg"] and paths["klarity.cfg"]["hunks"]
@@ -129,7 +129,7 @@ def test_preview_apply_flow(detected):
     st, pv2 = s.post("/api/preview")
     # moonraker.conf is yours once written: it no longer appears in the plan at all
     assert {f["path"]: f["status"] for f in pv2["files"]} == {"printer.cfg": "unchanged", "klarity.cfg": "unchanged", "eitri-access.conf": "unchanged",
-                                                              "eitri-hosts.txt": "unchanged"}
+                                                              "eitri-hosts.txt": "unchanged", "eitri-reports.txt": "unchanged"}
 
 
 def test_flavor_choice_changes_rendered_header_and_marker(detected):

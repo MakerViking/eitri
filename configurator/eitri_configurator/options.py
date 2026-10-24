@@ -159,6 +159,21 @@ SCHEMA: list[dict[str, Any]] = [
             },
         ],
     },
+    {
+        "id": "reports", "title": "Crash reports", "blurb": "Whether Eitri may send a report when it recovers from a crash.",
+        "fields": [
+            {
+                "id": "crash_reports", "type": "choice", "default": "off",
+                "label": "After a crash",
+                "help": "A report holds the end of the system and Klipper logs from before the crash. Addresses, names, serial numbers, keys and file names are removed on the printer before anything leaves it, and it goes to the Eitri developers at tinkeratlas.com, without an account. You can change this any time with the EITRI_CRASH_REPORTS macro, or in eitri-reports.txt with the configuration files.",
+                "choices": [
+                    _choice("off", "Never send", "Nothing is sent. You can still make a report yourself with the EITRI_REPORT macro"),
+                    _choice("ask", "Ask me first", "The web interface asks before each report is sent, and shows where to read it"),
+                    _choice("always", "Send automatically", "Reports are sent without asking"),
+                ],
+            },
+        ],
+    },
 ]
 
 

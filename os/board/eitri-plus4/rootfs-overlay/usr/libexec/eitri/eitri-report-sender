@@ -1,0 +1,269 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: Apache-2.0
+"""eitri-report-sender: send a crash report, if and only if the owner allows it.
+
+eitri-report (root, no network) writes a scrubbed crash report into the Logs folder as
+eitri-crash-report-<UTC>.json and names it in /data/printer_data/comms/eitri-crash.pending. This program
+runs as the service user, is the only part of the crash-report path that has network access, and sends
+exactly that file's bytes to the Eitri developers (TinkerAtlas's bug-report endpoint, no account, the
+same one SindriCAD and BrokkrSculpt use). What it does depends on the owner's setting in
+/data/printer_data/config/eitri-reports.txt (the setup wizard writes it; anything unreadable is off):
+
+    off      nothing is sent; the report stays in the Logs folder
+    ask      Fluidd/Mainsail show a dialog: Send, Don't send, or Always send (the EITRI_CRASH_REPORT
+             macro answers it); the dialog says where to read the report first
+    always   it is sent without asking
+
+A report the owner asked for (the EITRI_REPORT_SEND macro) is always asked about, whatever the setting.
+Sent reports are renamed to eitri-crash-report-<UTC>.sent.json. eitri-report-sender.path starts this
+whenever a report is pending; it exits when nothing is.
+
+    eitri-report-sender --set off|ask|always    change the setting (the EITRI_CRASH_REPORTS macro)
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+DATA = Path(os.environ.get("EITRI_REPORT_DATA", "/data"))
+MOONRAKER = os.environ.get("EITRI_MOONRAKER", "http://127.0.0.1:7125")
+ENDPOINT = os.environ.get("EITRI_REPORT_ENDPOINT", "https://tinkeratlas.com/api/desktop/bug-report")
+POLL_S = float(os.environ.get("EITRI_REPORT_POLL", "3"))
+GIVE_UP_S = float(os.environ.get("EITRI_REPORT_GIVE_UP", str(7 * 24 * 3600)))
+RETRY_S = float(os.environ.get("EITRI_REPORT_RETRY", "900"))
+
+LOGS = DATA / "printer_data/logs"
+COMMS = DATA / "printer_data/comms"
+SETTING = DATA / "printer_data/config/eitri-reports.txt"
+PENDING = COMMS / "eitri-crash.pending"
+DECISION = COMMS / "eitri-crash.decision"
+REPORT_NAME = re.compile(r"eitri-crash-report-\d{8}T\d{6}Z\.json")
+MODES = ("off", "ask", "always")
+
+
+def log(msg: str) -> None:
+    print(f"eitri-report-sender: {msg}", file=sys.stderr, flush=True)
+
+
+def setting() -> str:
+    try:
+        for line in SETTING.read_text(errors="replace").splitlines():
+            word = line.split("#", 1)[0].strip().lower()
+            if word:
+                return word if word in MODES else "off"
+    except OSError:
+        pass
+    return "off"
+
+
+def write_setting(mode: str) -> None:
+    text = SETTING.read_text(errors="replace") if SETTING.exists() else ""
+    kept = [ln for ln in text.splitlines() if ln.lstrip().startswith("#") or not ln.strip()]
+    tmp = SETTING.with_name(f".{SETTING.name}.tmp")
+    tmp.write_text("\n".join(kept).rstrip("\n") + ("\n" if kept else "") + mode + "\n")
+    os.replace(tmp, SETTING)
+
+
+def pending() -> tuple[str, str] | None:
+    """The pending report's file name and why it exists ("crash" or "requested"), if there is one."""
+    try:
+        lines = PENDING.read_text().split()
+    except OSError:
+        return None
+    if not lines or not REPORT_NAME.fullmatch(lines[0]):
+        return None
+    return lines[0], (lines[1] if len(lines) > 1 else "crash")
+
+
+def read_report(name: str) -> bytes | None:
+    try:
+        fd = os.open(LOGS / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as fh:
+        return fh.read(2 << 20)
+
+
+def finish(name: str, sent: bool) -> None:
+    if sent:
+        try:
+            os.rename(LOGS / name, LOGS / name.replace(".json", ".sent.json"))
+        except OSError:
+            pass
+    for f in (PENDING, DECISION):
+        f.unlink(missing_ok=True)
+
+
+# --- Moonraker: the dialog in Fluidd/Mainsail -----------------------------------------------------------
+
+def moonraker(path: str, body: dict | None = None, timeout: float = 10) -> dict | None:
+    req = urllib.request.Request(MOONRAKER + path, method="POST" if body is not None else "GET",
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read())
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+
+
+def klipper_ready() -> bool:
+    info = moonraker("/printer/info")
+    return bool(info) and info.get("result", {}).get("state") == "ready"
+
+
+def web_clients() -> int:
+    stats = moonraker("/machine/proc_stats")
+    return int((stats or {}).get("result", {}).get("websocket_connections", 0) or 0)
+
+
+def gcode(*lines: str) -> None:
+    moonraker("/printer/gcode/script", {"script": "\n".join(lines)})
+
+
+def safe(text: str) -> str:
+    """Text for RESPOND MSG="...": G-code ends a line at ';' and '#', and the quotes end the message."""
+    return re.sub(r'[;#"\n\r]', " ", text)[:300]
+
+
+def show_dialog(name: str, title: str, requested: bool) -> None:
+    first = ("You asked for a report to be sent." if requested
+             else f"The printer stopped unexpectedly last time ({safe(title.removeprefix('Crash: '))}).")
+    gcode(
+        'RESPOND TYPE=command MSG="action:prompt_begin Eitri: send a report?"',
+        f'RESPOND TYPE=command MSG="action:prompt_text {first}"',
+        'RESPOND TYPE=command MSG="action:prompt_text A scrubbed report is ready. Addresses, names, serial numbers, '
+        'keys and file names were removed on the printer."',
+        f'RESPOND TYPE=command MSG="action:prompt_text Read it first if you like: Logs, {name}"',
+        'RESPOND TYPE=command MSG="action:prompt_text Send it to the Eitri developers at tinkeratlas.com, without an account?"',
+        'RESPOND TYPE=command MSG="action:prompt_footer_button Do not send|EITRI_CRASH_REPORT ACTION=discard|secondary"',
+        *([] if requested else ['RESPOND TYPE=command MSG="action:prompt_footer_button Always send|EITRI_CRASH_REPORT ACTION=always|info"']),
+        'RESPOND TYPE=command MSG="action:prompt_footer_button Send|EITRI_CRASH_REPORT ACTION=send|primary"',
+        'RESPOND TYPE=command MSG="action:prompt_show"',
+    )
+
+
+def say(text: str) -> None:
+    gcode(f'RESPOND MSG="{safe(text)}"')
+
+
+# --- sending --------------------------------------------------------------------------------------------
+
+def send(body: bytes) -> tuple[bool, str]:
+    """POST the report; (sent, a sentence for the owner)."""
+    try:
+        version = json.loads(body).get("app_version", "unknown")
+    except ValueError:
+        return False, "the report file is not valid JSON; it was not sent"
+    req = urllib.request.Request(ENDPOINT, data=body, method="POST",
+                                 headers={"Content-Type": "application/json", "User-Agent": f"Eitri/{version}"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            answer = json.loads(resp.read() or b"{}")
+        bug = str(answer.get("bug_id", ""))[:8]
+        return True, f"Report sent, thank you{f' (reference {bug})' if bug else ''}."
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            return False, "TinkerAtlas is receiving too many reports right now; it will be tried again later."
+        if exc.code == 413:
+            return False, "the report is too large for TinkerAtlas; it stays in the Logs folder."
+        return False, f"TinkerAtlas refused the report (HTTP {exc.code}); it stays in the Logs folder."
+    except (OSError, urllib.error.URLError) as exc:
+        return False, f"the printer could not reach TinkerAtlas ({getattr(exc, 'reason', exc)}); it will be tried again later."
+
+
+def deliver(name: str) -> bool:
+    body = read_report(name)
+    if body is None:
+        log(f"{name} is gone or not a regular file; nothing to send")
+        finish(name, sent=False)
+        return True
+    ok, message = send(body)
+    log(message)
+    if ok or "stays in the Logs folder" in message:
+        finish(name, sent=ok)
+        say(message if ok else f"Crash report not sent: {message}")
+        return True
+    return False
+
+
+def take_decision() -> str | None:
+    try:
+        word = DECISION.read_text().strip().lower()
+    except OSError:
+        return None
+    DECISION.unlink(missing_ok=True)
+    return word if word in ("send", "discard", "always") else None
+
+
+def main() -> int:
+    started = time.monotonic()
+    shown_to = -1
+    retry_at = 0.0
+    while True:
+        item = pending()
+        if item is None:
+            return 0
+        name, why = item
+        mode = "ask" if why == "requested" else setting()
+        if mode == "off":
+            log(f"crash reports are off ({SETTING.name}); {name} stays in the Logs folder, unsent")
+            finish(name, sent=False)
+            return 0
+        if time.monotonic() - started > GIVE_UP_S:
+            log(f"{name} waited too long; it stays pending until the next boot")
+            return 0
+        if mode == "always":
+            if time.monotonic() >= retry_at:
+                if deliver(name):
+                    continue
+                retry_at = time.monotonic() + RETRY_S
+            time.sleep(POLL_S)
+            continue
+        # ask: the answer comes from the dialog's buttons through the EITRI_CRASH_REPORT macro.
+        decision = take_decision()
+        if decision == "discard":
+            finish(name, sent=False)
+            say(f"Not sent. The report stays in the Logs folder as {name}; delete it there if you like.")
+            continue
+        if decision == "always":
+            write_setting("always")
+            say("Crash reports will be sent automatically from now on (EITRI_CRASH_REPORTS MODE=ask to undo).")
+        if decision in ("send", "always"):
+            if not deliver(name):
+                say("The report could not be sent now; it will be tried again.")
+                retry_at = time.monotonic() + RETRY_S
+                shown_to = -1
+            continue
+        if klipper_ready() and time.monotonic() >= retry_at:
+            clients = web_clients()
+            if clients > shown_to:                 # a browser connected since the dialog was last shown
+                obj = json.loads(read_report(name) or b"{}")
+                show_dialog(name, str(obj.get("title", "")), why == "requested")
+                if shown_to < 0:
+                    say(f"Eitri has a report waiting (Logs, {name}). Answer the dialog, or run EITRI_CRASH_REPORT "
+                        "ACTION=send or ACTION=discard.")
+            shown_to = clients
+        time.sleep(POLL_S)
+
+
+def set_mode(argv: list[str]) -> int:
+    if len(argv) != 3 or argv[2] not in MODES:
+        print("usage: eitri-report-sender --set off|ask|always", file=sys.stderr)
+        return 1
+    if not SETTING.exists():
+        SETTING.write_text("# Crash reports: off, ask or always (see the setup wizard, or eitri-report-sender).\n")
+    write_setting(argv[2])
+    log(f"crash reports: {argv[2]}")
+    return 0
+
+
+if __name__ == "__main__":
+    os.umask(0o022)
+    sys.exit(set_mode(sys.argv) if sys.argv[1:2] == ["--set"] else main())
