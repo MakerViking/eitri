@@ -127,3 +127,35 @@
 		priority = <192>;
 	};
 };
+
+/*
+ * Crash records across a reset (bench-validate; not yet booted).
+ *
+ * ramoops keeps the kernel log of a panic (the lockup detectors in linux.fragment
+ * turn a frozen CPU into one) and the console in this RAM, which a watchdog or CRU
+ * reset does not clear; systemd-pstore moves the records into the journal on the
+ * next boot. A power cut loses them.
+ *
+ * Placement: below 0x200000 is the boot firmware's (Linux's RAM starts there on this
+ * board, /proc/iomem), and U-Boot itself runs from 0x200000 before it relocates.
+ * U-Boot then loads into 0x500000 (scriptaddr), 0x600000 (pxefile_addr_r), 0x1e00000
+ * (fdt), 0x1f00000 (overlays), 0x2080000 (kernel) and 0x6000000 (ramdisk); 16 MiB is
+ * clear of all of them, so a boot does not overwrite the previous crash.
+ * os/tests/test_tree.py checks that against uboot.env.
+ */
+/ {
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		ramoops@1000000 {
+			compatible = "ramoops";
+			reg = <0x0 0x01000000 0x0 0x00100000>;
+			record-size = <0x20000>;
+			console-size = <0x40000>;
+			pmsg-size = <0x20000>;
+			ecc-size = <16>;
+		};
+	};
+};

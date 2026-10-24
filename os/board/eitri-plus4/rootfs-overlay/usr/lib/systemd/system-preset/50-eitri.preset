@@ -1,6 +1,7 @@
 # Eitri service policy. systemctl preset-all applies this when the image is built.
 enable eitri-grow-data.service
 enable eitri-data-init.service
+enable eitri-journal.service
 enable eitri-etc.service
 enable eitri-zram.service
 enable eitri-seed.service

@@ -1,0 +1,25 @@
+[Unit]
+Description=Keep the journal on /data so a crash leaves a readable log
+Documentation=file:///usr/share/doc/eitri/os/README.md
+# systemd-journal-flush.service runs before systemd-tmpfiles-setup.service, so on this board
+# (/var is a tmpfs) /var/log/journal does not exist yet when it asks journald to move to
+# persistent storage, and journald stays in /run for the whole boot: every log is lost at
+# the next power cycle. This flush runs after tmpfiles has linked /var/log/journal to
+# /data/eitri/state/log/journal (tmpfiles.d/eitri-journal.conf), and hands the journal back
+# to /run before /data is unmounted at shutdown.
+DefaultDependencies=no
+Wants=systemd-journald.service
+After=systemd-journald.service systemd-journal-flush.service systemd-tmpfiles-setup.service eitri-data-init.service
+RequiresMountsFor=/data/eitri/state/log/journal
+Before=sysinit.target shutdown.target
+Conflicts=shutdown.target
+ConditionPathIsDirectory=/var/log/journal
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/journalctl --flush
+ExecStop=/usr/bin/journalctl --relinquish-var
+
+[Install]
+WantedBy=sysinit.target

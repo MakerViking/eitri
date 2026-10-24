@@ -598,6 +598,8 @@ def collect(boot: Boot, mode: str, tag: str, report_dir: Path, args) -> dict:
     r["harness_rss_kb"] = int(mh.group(1)) if mh else 0
     r["unit_state"] = parse_unit_state(s.get("unit_state", {}).get("text", ""))
     r["failed_units"] = [l.split()[1] if l.startswith("●") else l.split()[0] for l in s.get("failed", {}).get("text", "").split("\n") if l.strip()]
+    mb = re.search(r"^BOOTS (\d+)", s.get("journal_boots", {}).get("text", ""), re.M)
+    r["journal_boots"] = int(mb.group(1)) if mb else 0
     r["sections_missing"] = [k for k in ("analyze_time", "free", "memory_by_unit", "failed", "unit_state") if k not in s]
     return r
 
@@ -736,6 +738,8 @@ def checks(first: dict, second: dict | None, known: dict[str, tuple[str, str]]) 
         h = second.get("host_http", {})
         c.append((not h.get("configurator_8099", "").startswith("2"), f"second boot: nothing answers on the configurator port ({h.get('configurator_8099')})"))
         c.append((h.get("nginx_80", "").startswith("2") and h.get("nginx_server_info", "").startswith("2"), f"second boot: nginx and /server/info answer through the forwarded port ({h.get('nginx_80')}, {h.get('nginx_server_info')})"))
+        c.append((sd.get("journal_boots", 0) >= 2,
+                  f"second boot: the journal on /data still holds the first boot ({sd.get('journal_boots', 0)} boots listed)"))
         c.append((second.get("clean_poweroff", False), "second boot: guest powered off cleanly"))
     return c
 

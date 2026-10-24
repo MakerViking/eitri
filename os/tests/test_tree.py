@@ -446,3 +446,59 @@ def test_access_units_are_wired_to_the_helper():
     preset = (OVERLAY / "usr/lib/systemd/system-preset/50-eitri.preset").read_text().split("\n")
     for unit in ("eitri-access.path", "eitri-access.service", "eitri-seed.service"):
         assert f"enable {unit}" in preset
+
+
+def test_the_journal_is_flushed_to_data_after_tmpfiles_links_it():
+    # systemd-journal-flush.service is ordered before systemd-tmpfiles-setup.service, so on a tmpfs /var it
+    # never sees /var/log/journal and the journal stayed in RAM: the 2026-10-24 host lockup left no log at all.
+    unit = parse(UNIT_DIR / "eitri-journal.service")
+    after = unit["Unit"]["After"].split()
+    assert {"systemd-tmpfiles-setup.service", "systemd-journal-flush.service", "eitri-data-init.service"} <= set(after)
+    assert "/data/eitri/state/log/journal" in unit["Unit"]["RequiresMountsFor"]
+    assert unit["Service"]["ExecStart"] == "/usr/bin/journalctl --flush"
+    assert unit["Service"]["ExecStop"] == "/usr/bin/journalctl --relinquish-var"   # off /data before it unmounts
+    assert unit["Install"]["WantedBy"] == "sysinit.target"
+    preset = (OVERLAY / "usr/lib/systemd/system-preset/50-eitri.preset").read_text().splitlines()
+    assert "enable eitri-journal.service" in preset
+    tmpfiles = (OVERLAY / "etc/tmpfiles.d/eitri-journal.conf").read_text()
+    assert re.search(r"^L\+ /var/log/journal .* /data/eitri/state/log/journal$", tmpfiles, re.M)
+    # The effective value, as journald computes it: drop-ins from /usr/lib and /etc in file-name order (the same
+    # name in /etc replaces the one in /usr/lib), the last setting wins. A second drop-in once overrode it.
+    dropins = {}
+    for d in ("usr/lib/systemd/journald.conf.d", "etc/systemd/journald.conf.d"):
+        for f in sorted((OVERLAY / d).glob("*.conf")):
+            dropins[f.name] = f
+    storage = [m for name in sorted(dropins) for m in re.findall(r"^Storage=(\S+)$", dropins[name].read_text(), re.M)]
+    assert storage and storage[-1] == "persistent", storage
+    assert len(storage) == 1, f"one Storage= setting only, found {storage}"
+
+
+def test_kernel_crash_records_go_to_the_persistent_journal():
+    pstore = (OVERLAY / "etc/systemd/pstore.conf.d/10-eitri.conf").read_text()
+    assert re.search(r"^Storage=journal$", pstore, re.M)      # the default (/var/lib/systemd/pstore) is a tmpfs here
+    fragment = (BOARD / "linux.fragment").read_text().splitlines()
+    for option in ("CONFIG_PSTORE_RAM=y", "CONFIG_SOFTLOCKUP_DETECTOR=y", "CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC=y",
+                   "CONFIG_HARDLOCKUP_DETECTOR=y", "CONFIG_BOOTPARAM_HARDLOCKUP_PANIC=y", "CONFIG_DW_WATCHDOG=y"):
+        assert option in fragment, option
+    watchdog = (OVERLAY / "etc/systemd/system.conf.d/10-eitri-watchdog.conf").read_text()
+    assert re.search(r"^RuntimeWatchdogSec=1min$", watchdog, re.M) and re.search(r"^RebootWatchdogSec=", watchdog, re.M)
+    assert "panic=10" in (BOARD / "uboot.env").read_text()
+
+
+def test_ramoops_is_clear_of_the_boot_firmware_and_everything_u_boot_loads():
+    # A boot that writes over the region destroys the crash it is meant to keep; below 0x200000 is the boot
+    # firmware's (Linux's System RAM starts there on this board), and U-Boot proper runs from 0x200000.
+    dts = (BOARD / "dts/rk3328-eitri-plus4.dts").read_text()
+    m = re.search(r'ramoops@([0-9a-f]+) \{\s*compatible = "ramoops";\s*reg = <0x0 (0x[0-9a-f]+) 0x0 (0x[0-9a-f]+)>;', dts)
+    assert m, "no ramoops node"
+    start, size = int(m.group(2), 16), int(m.group(3), 16)
+    assert int(m.group(1), 16) == start
+    sizes = {k: int(v, 16) for k, v in re.findall(r"^\s+(record|console|pmsg)-size = <(0x[0-9a-f]+)>;", dts, re.M)}
+    assert sizes["record"] and sizes["console"] + sizes["pmsg"] + sizes["record"] <= size
+    env = dict(re.findall(r"^(\w+_addr_r|scriptaddr)=(0x[0-9a-f]+)$", (BOARD / "uboot.env").read_text(), re.M))
+    used = [(0x0, 0x200000), (0x200000, 0x200000 + 0x200000)]                     # firmware; U-Boot before relocation
+    used += [(int(env["scriptaddr"], 16), 0x100000), (0x600000, 0x100000)]          # boot script; pxefile_addr_r
+    used += [(int(env[k], 16), 0x100000) for k in ("fdt_addr_r", "fdtoverlay_addr_r")]
+    used += [(int(env["kernel_addr_r"], 16), 0x4000000), (int(env["ramdisk_addr_r"], 16), 0x2000000)]
+    for base, length in used:
+        assert start + size <= base or start >= base + length, (hex(base), hex(length))

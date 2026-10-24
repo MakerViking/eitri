@@ -109,6 +109,8 @@ sh_sec cgroup_memory 'for u in klipper moonraker klarity eitri-configurator ngin
 
 # --- services ------------------------------------------------------------------------------
 sec failed systemctl --failed --no-pager --no-legend
+# Boots the journal on /data holds (eitri-journal.service): a second boot must also see the first.
+sh_sec journal_boots 'echo "BOOTS $(journalctl --list-boots --no-pager -q 2>/dev/null | grep -c .)"; ls -la /var/log/journal/ /data/eitri/state/log/journal/*/ 2>&1 | head -12; systemctl is-active eitri-journal.service'
 sh_sec failed_unit_journals 'for u in $(systemctl --failed --no-pager --no-legend --plain | awk "{print \$1}"); do echo "=== $u"; systemctl show -p Result,ExecMainStatus,ExecMainCode,NRestarts $u | tr "\n" " "; echo; journalctl -b -u $u --no-pager -o short-monotonic -n 25; done'
 sh_sec unit_state "for u in $UNITS; do printf '%-26s' \$u; systemctl show -p LoadState,ActiveState,SubState,Result,ConditionResult,ExecMainStatus,NRestarts \$u.service | tr '\n' ' '; echo; done"
 if [ "$mode" = full ]; then

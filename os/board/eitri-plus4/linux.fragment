@@ -164,6 +164,24 @@ CONFIG_SWAP=y
 # ---------------------------------------------------------------------------
 CONFIG_WATCHDOG=y
 CONFIG_DW_WATCHDOG=y
+
+# ---------------------------------------------------------------------------
+# Crash evidence: a frozen host must leave a trace and try to recover.
+# The lockup detectors turn a stuck CPU into a panic (panic=10 on the kernel
+# command line then reboots), and ramoops keeps the panic's kernel log in the
+# reserved RAM of dts/rk3328-eitri-plus4.dts across that reset; systemd-pstore
+# moves it into the journal on the next boot (etc/systemd/pstore.conf.d).
+# Hung tasks are only reported, not escalated.
+# ---------------------------------------------------------------------------
+CONFIG_SOFTLOCKUP_DETECTOR=y
+CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC=y
+CONFIG_HARDLOCKUP_DETECTOR=y
+CONFIG_HARDLOCKUP_DETECTOR_PREFER_BUDDY=y
+CONFIG_BOOTPARAM_HARDLOCKUP_PANIC=y
+CONFIG_DETECT_HUNG_TASK=y
+CONFIG_PSTORE=y
+CONFIG_PSTORE_RAM=y
+CONFIG_PSTORE_CONSOLE=y
 CONFIG_HW_RANDOM=y
 CONFIG_HW_RANDOM_ROCKCHIP=y
 
