@@ -134,8 +134,8 @@ The full per-component picture, with test counts and what each piece still needs
 
 ## Performance
 
-Measured on the developer's X-Plus 4 (RK3328, 4 × Cortex-A53, 976 MB RAM), idle with
-Klipper ready, the camera and the touchscreen running. Stock QIDI firmware was measured on
+Measured on the developer's X-Plus 4 (RK3328, 4 × Cortex-A53, 976 MB RAM). The table is
+idle, with Klipper ready and the camera and touchscreen running; a print follows below. Stock QIDI firmware was measured on
 the same printer before the install; its CPU use was not, so that column cites what other
 owners report.
 
@@ -152,14 +152,21 @@ owners report.
 Where Eitri's idle CPU goes, as a share of one core: Klipper 6.5 %, Moonraker 4.4 %,
 Klarity 2.0 %, camera 1.3 %, everything else under 1 %.
 
+**While printing** (15 minutes of a real print, sampled every 10 s, camera stream open in a
+browser): the whole system averaged **18 % of 4 cores** and peaked at 29 %, at least 691 MB
+of RAM stayed free, and the SoC stayed at or below 53 °C. Klipper used 19 % of one core,
+the camera 7 %, nginx (serving the stream) 6 %, Moonraker 6 %, Klarity 2 %. Klipper's
+look-ahead buffer held at about 1 s throughout, and there were **no "Timer too close" or
+lost-communication errors**. So roughly three of the four cores are still free during a
+print.
+
 Why it matters: on stock firmware the screen app competes with Klipper for the CPU, and
 owners trace "Timer too close" shutdowns to it. The community fix pins the screen app to a
 core of its own ([Plus4-Wiki: system tuning](https://github.com/qidi-community/Plus4-Wiki/blob/main/content/system-tuning/README.md)).
 Eitri does not need that workaround.
 
 RAM use is about the same because Eitri runs more: the camera gateway (31 MB) and Klarity
-(34 MB, Python) instead of QIDI's screen app, and a current Moonraker. These are idle
-numbers; figures under a fast print are still to be taken. Emulated boot and per-service
+(34 MB, Python) instead of QIDI's screen app, and a current Moonraker. Emulated boot and per-service
 memory figures are in [STATUS.md](STATUS.md#measurements-qemu-virt-no-printer).
 
 ## Get it
