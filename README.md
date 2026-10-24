@@ -58,6 +58,7 @@ Klipper tree, so `git pull` never conflicts and Moonraker's update manager keeps
 <p align="center">
   <a href="#why-eitri">Why Eitri</a> ·
   <a href="#status">Status</a> ·
+  <a href="#performance">Performance</a> ·
   <a href="#get-it">Get it</a> ·
   <a href="#safety">Safety</a> ·
   <a href="#how-it-fits-together">How it fits together</a> ·
@@ -88,6 +89,9 @@ Klipper tree, so `git pull` never conflicts and Moonraker's update manager keeps
 5. **Releases are pinned and signed with keys CI never sees.** One
    [`release.lock`](release.lock) pins every upstream input. CI builds unsigned artifacts;
    a separate, maintainer-approved job signs them ([RELEASING.md](docs/RELEASING.md)).
+6. **The host has room for Klipper.** Owners report the stock screen app using up to a
+   whole CPU core; Eitri's uses about 2 % of one. The whole printer idles at 5 % CPU and boots in 15 s
+   ([Performance](#performance)).
 
 ## Status
 
@@ -127,6 +131,36 @@ developer's QIDI X-Plus 4, booted, and **printed**.
 
 The full per-component picture, with test counts and what each piece still needs, is in
 [STATUS.md](STATUS.md).
+
+## Performance
+
+Measured on the developer's X-Plus 4 (RK3328, 4 × Cortex-A53, 976 MB RAM), idle with
+Klipper ready, the camera and the touchscreen running. Stock QIDI firmware was measured on
+the same printer before the install; its CPU use was not, so that column cites what other
+owners report.
+
+| | Stock QIDI firmware (v1.7) | Eitri |
+|---|---:|---:|
+| Touchscreen app, CPU | "almost an entire CPU core" ([QIDI #49](https://github.com/QIDITECH/QIDI_PLUS4/issues/49)); about 20 % ([QIDI #126](https://github.com/QIDITECH/QIDI_PLUS4/issues/126)) | **2 % of one core** |
+| Whole system, CPU | not measured | **5 % of 4 cores** (load average 0.13) |
+| RAM used / available | 194 / 694 MB | 198 / 709 MB, while also running an RTSP camera gateway |
+| Boot to ready | not measured | **15.4 s** (1.1 s kernel, 14.3 s userspace) |
+| Software base | Debian 10 (end of life), Linux 5.16, Python 3.7 (end of life) | Buildroot, Linux 6.18 LTS, Python 3.14 |
+| Services running | 25, including a cloud tunnel and an automatic updater | 15 |
+| Root filesystem | 6.9 GB used | 640 MiB image, read-only |
+
+Where Eitri's idle CPU goes, as a share of one core: Klipper 6.5 %, Moonraker 4.4 %,
+Klarity 2.0 %, camera 1.3 %, everything else under 1 %.
+
+Why it matters: on stock firmware the screen app competes with Klipper for the CPU, and
+owners trace "Timer too close" shutdowns to it. The community fix pins the screen app to a
+core of its own ([Plus4-Wiki: system tuning](https://github.com/qidi-community/Plus4-Wiki/blob/main/content/system-tuning/README.md)).
+Eitri does not need that workaround.
+
+RAM use is about the same because Eitri runs more: the camera gateway (31 MB) and Klarity
+(34 MB, Python) instead of QIDI's screen app, and a current Moonraker. These are idle
+numbers; figures under a fast print are still to be taken. Emulated boot and per-service
+memory figures are in [STATUS.md](STATUS.md#measurements-qemu-virt-no-printer).
 
 ## Get it
 
