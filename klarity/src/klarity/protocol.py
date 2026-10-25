@@ -33,7 +33,7 @@ TERMINATOR = b"\xff\xff\xff"
 
 # Event ids that have a fixed payload length (bytes between the id and the terminator).
 FIXED_PAYLOAD: dict[int, int] = {
-    0x65: 3,  # touch event: page, widget, type
+    0x65: 3,  # touch event: page, widget, type (the stock program omits the type, see feed())
     0x66: 1,  # current page id (reply to ``sendme``)
     0x67: 5,  # touch coordinate: x(be16) y(be16) type
     0x68: 5,  # touch coordinate in sleep mode
@@ -186,6 +186,16 @@ class FrameParser:
                 del buf[:n]
                 continue
 
+            if ident == ID_TOUCH and len(buf) >= 4 and buf[3] == 0xFF:
+                # The stock X-Plus 4 program sends a tap as ``65 page widget FF FF FF``: no type
+                # byte. A standard frame's type is 0 or 1, never 0xFF, so this cannot be one.
+                if len(buf) < 6:
+                    break
+                if bytes(buf[3:6]) == TERMINATOR:
+                    events.append(TouchEvent(bytes(buf[:6]), buf[1], buf[2], TOUCH_RELEASE))
+                    del buf[:6]
+                    continue
+
             if ident in FIXED_PAYLOAD:
                 need = 1 + FIXED_PAYLOAD[ident] + 3
                 if len(buf) < need:
@@ -214,7 +224,7 @@ class FrameParser:
                 end >= 0
                 and len(buf) > 1
                 and buf[1] in FIXED_PAYLOAD
-                and end == FIXED_PAYLOAD[buf[1]] + 2
+                and (end == FIXED_PAYLOAD[buf[1]] + 2 or (buf[1] == ID_TOUCH and end == 4))
             ):
                 events.append(Garbage(bytes([ident]), "stray byte before frame"))
                 del buf[:1]

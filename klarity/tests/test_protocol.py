@@ -42,6 +42,23 @@ def test_release_event():
     assert isinstance(ev, TouchEvent) and ev.type == 0
 
 
+def test_stock_short_touch_frame_has_no_type_byte():
+    """What the X-Plus 4's stock program really sends (learn log, 2026-10-25): page, widget, terminator."""
+    events, p = parse(b"\x65\x03\x25" + FF3 + b"\x65\x03\x24" + FF3)
+    assert [(e.page, e.widget, e.type) for e in events] == [(3, 0x25, 0), (3, 0x24, 0)]
+    assert all(isinstance(e, TouchEvent) for e in events) and not p.pending
+
+
+def test_short_touch_frame_split_across_reads():
+    events, p = parse(b"\x65\x03", b"\x22\xff", b"\xff", b"\xff")
+    assert [(e.page, e.widget) for e in events] == [(3, 0x22)] and not p.pending
+
+
+def test_stray_byte_before_a_short_touch_frame_does_not_swallow_it():
+    events, _ = parse(b"\x41\x65\x03\x00" + FF3)
+    assert [type(e) for e in events] == [Garbage, TouchEvent] and events[1].widget == 0
+
+
 def test_string_event_utf8_and_gbk():
     (ev,), _ = parse(b"\x70hello" + FF3)
     assert isinstance(ev, StringEvent) and ev.text == "hello"
@@ -122,8 +139,9 @@ def test_leading_garbage_terminators_are_swallowed():
 
 
 def test_truncated_fixed_frame_resyncs_on_next_terminator():
-    # A touch frame that lost its last payload byte, followed by a good frame.
-    events, p = parse(b"\x65\x01\x02" + FF3 + b"\x65\x03\x04\x01" + FF3)
+    # A touch frame that lost its widget and type bytes, followed by a good frame. (One that lost only
+    # the type is the stock program's short form, see test_stock_short_touch_frame_has_no_type_byte.)
+    events, p = parse(b"\x65\x01" + FF3 + b"\x65\x03\x04\x01" + FF3)
     kinds = [type(e) for e in events]
     assert Garbage in kinds
     good = [e for e in events if isinstance(e, TouchEvent)]
