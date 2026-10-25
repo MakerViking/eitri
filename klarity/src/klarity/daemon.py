@@ -27,12 +27,16 @@ from .protocol import (
 )
 from .pusher import Pusher
 from .screen import Screen, ScreenError
-from .screenmap import ScreenMap
+from .screenmap import Action, ScreenMap
 from .state import PrinterState
 from .transport import SerialTransport, Transport
 from .unlock import SetupUnlocker
 
 log = logging.getLogger(__name__)
+
+#: The two frames of one tap (press, then release) arrive well within this; a second tap on the same
+#: button cannot be this fast and still need a release in between.
+TAP_WINDOW = 1.5
 
 
 class Klarity:
@@ -104,6 +108,7 @@ class Klarity:
                 push_enabled=cfg.camera.push_enabled,
             )
         self._tasks: set[asyncio.Task[None]] = set()
+        self._last_edge: tuple[int, int, int, float] | None = None
         self._ready_logged = False
         self.screen.on_connect = self._on_screen_connect
         self.screen.on_page = self._on_page_change
@@ -244,7 +249,7 @@ class Klarity:
             self.learn.record(event, page)
 
         if isinstance(event, TouchEvent):
-            actions = self.smap.actions_for_touch(event.page, event.widget, event.type)
+            actions = self._touch_actions(event)
             if actions:
                 self._spawn(self.runner.run(actions, {"page": event.page, "widget": event.widget}))
         elif isinstance(event, MarkerEvent):
@@ -263,6 +268,32 @@ class Klarity:
                     self._spawn(self.runner.run(page.on_number, ctx))
             elif page is not None:
                 self._spawn(self.runner.run(page.on_string, {"text": event.text, "page": page.id}))
+
+    def _touch_actions(self, event: TouchEvent) -> tuple[Action, ...] | None:
+        """The handler one tap runs, whichever edge the display program reports.
+
+        Each button in the stock .tft decides for itself whether it sends its 0x65 frame on press
+        (type 1), on release (type 0) or on both, and QIDI's host ignored the type byte. So a widget
+        mapped for one edge runs on the first frame of a tap of either edge, and the opposite frame of
+        the same tap is dropped. A widget that maps both edges keeps them apart."""
+        exact = self.smap.actions_for_touch(event.page, event.widget, event.type)
+        other = self.smap.actions_for_touch(event.page, event.widget, 1 - event.type)
+        if exact and other:
+            return exact
+        if not (exact or other):
+            return None
+        now = time.monotonic()
+        last, self._last_edge = self._last_edge, (event.page, event.widget, event.type, now)
+        if (
+            last is not None
+            and last[:2] == (event.page, event.widget)
+            and last[2] != event.type
+            and now - last[3] < TAP_WINDOW
+        ):
+            self._last_edge = None
+            log.debug("second edge of a tap on page %d widget %d ignored", event.page, event.widget)
+            return None
+        return exact or other
 
     def _handle_marker(self, event: MarkerEvent) -> None:
         marker = self.smap.marker(event.code)

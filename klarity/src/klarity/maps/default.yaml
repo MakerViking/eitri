@@ -10,7 +10,8 @@
 #  Before trusting the map on a real printer, run `klarity --learn --dry-run` once, tap through
 #  the pages, and compare the learn log with this file.  Open questions (see meta):
 #    * whether the display reports the press (type 1) or the release (type 0) edge -- the map
-#      uses on_release, so a press-only display simply does nothing (fails safe);
+#      uses on_release; Klarity runs a one-edge handler on the first frame of a tap of either
+#      edge and drops the other frame of that tap (daemon._touch_actions);
 #    * page jumps that happen inside the display program and are invisible to the host.
 #
 #  Fill in or fix entries with `klarity --learn`, then run `klarity --check-map`.
@@ -69,8 +70,9 @@ meta:
   status: partial
   touch_event_note: >-
     The stock host acts once per 0x65 frame and ignores the type byte, so the display program
-    sends exactly one frame per tap. Which edge (release=0 or press=1) is UNCONFIRMED; this map
-    uses on_release. Verify with klarity --learn and switch to on_press if only type 1 arrives.
+    sends one frame per tap. Which edge (release=0 or press=1) is UNCONFIRMED; this map uses
+    on_release, and Klarity runs a widget's one-edge handler on whichever edge arrives first,
+    dropping the opposite frame of the same tap. Confirm the edge with klarity --learn.
   numeric_event_note: >-
     The stock display program reports a number typed on a keypad as a custom frame
     71 <page> <widget> <value_lo> <value_hi> FF FF FF (not the standard 4-byte value).
