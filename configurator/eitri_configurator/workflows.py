@@ -57,6 +57,19 @@ def analyze_boards(boards: list[dict[str, Any]]) -> dict[str, Any]:
     return {"flash_ready": not blockers, "blockers": blockers}
 
 
+#: analyze_boards' faults in telling the boards apart. Whatever else stops a flash (a bootloader the flasher cannot
+#: reach, an unresolved flash layout, ...) leaves two working boards that simply keep their firmware.
+IDENTITY_FAULTS = ("bad-port", "dup-port", "missing-", "ambiguous-", "unknown-role")
+
+
+def keeps_firmware(det: dict[str, Any], verdict: dict[str, Any]) -> bool:
+    """Both boards are identified but cannot be flashed: setup goes on with the firmware they run (after an install
+    without tools that is QIDI's). The wizard then says so instead of reporting a fault."""
+    if det["flash_ready"] or det["needs_assignment"]:
+        return False
+    return not any(b["code"].startswith(IDENTITY_FAULTS) for b in verdict["blockers"])
+
+
 async def _camera(ctx: Context) -> dict[str, Any]:
     if ctx.settings.mock:
         await _pause(ctx, 0.8)
@@ -103,8 +116,10 @@ async def run_detect(ctx: Context, job: Job) -> dict[str, Any]:
         if not flash_ready and not blockers:
             blockers = verdict["blockers"]
         det.update(blockers=blockers, flash_ready=flash_ready)
+        det["keep_firmware"] = keeps_firmware(det, verdict)
     else:
         det = {"boards": [], "ports": [], "warnings": [], "notes": [], "needs_assignment": False, "cli_blocked": True, "flash_ready": False,
+               "keep_firmware": False,
                "blockers": [{"code": "probe-failed", "message": (res or {}).get("message") or "The serial probe failed to run. See the log for details.", "remedy": ""}]}
     stage("mcus", "done" if det["flash_ready"] else "warn", detail=f"{len(det['boards'])} board(s) identified")
 

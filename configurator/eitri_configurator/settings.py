@@ -62,6 +62,7 @@ class Settings:
     mock_fail: str | None = None     # e.g. "toolhead:flash" -> fail that phase
     mock_freeze: str | None = None   # e.g. "flash:62" -> stall flashing at 62 % (screenshots)
     mock_unassigned: bool = False    # probing cannot bind UARTs to boards until the user assigns them
+    mock_toolhead_unresolved: bool = False   # the real flasher today: it refuses the stock toolhead
 
     # --- derived paths -------------------------------------------------
     @property

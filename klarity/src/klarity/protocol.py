@@ -58,6 +58,9 @@ MAX_FRAME = 4096
 
 TOUCH_RELEASE = 0
 TOUCH_PRESS = 1
+#: The stock X-Plus 4 program's touch frame carries no edge (``65 page widget FF FF FF``): one per tap.
+TOUCH_TAP = 2
+TAP_PAYLOAD = 2
 
 
 class ProtocolError(ValueError):
@@ -78,7 +81,7 @@ class Event:
 class TouchEvent(Event):
     page: int
     widget: int
-    type: int  # 1 = press, 0 = release
+    type: int  # TOUCH_PRESS, TOUCH_RELEASE or TOUCH_TAP (no edge reported)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,15 +189,12 @@ class FrameParser:
                 del buf[:n]
                 continue
 
-            if ident == ID_TOUCH and len(buf) >= 4 and buf[3] == 0xFF:
+            if ident == ID_TOUCH and buf[3:6] == TERMINATOR:
                 # The stock X-Plus 4 program sends a tap as ``65 page widget FF FF FF``: no type
                 # byte. A standard frame's type is 0 or 1, never 0xFF, so this cannot be one.
-                if len(buf) < 6:
-                    break
-                if bytes(buf[3:6]) == TERMINATOR:
-                    events.append(TouchEvent(bytes(buf[:6]), buf[1], buf[2], TOUCH_RELEASE))
-                    del buf[:6]
-                    continue
+                events.append(TouchEvent(bytes(buf[:6]), buf[1], buf[2], TOUCH_TAP))
+                del buf[:6]
+                continue
 
             if ident in FIXED_PAYLOAD:
                 need = 1 + FIXED_PAYLOAD[ident] + 3
@@ -224,7 +224,7 @@ class FrameParser:
                 end >= 0
                 and len(buf) > 1
                 and buf[1] in FIXED_PAYLOAD
-                and (end == FIXED_PAYLOAD[buf[1]] + 2 or (buf[1] == ID_TOUCH and end == 4))
+                and (end == FIXED_PAYLOAD[buf[1]] + 2 or (buf[1] == ID_TOUCH and end == TAP_PAYLOAD + 2))
             ):
                 events.append(Garbage(bytes([ident]), "stray byte before frame"))
                 del buf[:1]

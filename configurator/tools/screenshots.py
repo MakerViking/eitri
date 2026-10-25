@@ -86,20 +86,10 @@ class Shooter:
         await self.cdp.call("Emulation.setDeviceMetricsOverride", width=v["width"], height=height, deviceScaleFactor=v["dpr"], mobile=v["mobile"])
 
     async def wait(self, expr, timeout=30):
-        end = time.time() + timeout
-        while time.time() < end:
-            if await self.cdp.js(f"Boolean({expr})"):
-                return
-            await asyncio.sleep(0.15)
-        raise TimeoutError(expr)
+        await wait_for(self.cdp, expr, timeout)
 
     async def click(self, text, scope="document"):
-        ok = await self.cdp.js(f"""(() => {{
-          const els = [...{scope}.querySelectorAll('button, a, label, summary')];
-          const el = els.find(e => e.textContent.trim().toLowerCase().includes({json.dumps(text.lower())}) && !e.disabled);
-          if (!el) return false; el.scrollIntoView({{block: 'center'}}); el.click(); return true; }})()""")
-        if not ok:
-            raise RuntimeError(f"nothing to click: {text!r}")
+        await click_text(self.cdp, text, scope)
 
     async def shot(self, name, settle=1.3, full=True):
         await asyncio.sleep(settle)
@@ -120,8 +110,37 @@ class Shooter:
         print("  ", self.folder.name, name)
 
     async def next(self):
-        await self.click("", scope="document.querySelector('.actionbar')") if False else None
-        await self.cdp.js("document.querySelector('.actionbar .btn-primary').click()")
+        await press_next(self.cdp)
+
+
+async def wait_for(cdp: Cdp, expr: str, timeout: float = 30) -> None:
+    end = time.time() + timeout
+    while time.time() < end:
+        if await cdp.js(f"Boolean({expr})"):
+            return
+        await asyncio.sleep(0.15)
+    raise TimeoutError(expr)
+
+
+async def click_text(cdp: Cdp, text: str, scope: str = "document", smooth: bool = False) -> None:
+    """Click the first enabled button, link, label or summary in `scope` whose text contains `text`."""
+    ok = await cdp.js(f"""(() => {{
+      const els = [...{scope}.querySelectorAll('button, a, label, summary')];
+      const el = els.find(e => e.textContent.trim().toLowerCase().includes({json.dumps(text.lower())}) && !e.disabled);
+      if (!el) return false; el.scrollIntoView({{block: 'center'{", behavior: 'smooth'" if smooth else ""}}}); el.click(); return true; }})()""")
+    if not ok:
+        raise RuntimeError(f"nothing to click: {text!r}")
+
+
+async def press_next(cdp: Cdp) -> None:
+    """The wizard's primary action (Next, Continue, ...)."""
+    await cdp.js("document.querySelector('.actionbar .btn-primary').click()")
+
+
+def start_chrome(port: int, profile: Path) -> subprocess.Popen:
+    return subprocess.Popen([CHROMIUM, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--force-color-profile=srgb",
+                             f"--remote-debugging-port={port}", f"--user-data-dir={profile}", "about:blank"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def start_server(port: int, data_dir: Path, *extra: str) -> subprocess.Popen:
@@ -351,9 +370,7 @@ async def main():
                 print(f"== {vp_name} / {theme}")
                 data_dir = work / "data"
                 server = start_server(server_port, data_dir, "--mock-speed", "2")
-                chrome = subprocess.Popen([CHROMIUM, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--force-color-profile=srgb",
-                                           f"--remote-debugging-port={chrome_port}", f"--user-data-dir={work / (vp_name + theme)}", "about:blank"],
-                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                chrome = start_chrome(chrome_port, work / (vp_name + theme))
                 try:
                     await walk(session, chrome_port, server_port, data_dir, vp_name, theme, folder)
                 finally:
@@ -362,9 +379,7 @@ async def main():
         for vp_name in [a.only] if a.only else VIEWPORTS:
             data_dir = work / "data"
             server = start_server(server_port, data_dir, "--mock-speed", "3", "--mock-fail", "toolhead:flash")
-            chrome = subprocess.Popen([CHROMIUM, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--force-color-profile=srgb",
-                                       f"--remote-debugging-port={chrome_port}", f"--user-data-dir={work / (vp_name + 'fail')}", "about:blank"],
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            chrome = start_chrome(chrome_port, work / (vp_name + 'fail'))
             try:
                 print(f"== {vp_name} / flash failure")
                 await fail_pass(session, chrome_port, server_port, data_dir, vp_name, OUT / vp_name)
@@ -374,9 +389,7 @@ async def main():
         for vp_name in [a.only] if a.only else VIEWPORTS:
             data_dir = work / "data"
             server = start_server(server_port, data_dir, "--mock-speed", "3", "--mock-unassigned")
-            chrome = subprocess.Popen([CHROMIUM, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--force-color-profile=srgb",
-                                       f"--remote-debugging-port={chrome_port}", f"--user-data-dir={work / (vp_name + 'assign')}", "about:blank"],
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            chrome = start_chrome(chrome_port, work / (vp_name + 'assign'))
             try:
                 print(f"== {vp_name} / manual assignment")
                 await assign_pass(session, chrome_port, server_port, data_dir, vp_name, OUT / vp_name)

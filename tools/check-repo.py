@@ -56,7 +56,9 @@ FILES = tracked_text_files()
 
 
 def is_text(p: Path) -> bool:
-    return p.suffix.lower() not in {".png", ".gif", ".mp4", ".jpg", ".woff2", ".woff", ".ttf", ".otf", ".ico", ".gz", ".zst", ".bin", ".pyc"}
+    """No NUL byte near the start: images, video, fonts and archives all have one, text files never do."""
+    with p.open("rb") as fh:
+        return b"\0" not in fh.read(8192)
 
 
 # 1. release.lock ---------------------------------------------------------------------------------

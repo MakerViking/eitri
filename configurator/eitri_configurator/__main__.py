@@ -30,6 +30,8 @@ def build_settings(argv: list[str] | None = None) -> Settings:
     ap.add_argument("--mock-fail", help="make a mock flash fail, e.g. toolhead:flash")
     ap.add_argument("--mock-freeze", help="stall a mock stage, e.g. flash:62")
     ap.add_argument("--mock-unassigned", action="store_true", help="mock probing cannot tell which UART is which")
+    ap.add_argument("--mock-toolhead-unresolved", action="store_true",
+                    help="mock flasher refuses the toolhead, as the real one does today (a printer installed without tools)")
     ap.add_argument("--retire-when-locked", action=argparse.BooleanOptionalAction, default=None,
                     help="exit cleanly once setup is complete and the configurator is locked, at start-up and after the finishing "
                          "browser's grace period (frees its memory; `eitri-configurator unlock` starts it again). "
@@ -39,7 +41,8 @@ def build_settings(argv: list[str] | None = None) -> Settings:
 
     if a.mock:
         data = a.data_dir or Path(tempfile.mkdtemp(prefix="eitri-mock-"))
-        s = Settings.for_mock(data, mock_speed=a.mock_speed, mock_fail=a.mock_fail, mock_freeze=a.mock_freeze, mock_unassigned=a.mock_unassigned)
+        s = Settings.for_mock(data, mock_speed=a.mock_speed, mock_fail=a.mock_fail, mock_freeze=a.mock_freeze, mock_unassigned=a.mock_unassigned,
+                               mock_toolhead_unresolved=a.mock_toolhead_unresolved)
         from .mock.seed import seed
         seed(data)
     else:

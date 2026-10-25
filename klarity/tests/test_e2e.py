@@ -119,26 +119,16 @@ async def test_page_navigation_and_page_specific_paint(moonraker):
         assert 't_z.txt="5.0"' in t.commands()
 
 
-async def test_a_press_only_button_runs_its_release_handler(moonraker):
-    """The stock .tft may report a tap as a press frame only: the map's on_release must still run."""
+def tap(page: int, widget: int) -> bytes:
+    """The stock X-Plus 4 program's touch frame: no type byte."""
+    return bytes([0x65, page, widget]) + FF3
+
+
+async def test_a_stock_tap_runs_the_release_handler(moonraker):
     async with klarity_running(moonraker) as (daemon, t):
         await show_home(t)
-        t.inject(touch(1, 13, 1))
+        t.inject(tap(1, 13))
         await eventually(lambda: moonraker.scripts() == ["G28"])
-
-
-async def test_press_and_release_of_one_tap_run_the_handler_once(moonraker):
-    async with klarity_running(moonraker) as (daemon, t):
-        await show_home(t)
-        t.clear()
-        t.inject(touch(1, 14, 1))
-        t.inject(touch(1, 14, 0))
-        await eventually(lambda: "page 2" in t.commands())
-        await daemon.wait_idle()
-        await asyncio.sleep(0.1)
-        assert t.commands().count("page 2") == 1
-        t.inject(touch(1, 14, 1))  # the next tap is a new tap again
-        await eventually(lambda: t.commands().count("page 2") == 2)
 
 
 async def test_numeric_read_back_feeds_gcode(moonraker):

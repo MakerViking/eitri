@@ -2,19 +2,20 @@ import { followJob, latestJob, post } from '../api.js';
 import { h, icon, mount } from '../dom.js';
 import { store } from '../store.js';
 import { alertBox, makeConsole, toast } from '../ui.js';
-import { BOOTLOADER, KEEP_TEXT, ROLE_LABEL, keepsFirmware, whyNotFlashing } from './detect.js';
+import { BOARD_ROLES, BOOTLOADER, KEEP_TEXT, ROLE_LABEL, keepsFirmware, whyNotFlashing } from './detect.js';
 
 export const meta = {
   id: 'flash', title: 'Flash', hint: 'Update the MCUs',
-  headline: 'Hammer in the *firmware*.',
-  lead: 'Both control boards get firmware that exactly matches your chosen host. Each board is backed up first, written over its serial link, then read back and verified.',
+  headline: (st) => (keepsFirmware(st.detect) ? 'Your boards keep their *firmware*.' : 'Hammer in the *firmware*.'),
+  lead: (st) => (keepsFirmware(st.detect) ? 'Nothing to flash: Eitri works with the firmware both control boards run now.'
+    : 'Both control boards get firmware that exactly matches your chosen host. Each board is backed up first, written over its serial link, then read back and verified.'),
 };
 
 const PHASES = [
   ['identify', 'Check', 5], ['build', 'Image', 10], ['backup', 'Backup', 15],
   ['flash', 'Write', 60], ['verify', 'Verify', 10],
 ];
-const ORDER = ['mainboard', 'toolhead'];
+const ORDER = BOARD_ROLES;
 
 const newBoard = (role, rec = {}) => ({ role, port: rec.port, chip: rec.chip, bootloader: rec.bootloader, phases: {}, pct: {}, message: '', result: null, started: false });
 
@@ -160,8 +161,6 @@ export async function enter(ctx) {
     ctx.actions.set({ back: { disabled: false }, next: { label: 'Continue', icon: 'arrowRight', disabled: false, onClick: skipFlash },
       note: 'The boards keep their current firmware.' });
     return {
-      headline: 'Your boards keep their *firmware*.',
-      lead: 'Nothing to flash: Eitri works with the firmware both control boards run now.',
       nodes: [alertBox('info', h('p', null, h('strong', null, 'Nothing has to be done in this step.')), h('p', null, KEEP_TEXT), whyNotFlashing(detect))],
     };
   }

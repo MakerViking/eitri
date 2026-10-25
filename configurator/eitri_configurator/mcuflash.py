@@ -164,6 +164,7 @@ def _env(settings: Settings) -> dict[str, str]:
         env["EITRI_MOCK_FAIL"] = settings.mock_fail or ""
         env["EITRI_MOCK_FREEZE"] = settings.mock_freeze or ""
         env["EITRI_MOCK_UNASSIGNED"] = "1" if settings.mock_unassigned else ""
+        env["EITRI_MOCK_TOOLHEAD_UNRESOLVED"] = "1" if settings.mock_toolhead_unresolved else ""
     return env
 
 

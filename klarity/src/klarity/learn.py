@@ -29,6 +29,9 @@ from .protocol import (
     PageEvent,
     StringEvent,
     TouchEvent,
+    TOUCH_PRESS,
+    TOUCH_RELEASE,
+    TOUCH_TAP,
     TouchXYEvent,
     UnknownFrame,
 )
@@ -36,6 +39,8 @@ from .screenmap import ScreenMap
 from .state import PrinterState
 
 log = logging.getLogger(__name__)
+
+EDGE_NAME = {TOUCH_PRESS: "press", TOUCH_RELEASE: "release", TOUCH_TAP: "tap"}
 
 #: Fields that change constantly and would drown out the effect of a button press.
 NOISY_FIELDS = frozenset(
@@ -104,7 +109,7 @@ class LearnRecorder:
             )
             self.seen[(event.page, event.widget, event.type)] += 1
             info.update(kind="touch", page=event.page, widget=event.widget, type=event.type)
-            if event.type == 0:
+            if event.type != TOUCH_PRESS:
                 self._schedule_effect_probe(info)
         elif isinstance(event, MarkerEvent):
             known = self.smap.marker(event.code) is not None
@@ -176,7 +181,7 @@ class LearnRecorder:
                 continue
             entry = pages.setdefault(f"page_{page}", {"id": page, "todo": True, "widgets": {}})
             w = entry["widgets"].setdefault(f"widget_{widget}", {"id": widget, "todo": True})
-            w.setdefault("seen", {})["press" if typ else "release"] = count
+            w.setdefault("seen", {})[EDGE_NAME.get(typ, str(typ))] = count
         out: dict[str, Any] = {"pages": pages}
         if self.unknown_markers:
             out["markers"] = {

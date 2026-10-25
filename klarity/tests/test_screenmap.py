@@ -3,6 +3,7 @@ import copy
 import pytest
 
 from fakes import DEFAULT_STATUS
+from klarity.protocol import TOUCH_TAP
 from klarity.config import packaged_map_path
 from klarity.screenmap import MapError, ScreenMap
 from klarity.state import PrinterState
@@ -113,6 +114,7 @@ def test_touch_index_and_todo_gating():
     m = load()
     assert m.actions_for_touch(1, 10, 0)[0].verb == "print"
     assert m.actions_for_touch(1, 10, 1)[0].verb == "beep"
+    assert m.actions_for_touch(1, 10, TOUCH_TAP)[0].verb == "print"  # a stock tap: release first
     assert m.actions_for_touch(1, 99, 0) is None  # todo widget
     assert m.actions_for_touch(2, 1, 0) is None  # todo page
     assert m.is_known_touch(1, 10) and not m.is_known_touch(1, 99)

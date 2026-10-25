@@ -1,12 +1,15 @@
 import { post } from '../api.js';
 import { h, icon } from '../dom.js';
 import { store } from '../store.js';
-import { ROLE_LABEL } from './detect.js';
+import { BOARD_ROLES, ROLE_LABEL } from './detect.js';
 
 export const meta = {
   id: 'done', title: 'Done', hint: 'Ready to print',
   headline: 'It is *forged*.',
-  lead: 'Your X-Plus 4 now runs open, mainline-clean firmware, and the touchscreen is driven by Klarity. Nothing proprietary is left in the loop.',
+  // Boards that kept their firmware are not running "mainline-clean" firmware: say what is true for them.
+  lead: (st) => (BOARD_ROLES.every((r) => st.flash?.[r]?.ok)
+    ? 'Your X-Plus 4 now runs open, mainline-clean firmware, and the touchscreen is driven by Klarity. Nothing proprietary is left in the loop.'
+    : 'Your X-Plus 4 now runs Eitri\'s open host software, and the touchscreen is driven by Klarity. The control boards keep the firmware they had; newer firmware for them is optional.'),
 };
 
 export function enter(ctx) {
@@ -24,7 +27,7 @@ export function enter(ctx) {
   const fact = (label, value, sub) => h('div', null, h('dt', null, label), h('dd', null, value, sub && h('small', null, sub)));
   const receipt = h('div', { class: 'plate' }, h('dl', { class: 'specs' },
     fact('Firmware', flavor.name, `${flavor.version} · ${flavor.commit}`),
-    ...['mainboard', 'toolhead'].map((r) => fact(ROLE_LABEL[r], st.flash?.[r]?.ok ? 'Verified' : 'Not flashed here', st.flash?.[r]?.version || '')),
+    ...BOARD_ROLES.map((r) => fact(ROLE_LABEL[r], st.flash?.[r]?.ok ? 'Verified' : 'Not flashed here', st.flash?.[r]?.version || '')),
     fact('Reach it at', host, `${origin.replace(/^https?:\/\//, '')}`),
     fact('Camera', opts.camera ? '1920×1080 MJPEG' : 'Off', opts.camera ? 'ustreamer, served at /webcam/' : ''),
     fact('Calibration', ['zoffset', 'shaper', 'mesh'].filter((c) => cal[c] === 'done').length + ' of 3 done', 'Run the rest from ' + ui)));
@@ -43,10 +46,7 @@ export function enter(ctx) {
     link('Moonraker API (port 80)', `${origin}/server/info`, 'layers'));
 
   ctx.actions.set({ next: { label: `Open ${ui}`, icon: 'external', onClick: () => { window.location.href = `${origin}/`; } }, note: 'Setup complete. The configurator is now locked.' });
-  // Boards that kept their firmware are not running "mainline-clean" firmware: say what is true for them.
-  const kept = ['mainboard', 'toolhead'].some((r) => !st.flash?.[r]?.ok);
-  return { ...(kept && { lead: 'Your X-Plus 4 now runs Eitri\'s open host software, and the touchscreen is driven by Klarity. The control boards keep the firmware they had; newer firmware for them is optional.' }),
-    nodes: [receipt, klarity, h('div', null, h('div', { class: 'section-label', style: { marginTop: 0 } }, 'Quick links'), links),
+  return { nodes: [receipt, klarity, h('div', null, h('div', { class: 'section-label', style: { marginTop: 0 } }, 'Quick links'), links),
     h('div', { class: 'card lock-note' }, h('span', { class: 'link-ico' }, icon('lock')),
       h('p', null, h('strong', null, 'The configurator is locked. '), 'Nothing on your network can flash or rewrite the printer now. To run the wizard again, choose ', h('strong', null, 'Unlock setup'), ' on the printer’s touchscreen, or connect over SSH and run ', h('code', null, 'eitri-configurator unlock'), '. It then shows a pairing code and goes back to sleep when you are done.')),
     h('div', { class: 'card forged-note' }, h('p', null, h('strong', null, 'What stays yours. '), 'Your Klipper tree is a plain git clone (', h('code', null, '/data/firmware/klipper'), '), your config lives in ', h('code', null, '/data/printer_data/config'), ', and your own tweaks go in ', h('code', null, 'user.cfg'), ', which Eitri never overwrites.'))] };

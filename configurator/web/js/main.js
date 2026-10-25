@@ -163,13 +163,10 @@ async function render(id) {
   mount(shell.head,
     svgFromString(`<svg class="ghost-rune" viewBox="0 0 24 24" aria-hidden="true"><path d="${RUNES[id]}"/></svg>`),
     h('span', { class: 'eyebrow' }, `Step ${String(idx + 1).padStart(2, '0')} · ${mod.meta.title}`),
-    h('h1', { class: 'display' }, ...emphasise(mod.meta.headline)),
-    mod.meta.lead && h('p', { class: 'lead' }, mod.meta.lead));
+    h('h1', { class: 'display' }, ...emphasise(ofState(mod.meta.headline))),
+    mod.meta.lead && h('p', { class: 'lead' }, ofState(mod.meta.lead)));
   mount(shell.body);
   const result = await mod.enter(ctx);
-  // A step may retell its heading for what it found (the flash step on boards that keep their firmware).
-  if (result?.headline) mount(shell.head.querySelector('h1'), ...emphasise(result.headline));
-  if (result?.lead) shell.head.querySelector('.lead').textContent = result.lead;
   const nodes = Array.isArray(result?.nodes) ? result.nodes : result?.nodes ? [result.nodes] : [];
   current.destroy = result?.destroy || null;
   nodes.forEach((n, i) => { n.classList?.add('rise'); n.style?.setProperty('--i', String(i + 1)); });
@@ -179,6 +176,9 @@ async function render(id) {
   window.scrollTo({ top: 0 });
   document.title = `${mod.meta.title} · Eitri`;
 }
+
+// A step's headline or lead may depend on what setup has found so far (the flash step on boards that keep their firmware).
+const ofState = (text) => (typeof text === 'function' ? text(store.state) : text);
 
 // "Forge your *open* printer" -> italic accent on the starred words
 function emphasise(text) {

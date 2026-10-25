@@ -4,7 +4,7 @@ from eitri_configurator import calibrate, mcuflash, options as opts, render
 from eitri_configurator.layer import LayerError
 from eitri_configurator.releaselock import flavor_card, load, version
 from eitri_configurator.settings import Settings
-from eitri_configurator.workflows import analyze_boards
+from eitri_configurator.workflows import analyze_boards, keeps_firmware
 
 
 # --- options ---------------------------------------------------------------
@@ -306,6 +306,19 @@ def test_analyze_boards_ok_and_blockers():
     assert "dup-port" in codes([board("mainboard", "/dev/ttyS2"), board("toolhead", "/dev/ttyS2")])
     assert "bad-port" in codes([board("mainboard", "/dev/sda"), board("toolhead", "/dev/ttyS2")])
     assert "unknown-role" in codes([board("unknown", "/dev/ttyS1"), board("mainboard", "/dev/ttyS0"), board("toolhead", "/dev/ttyS2")])
+
+
+def test_boards_that_cannot_be_flashed_keep_their_firmware_unless_identity_is_in_doubt():
+    def keep(boards, needs_assignment=False):
+        verdict = analyze_boards(boards)
+        det = {"flash_ready": verdict["flash_ready"], "needs_assignment": needs_assignment}
+        return keeps_firmware(det, verdict)
+    main, tool = board("mainboard", "/dev/ttyS0", "sdcard-serial"), board("toolhead", "/dev/ttyS2", "unknown")
+    assert keep([main, tool])                                                    # the stock printer
+    assert not keep([main, board("toolhead", "/dev/ttyS2")])                     # flashable: flash
+    assert not keep([main])                                                      # a board is missing
+    assert not keep([main, board("toolhead", "/dev/ttyS0", "unknown")])         # same port twice
+    assert not keep([main, tool], needs_assignment=True)
 
 
 # --- calibration parsing -----------------------------------------------------------------

@@ -21,7 +21,7 @@ from typing import Any
 
 import yaml
 
-from .protocol import STRING_ATTRS, TOUCH_PRESS, TOUCH_RELEASE, parse_color
+from .protocol import STRING_ATTRS, TOUCH_PRESS, TOUCH_RELEASE, TOUCH_TAP, parse_color
 from .state import MISSING, PrinterState
 
 SCHEMA_VERSION = 1
@@ -543,6 +543,8 @@ class ScreenMap:
         return self._by_id.get(page_id)
 
     def actions_for_touch(self, page: int, widget: int, typ: int) -> tuple[Action, ...] | None:
+        if typ == TOUCH_TAP:  # no edge reported: the widget's release handler, else its press handler
+            return self._touch.get((page, widget, TOUCH_RELEASE)) or self._touch.get((page, widget, TOUCH_PRESS))
         return self._touch.get((page, widget, typ))
 
     def actions_for_number(self, page: int, widget: int) -> tuple[Action, ...] | None:

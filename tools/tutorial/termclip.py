@@ -15,6 +15,7 @@ Output lines are shown verbatim; the tapes say where each one comes from. Needs 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -37,11 +38,11 @@ BAR = (22, 27, 34)
 
 def color_of(line: str):
     s = line.strip()
-    if s.startswith("ok ") or s.startswith("ok\t") or " signature OK" in s or "verified" in s and s.startswith("[eitri]"):
+    if s.startswith(("ok ", "ok\t")) or " signature OK" in s or (s.startswith("[eitri]") and "verified" in s):
         return GREEN
     if s.startswith("warn") or "WARNING" in s:
         return YELLOW
-    if s.startswith("FAIL") or "ERROR" in s or s.startswith("POINT OF NO RETURN"):
+    if s.startswith(("FAIL", "POINT OF NO RETURN")) or "ERROR" in s:
         return RED
     if s.startswith("==>"):
         return CYAN
@@ -88,8 +89,7 @@ class Term:
         for i, c in enumerate([(255, 95, 86), (255, 189, 46), (39, 201, 63)]):
             d.ellipse([12 + i * 20, 9, 24 + i * 20, 21], fill=c)
         d.text((W // 2, 14), self.title, font=self.font, fill=DIM, anchor="mm")
-        shown = self.lines + [(p, self.cur_color) for p in self._wrap(self.cur)]
-        shown = shown[-self.rows:]
+        shown = (self.lines[-self.rows:] + [(p, self.cur_color) for p in self._wrap(self.cur)])[-self.rows:]
         y = 28 + PAD // 2
         for i, (text, col) in enumerate(shown):
             d.text((PAD, y), text, font=self.font, fill=col)
@@ -98,8 +98,7 @@ class Term:
                 d.rectangle([x + 1, y + 2, x + 9, y + SIZE + 2], fill=FG)
             y += self.lh
         if self.caption:
-            d.rectangle([0, H - CAPTION_H, W, H], fill=BAR)
-            d.text((W // 2, H - CAPTION_H // 2), self.caption, font=self.bold, fill=BLUE, anchor="mm")
+            caption_bar(img, self.caption, self.bold)
         for _ in range(n):
             self.frames.append(img)
 
@@ -132,8 +131,7 @@ def render(tape: dict) -> list[Image.Image]:
             t.newline()
         elif "out" in ev:
             lps = ev.get("lps", 20)
-            per = max(1, round(FPS / lps)) if lps < FPS else 1
-            batch = max(1, round(lps / FPS)) if lps >= FPS else 1
+            per, batch = max(1, round(FPS / lps)), max(1, round(lps / FPS))   # frames per line, lines per frame
             lines = ev["out"]
             for i in range(0, len(lines), batch):
                 for line in lines[i:i + batch]:
@@ -144,17 +142,32 @@ def render(tape: dict) -> list[Image.Image]:
     return t.frames
 
 
-def encode(frames: list[Image.Image], out: Path) -> None:
-    tmp = Path(tempfile.mkdtemp(prefix="termclip-"))
+def caption_bar(img: Image.Image, text: str, font) -> None:
+    """The caption band at the bottom of a frame, shared by every tutorial clip."""
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, img.height - CAPTION_H, img.width, img.height], fill=BAR)
+    d.text((img.width // 2, img.height - CAPTION_H // 2), text, font=font, fill=BLUE, anchor="mm")
+
+
+def encode(frames: list[Image.Image], out: Path, *, fps: int = FPS, crf: int = 23, gif: str = "palettegen=max_colors=32") -> None:
+    """Write `out`.mp4 and `out`.gif in one ffmpeg pass. A frame that is the same image object as the one before (a
+    hold) is hard-linked instead of encoded again. `gif` is the filter chain ending in palettegen, before paletteuse."""
+    tmp = Path(tempfile.mkdtemp(prefix="tutorial-clip-"))
     try:
+        prev = None
         for i, f in enumerate(frames):
-            f.save(tmp / f"f{i:05d}.png")
-        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-framerate", str(FPS), "-i", str(tmp / "f%05d.png"),
-                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23", "-movflags", "+faststart",
-                        str(out.with_suffix(".mp4"))], check=True)
-        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-framerate", str(FPS), "-i", str(tmp / "f%05d.png"),
-                        "-vf", "split[a][b];[a]palettegen=max_colors=32:stats_mode=diff[p];[b][p]paletteuse=dither=none",
-                        str(out.with_suffix(".gif"))], check=True)
+            path = tmp / f"f{i:05d}.png"
+            if f is prev:
+                os.link(tmp / f"f{i - 1:05d}.png", path)
+            else:
+                f.save(path)
+            prev = f
+        graph = f"[0:v]split[m][g];[g]split[a][b];[a]{gif}:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle[gif]"
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-framerate", str(fps), "-i", str(tmp / "f%05d.png"),
+                        "-filter_complex", graph,
+                        "-map", "[m]", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", str(crf), "-tune", "animation",
+                        "-movflags", "+faststart", str(out.with_suffix(".mp4")),
+                        "-map", "[gif]", str(out.with_suffix(".gif"))], check=True)
     finally:
         shutil.rmtree(tmp)
 

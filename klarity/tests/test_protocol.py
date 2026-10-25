@@ -2,6 +2,7 @@ import pytest
 
 from klarity.protocol import (
     TERMINATOR,
+    TOUCH_TAP,
     Cmd,
     FrameParser,
     Garbage,
@@ -45,7 +46,7 @@ def test_release_event():
 def test_stock_short_touch_frame_has_no_type_byte():
     """What the X-Plus 4's stock program really sends (learn log, 2026-10-25): page, widget, terminator."""
     events, p = parse(b"\x65\x03\x25" + FF3 + b"\x65\x03\x24" + FF3)
-    assert [(e.page, e.widget, e.type) for e in events] == [(3, 0x25, 0), (3, 0x24, 0)]
+    assert [(e.page, e.widget, e.type) for e in events] == [(3, 0x25, TOUCH_TAP), (3, 0x24, TOUCH_TAP)]
     assert all(isinstance(e, TouchEvent) for e in events) and not p.pending
 
 
