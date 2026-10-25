@@ -97,6 +97,11 @@ def test_mock_can_play_the_refusal_the_real_tool_gives_today(tmp_path):
     detect = mcuflash.plan_to_detect(events[-1]["data"])
     assert detect["cli_blocked"]
     assert [b["code"] for b in detect["blockers"]] == ["parameters"] and "Open question" in detect["blockers"][0]["message"]
+    # What the wizard's "boards keep their firmware" path stands on: both boards found and bound, nothing to assign,
+    # and no recovery claimed for the toolhead it refuses.
+    by = {b["role"]: b for b in detect["boards"]}
+    assert set(by) == {"mainboard", "toolhead"} and not detect["needs_assignment"]
+    assert by["toolhead"]["bootloader"] == "unknown" and by["mainboard"]["bootloader"] == "sdcard-serial"
 
 
 def test_real_cli_refuses_the_unresolved_toolhead_with_the_open_question(tmp_path):

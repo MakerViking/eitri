@@ -4,14 +4,17 @@
 
 ## Before you start
 
+**No tools are needed.** You do not open the printer, use an SD card, or connect a programmer (ST-Link). Both control boards keep QIDI's firmware, which works with Eitri's Klipper. A friendlier walk-through of the same steps, with a short video for each, is in [`GETTING-STARTED.md`](GETTING-STARTED.md).
+
 You need:
 
 - A **QIDI X-Plus 4**. It is the only supported printer.
 - **A network connection:** wired Ethernet, or Wi-Fi through the printer's USB Wi-Fi dongle (the setup wizard joins the network).
-- A computer on the same LAN with an SSH client.
-- A **full eMMC backup** of the printer, taken and checked before the first install. The installer makes one itself (to a USB stick of 8 GB or more, or over SSH to your computer) and refuses to continue without it. [`RECOVERY.md`](RECOVERY.md#1-full-emmc-backup) describes how to take and check one by hand.
-- Optionally, a **USB-A to USB-A cable** and the recovery procedure, if you are willing to open the printer. Entering maskrom requires opening it. Know how before you start, not after something fails.
-- Enough time to finish in one sitting. Stop only at a safe point (described below).
+- A computer on the same network with an SSH client (built into Windows 10/11, macOS and Linux).
+- A **USB stick of 8 GB or more** for the backup (or room on your computer). The installer takes a **full eMMC backup** first, reads it back, and refuses to continue without it. [`RECOVERY.md`](RECOVERY.md#1-full-emmc-backup) describes how to take and check one by hand.
+- About **45 minutes**, in one sitting. Stop only at a safe point (described below).
+
+Optional, only for recovering from a failure the installer cannot undo by itself: a **USB-A to USB-A cable** and the maskrom procedure in [`RECOVERY.md`](RECOVERY.md), which needs the case open. Read it before you start, not after something fails.
 
 Do not start an install while a print is running, or when the printer is not on a stable power supply.
 
@@ -38,14 +41,18 @@ sudo ./install.sh --flavor klipper --i-have-a-backup --yes --backup-to-usb  # co
 1. **Preflight (read-only).** The installer checks the device tree, the stock layout, that it is running from the eMMC, that nothing is printing, and that there is room.
 2. **Back up first.** The whole eMMC is written to a USB stick or over SSH, then read back and verified. If the backup cannot be written, the installer stops.
 3. **Download and verify.** `install.json` is verified against the Eitri release key before anything else in it is read. Every payload file (root file system, stage-2 installer, data seed, MCU firmware) is then checked against the SHA-256 and size in that signed file.
-4. **Prove MCU recovery.** Each board is reset into its bootloader, its firmware read back and written back, and the copy kept. If a board cannot be proven recoverable the installer stops here. This is the one write before the point of no return and has its own consent flag.
+4. **The control boards are left alone.** By default (`--mcu skip`) neither MCU board is touched: no bootloader probe, no read-back, no write. They keep QIDI's firmware. (`--mcu auto` or `manual` instead proves a way back for each board and flashes them on first boot; that path is for later, see [Newer MCU firmware](#newer-mcu-firmware-optional).)
 5. **Check the backup again, then type `CONVERT`.** Nothing irreversible has happened yet.
 6. **Stage 2 (RAM installer).** The printer reboots into a one-shot installer that shrinks the stock root, creates the two Eitri root slots and `/data`, writes and verifies the Eitri root file system, and then **installs the data seed** into the new `/data` (next section). A power cut during this resumes by itself; `install.sh --status` says where things stand.
-7. **First boot of Eitri.** Both MCUs are flashed to match the host firmware, health checks run, and only then is the system marked good. Three failed boots fall back to the stock system automatically.
+7. **First boot of Eitri.** Health checks run (Klipper connects to both boards and reports ready), and only then is the system marked good. Three failed boots fall back to the stock system automatically.
 
-The stock system stays in its own partition and keeps booting until you remove it. Stop at any step that fails. Do not continue past a failed backup, a failed write verification, or a failed MCU readback.
+The stock system stays in its own partition and keeps booting until you remove it. Stop at any step that fails. Do not continue past a failed backup or a failed write verification.
 
 The details of every step, the flags, and `revert.sh` are in [`installer/README.md`](../installer/README.md); the boot logic is in [`installer/docs/BOOT.md`](../installer/docs/BOOT.md).
+
+### Newer MCU firmware (optional)
+
+Eitri does not need it: the stock firmware on both boards works with Eitri's Klipper, and updates keep the boards as they are (`mcu_flash=skip`). Newer firmware will be offered later, for the mainboard over its serial line or SD-card slot (no tools; built, not yet tested on a printer). The toolhead has no bootloader, so its first flash needs an ST-Link; only people who want mainline or Kalico firmware on the toolhead itself need that. Whether **Kalico** runs with the stock toolhead firmware is not verified yet; Klipper is the tested choice.
 
 ## The data seed and the offline first boot
 

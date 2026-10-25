@@ -56,7 +56,7 @@ FILES = tracked_text_files()
 
 
 def is_text(p: Path) -> bool:
-    return p.suffix.lower() not in {".png", ".woff2", ".woff", ".ttf", ".otf", ".ico", ".gz", ".zst", ".bin", ".pyc"}
+    return p.suffix.lower() not in {".png", ".gif", ".mp4", ".jpg", ".woff2", ".woff", ".ttf", ".otf", ".ico", ".gz", ".zst", ".bin", ".pyc"}
 
 
 # 1. release.lock ---------------------------------------------------------------------------------

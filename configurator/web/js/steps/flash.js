@@ -2,7 +2,7 @@ import { followJob, latestJob, post } from '../api.js';
 import { h, icon, mount } from '../dom.js';
 import { store } from '../store.js';
 import { alertBox, makeConsole, toast } from '../ui.js';
-import { BOOTLOADER, ROLE_LABEL } from './detect.js';
+import { BOOTLOADER, KEEP_TEXT, ROLE_LABEL, keepsFirmware, whyNotFlashing } from './detect.js';
 
 export const meta = {
   id: 'flash', title: 'Flash', hint: 'Update the MCUs',
@@ -153,6 +153,17 @@ export async function enter(ctx) {
   async function skipFlash() {
     await post('services/restart', { service: 'klipper' }).catch(() => {});
     await ctx.advance();
+  }
+
+  // Boards that cannot be flashed keep their firmware: nothing to decide here, only to explain and move on.
+  if (keepsFirmware(detect) && !complete) {
+    ctx.actions.set({ back: { disabled: false }, next: { label: 'Continue', icon: 'arrowRight', disabled: false, onClick: skipFlash },
+      note: 'The boards keep their current firmware.' });
+    return {
+      headline: 'Your boards keep their *firmware*.',
+      lead: 'Nothing to flash: Eitri works with the firmware both control boards run now.',
+      nodes: [alertBox('info', h('p', null, h('strong', null, 'Nothing has to be done in this step.')), h('p', null, KEEP_TEXT), whyNotFlashing(detect))],
+    };
   }
 
   // ------------------------------------------------------------ resume / init

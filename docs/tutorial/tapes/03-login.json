@@ -1,0 +1,53 @@
+{
+ "title": "you@laptop: ~",
+ "source": "OpenSSH's standard first-login prompts; the uname line is the stock QIDI image's (Debian 10, kernel 5.16.20-rockchip64). The fingerprint is a placeholder, not a real key.",
+ "events": [
+  {
+   "caption": "Step 3 · Log in to the printer from your computer"
+  },
+  {
+   "prompt": "you@laptop:~$ ",
+   "type": "ssh mks@192.168.0.145"
+  },
+  {
+   "out": [
+    "The authenticity of host '192.168.0.145 (192.168.0.145)' can't be established.",
+    "ED25519 key fingerprint is SHA256:(your printer's own fingerprint)."
+   ],
+   "lps": 4
+  },
+  {
+   "prompt": "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+   "type": "yes",
+   "cps": 6
+  },
+  {
+   "out": [
+    "Warning: Permanently added '192.168.0.145' (ED25519) to the list of known hosts."
+   ],
+   "lps": 4
+  },
+  {
+   "caption": "The password is QIDI's default: makerbase (it is not shown as you type)"
+  },
+  {
+   "hidden": "mks@192.168.0.145's password: "
+  },
+  {
+   "out": [
+    "Linux mkspi 5.16.20-rockchip64 #trunk SMP PREEMPT Mon Jul 25 01:58:45 UTC 2022 aarch64"
+   ],
+   "lps": 4
+  },
+  {
+   "caption": "Logged in: you are now on the printer"
+  },
+  {
+   "pause": 0.8
+  },
+  {
+   "prompt": "mks@mkspi:~$ ",
+   "type": ""
+  }
+ ]
+}

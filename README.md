@@ -32,11 +32,14 @@ Everything QIDI-specific (the chamber interlock, power-loss recovery, the probe,
 stock toolhead's accelerometer) lives in separate `qd_*` modules beside an **unmodified**
 Klipper tree, so `git pull` never conflicts and Moonraker's update manager keeps working.
 
+- **No tools needed.** You install it from your computer over the network: no case opening,
+  no SD card, no ST-Link. Both control boards keep their stock firmware, which works with
+  the new Klipper, so the printer's electronics are never touched
 - **Upstream Klipper, untouched.** A plain clone; QIDI behaviour is linked in from outside
 - **Your choice of base**, chosen at install: mainline Klipper (default) or Kalico
 - **The stock touchscreen keeps working**, driven by Klarity over its serial line. The display firmware is never rewritten
 - **A/B updates with rollback**: a bad update boots the previous system
-- **Installs in place over SSH**, keeping QIDI's bootloader, with a verified eMMC backup first
+- **Installs in place**, keeping QIDI's bootloader and the stock system as a fallback, with a verified backup first
 - **Installs offline**: the whole application layer ships as one pinned data seed per base
 - **A setup wizard** that identifies each control board by asking it, rather than assuming which port is which
 - **1080p camera stream** and Fluidd or Mainsail, without the stock cloud service or its remote tunnel
@@ -116,9 +119,11 @@ developer's QIDI X-Plus 4, booted, and **printed**.
 
 **Not there yet**, in roughly the order it will happen:
 
-- **Both control boards still run QIDI's firmware.** The mainboard firmware is built but
-  not yet flashed; the toolhead has no bootloader and needs an ST-Link for its first
-  flash.
+- **Newer firmware on the control boards is optional, and not offered yet.** Both boards
+  run QIDI's firmware, which works with Eitri's Klipper (the developer's printer prints
+  this way). Updating the mainboard needs no tools and is built but not yet tested on the
+  machine; the toolhead has no bootloader, so it would need an ST-Link once. Neither is
+  needed to use Eitri.
 - **A warm `reboot` hangs this board** (the stock boot firmware does not reset the SoC). A
   fix is in the image but not yet verified. Until it is, power-cycle instead.
 - **The touchscreen's home-page e-stop does nothing yet**, on purpose, until the button
@@ -177,8 +182,11 @@ accepting that it has run on exactly one printer.
 
 If you want to follow along or help:
 
-- [INSTALL.md](docs/INSTALL.md) describes the install procedure: an in-place conversion
-  over SSH with a verified eMMC backup first, or a flash-once image for bench use.
+- [GETTING-STARTED.md](docs/GETTING-STARTED.md) walks through the install step by step, the
+  way it will work at the first release: what you need (a computer, a USB stick, about
+  45 minutes; no tools), each step with a short video, and how to go back.
+- [INSTALL.md](docs/INSTALL.md) is the full reference: every step, flag and safety check,
+  and the flash-once image for bench use.
 - `make help` lists the build entry points. `make -C os image` builds the OS image,
   `make seed` the data seeds.
 - **Watch or star the repo** to hear when the first release lands.

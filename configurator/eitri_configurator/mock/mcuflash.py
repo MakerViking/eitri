@@ -90,13 +90,15 @@ def make_plan(args, recs):
             port = assign.get(name, t["port"])
             roles[name] = {"board": name, "port": port, "confidence": "override" if name in assign else "verified",
                            "evidence": [f"MCU {t['mcu']} only fits the {name} board", f"stock printer.cfg: {name} MCU on {port}"]}
-            boards[name] = {"port": port, "method": t["method"], "steps": ["back up", "flash", "verify"],
+            unresolved = TOOLHEAD_UNRESOLVED and name == "toolhead"     # the real tool names no method for a board it refuses
+            boards[name] = {"port": port, "method": None if unresolved else t["method"], "steps": ["back up", "flash", "verify"],
                             "firmware": {"board": name, "flavor": args.flavor, "version": VERSION if False else "v0.13.0-813-ga08fc79", "mcu": t["mcu"]}}
             checks.append({"id": "port", "status": "ok", "board": name, "detail": f"{port} answers as klipper, MCU {t['mcu']}", "remedy": None})
             checks.append({"id": "firmware", "status": "ok", "board": name, "detail": f"{args.flavor} image matches the host version", "remedy": None})
-            checks.append({"id": "recovery", "status": "ok" if name == "toolhead" else "warn", "board": name,
-                           "detail": "recovery is proven at apply time: Katapult read-back first" if name == "toolhead"
-                           else "stock qd_mcu.bin acknowledged as the floor", "remedy": None})
+            if not unresolved:
+                checks.append({"id": "recovery", "status": "ok" if name == "toolhead" else "warn", "board": name,
+                               "detail": "recovery is proven at apply time: Katapult read-back first" if name == "toolhead"
+                               else "stock qd_mcu.bin acknowledged as the floor", "remedy": None})
     for c in checks:
         emit("log", level={"ok": "info", "warn": "warn", "block": "error"}[c["status"]], board=c["board"], step="preflight",
              msg=f"{c['id']}: {c['detail']}", data=c)

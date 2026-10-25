@@ -9,6 +9,23 @@ export const meta = {
   lead: 'Eitri talks to each serial port and asks who is on the other end. Which UART carries the mainboard and which the toolhead is established by what answers, never assumed.',
 };
 
+// Both boards answer, but flashing them is not offered (today: QIDI's toolhead has no bootloader that can be
+// reached over serial, so newer firmware needs a programmer cable). The normal state after an install without
+// tools: the boards keep QIDI's firmware, which Eitri works with, and setup carries on.
+export function keepsFirmware(det) {
+  if (!det || det.flash_ready || det.needs_assignment) return false;
+  const roles = (det.boards || []).filter((b) => b && b.port).map((b) => b.role);
+  return ['mainboard', 'toolhead'].every((r) => roles.filter((x) => x === r).length === 1);
+}
+
+export const KEEP_TEXT = 'On a printer installed without tools that is QIDI\'s firmware, and Eitri works with it. Newer board firmware is optional and can be flashed later; for the toolhead that needs a programmer cable for now.';
+
+export function whyNotFlashing(det) {
+  return h('details', { class: 'disclosure' }, h('summary', null, 'Why flashing is not offered'),
+    ...det.blockers.map((b) => h('div', null, h('p', null, b.message), b.remedy && h('p', { class: 'faint' }, b.remedy))),
+    h('p', { class: 'faint' }, 'Nothing has been changed on the printer.'));
+}
+
 // [label, tone, recovery note, short label]
 export const BOOTLOADER = {
   katapult: ['Katapult', 'ok', 'Recoverable over serial', 'Katapult'],
@@ -89,7 +106,10 @@ export async function enter(ctx) {
     if (!result) return mount(alertHost);
     const warn = (result.warnings || []).map((w) => h('p', { class: 'faint' }, `${w.board ? w.board + ': ' : ''}${w.message}`));
     const parts = [];
-    if (result.blockers.length) {
+    if (keepsFirmware(result)) {
+      parts.push(alertBox('info', h('p', null, h('strong', null, 'Both boards are identified. They keep the firmware they run now.')),
+        h('p', null, KEEP_TEXT), whyNotFlashing(result)));
+    } else if (result.blockers.length) {
       parts.push(alertBox('bad', h('p', null, h('strong', null, 'Flashing is blocked.')),
         ...result.blockers.map((b) => h('div', null, h('p', null, b.message), b.remedy && h('p', { class: 'faint' }, b.remedy))),
         h('p', { class: 'faint' }, 'Nothing has been changed on the printer.')));

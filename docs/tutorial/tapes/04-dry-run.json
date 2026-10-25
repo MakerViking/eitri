@@ -1,0 +1,114 @@
+{
+ "title": "mks@mkspi: ~",
+ "source": "Output: the installer's real stage-1 output from Eitri's test rig (installer/rehearsal; a QEMU X-Plus 4 booted from a copy of a real printer's eMMC), build/rehearsal/logs/stage1-usb/stage1.log, 2026-10-22. Omitted: the development-bundle warning (a release has none).",
+ "events": [
+  {
+   "caption": "Step 4 · Download the installer"
+  },
+  {
+   "prompt": "mks@mkspi:~$ ",
+   "type": "curl -fsSLO https://github.com/MakerViking/eitri/releases/latest/download/install.sh",
+   "cps": 40
+  },
+  {
+   "caption": "Step 4 · The dry run: it only looks, nothing is changed"
+  },
+  {
+   "prompt": "mks@mkspi:~$ ",
+   "type": "sudo bash install.sh"
+  },
+  {
+   "hidden": "[sudo] password for mks: "
+  },
+  {
+   "out": [
+    "DRY RUN - nothing will be changed. (Real run: add --i-have-a-backup --yes)"
+   ],
+   "lps": 7
+  },
+  {
+   "caption": "Is this an untouched X-Plus 4? Every line should say ok"
+  },
+  {
+   "out": [
+    "==> Checking that this is an untouched QIDI X-Plus 4",
+    "    ok    architecture aarch64",
+    "    ok    board: QEMU virt as Firefly ROC-RK3328-CC (Eitri rehearsal)",
+    "    ok    hostname mkspi (stock QIDI image)",
+    "    ok    stock firmware: ",
+    " mcu             = V0.12.0",
+    " ui              = V173",
+    " soc             = V1.7.3 ",
+    "    ok    running from the eMMC (/dev/vda2, /dev/vda1)",
+    "    ok    partition table: dos, /boot (256 MiB) + root (29024 MiB), label-id 0x6a783df4",
+    "    warn  could not ask Moonraker whether a print is running; make sure the printer is idle",
+    "    ok    free: 20.4 GiB on the stock root, 149.2 MiB on /boot; root uses 6.9 GiB"
+   ],
+   "lps": 7
+  },
+  {
+   "caption": "The download is checked against Eitri's signature"
+  },
+  {
+   "out": [
+    "==> Fetching and verifying the Eitri release description",
+    "[eitri] install.json: signature OK",
+    "[eitri] using the release's static zstd (*** Zstandard CLI (64-bit) v1.5.7, by Yann Collet ***) - the stock system has none",
+    "  MCU boards: not touched (--mcu skip). Both keep their stock firmware; the mainboard can be flashed later from the setup wizard.",
+    "  Eitri 0.0.0.dev0 (klipper v0.13.0-813-ga08fc79fc), 145.4 MiB to download"
+   ],
+   "lps": 7
+  },
+  {
+   "caption": "The plan: the stock system stays, Eitri gets its own partitions"
+  },
+  {
+   "out": [
+    "==> Planning the new partition layout",
+    "  New layout (the stock system stays bootable in p2):",
+    "  p1   /boot (kept)          256 MiB",
+    "  p2   stock-root           8483 MiB",
+    "  p5   eitri-rootA          2048 MiB",
+    "  p6   eitri-rootB          2048 MiB",
+    "  p7   eitri-data          16745 MiB"
+   ],
+   "lps": 7
+  },
+  {
+   "caption": "A backup is required before anything changes"
+  },
+  {
+   "out": [
+    "==> A verified backup of the eMMC is required before anything is changed",
+    "[eitri] dry run: /mnt/usb/mmcblk1.img.gz has the given SHA-256 and comes from this eMMC (the real run also checks every byte of it)",
+    "==> Downloading the Eitri bundle",
+    "    would stage rootfs.img.zst (86.4 MiB)",
+    "    would stage stage2-initramfs.cpio.gz (3.8 MiB)",
+    "    would stage data-seed-0.0.0.dev0-klipper.manifest.json (14.1 KiB)",
+    "    would stage data-seed-0.0.0.dev0-klipper.tar.zst (55.2 MiB)",
+    "[eitri] dry run: all 4 files of the local bundle verified in place (SHA-256, data seed manifest and unpack rules); nothing copied",
+    "    skipped: MCU handling skipped by --mcu skip",
+    "==> Installing the boot manager and the one-shot installer",
+    "    would: build the RAM installer (stock kernel /Image + klipper payload) into /boot/eitri/stage2/",
+    "    would: install boot.scr (from boot/boot.cmd), write /boot/eitri/{layout,boot}.env",
+    "    would: rename /boot/extlinux/extlinux.conf to extlinux.conf.stock (the stock entry stays reachable)",
+    "    would: mask armbian-resize-filesystem.service (it would grow the stock root over the new partitions)",
+    "    would: reboot into the one-shot installer; the stock kernel /Image boots it",
+    ""
+   ],
+   "lps": 7
+  },
+  {
+   "caption": "Dry run finished: nothing was changed"
+  },
+  {
+   "out": [
+    "[eitri] Dry run finished: nothing was changed."
+   ],
+   "lps": 7
+  },
+  {
+   "pause": 2
+  }
+ ]
+}

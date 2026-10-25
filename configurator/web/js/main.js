@@ -167,6 +167,9 @@ async function render(id) {
     mod.meta.lead && h('p', { class: 'lead' }, mod.meta.lead));
   mount(shell.body);
   const result = await mod.enter(ctx);
+  // A step may retell its heading for what it found (the flash step on boards that keep their firmware).
+  if (result?.headline) mount(shell.head.querySelector('h1'), ...emphasise(result.headline));
+  if (result?.lead) shell.head.querySelector('.lead').textContent = result.lead;
   const nodes = Array.isArray(result?.nodes) ? result.nodes : result?.nodes ? [result.nodes] : [];
   current.destroy = result?.destroy || null;
   nodes.forEach((n, i) => { n.classList?.add('rise'); n.style?.setProperty('--i', String(i + 1)); });

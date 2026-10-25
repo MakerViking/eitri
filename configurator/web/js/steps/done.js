@@ -43,7 +43,10 @@ export function enter(ctx) {
     link('Moonraker API (port 80)', `${origin}/server/info`, 'layers'));
 
   ctx.actions.set({ next: { label: `Open ${ui}`, icon: 'external', onClick: () => { window.location.href = `${origin}/`; } }, note: 'Setup complete. The configurator is now locked.' });
-  return { nodes: [receipt, klarity, h('div', null, h('div', { class: 'section-label', style: { marginTop: 0 } }, 'Quick links'), links),
+  // Boards that kept their firmware are not running "mainline-clean" firmware: say what is true for them.
+  const kept = ['mainboard', 'toolhead'].some((r) => !st.flash?.[r]?.ok);
+  return { ...(kept && { lead: 'Your X-Plus 4 now runs Eitri\'s open host software, and the touchscreen is driven by Klarity. The control boards keep the firmware they had; newer firmware for them is optional.' }),
+    nodes: [receipt, klarity, h('div', null, h('div', { class: 'section-label', style: { marginTop: 0 } }, 'Quick links'), links),
     h('div', { class: 'card lock-note' }, h('span', { class: 'link-ico' }, icon('lock')),
       h('p', null, h('strong', null, 'The configurator is locked. '), 'Nothing on your network can flash or rewrite the printer now. To run the wizard again, choose ', h('strong', null, 'Unlock setup'), ' on the printer’s touchscreen, or connect over SSH and run ', h('code', null, 'eitri-configurator unlock'), '. It then shows a pairing code and goes back to sleep when you are done.')),
     h('div', { class: 'card forged-note' }, h('p', null, h('strong', null, 'What stays yours. '), 'Your Klipper tree is a plain git clone (', h('code', null, '/data/firmware/klipper'), '), your config lives in ', h('code', null, '/data/printer_data/config'), ', and your own tweaks go in ', h('code', null, 'user.cfg'), ', which Eitri never overwrites.'))] };
