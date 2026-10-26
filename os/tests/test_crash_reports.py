@@ -86,6 +86,17 @@ def test_a_stop_while_heating_is_a_crash_with_a_scrubbed_report(box):
     assert "192.168.0.145" not in text and "printer.home.arpa" not in text and "<lan-ip-1>" in text
 
 
+def test_a_log_rotated_at_midnight_is_judged_by_its_own_end_not_the_older_file(box):
+    """Seen 2026-10-26: Klipper's midnight rotation left klippy.log starting mid-session (no "Start printer at").
+    The previous day's file ended mid-print with heaters at 220/55; the idle end of the current file decides."""
+    boot(box)
+    (box["pd"] / "logs/klippy.log.2026-10-24").write_text(SESSION.format(t=220))
+    idle_tail = SESSION.format(t=0).split("\n", 2)[2].replace("heater_bed: target=55", "heater_bed: target=0")
+    result = boot(box, idle_tail)
+    assert "idle" in result.stderr and "crashed" not in result.stderr, result.stderr
+    assert reports(box) == []
+
+
 def test_a_kernel_crash_record_is_a_crash_even_after_a_clean_marker(box):
     boot(box, SESSION.format(t=0))
     shutdown(box)

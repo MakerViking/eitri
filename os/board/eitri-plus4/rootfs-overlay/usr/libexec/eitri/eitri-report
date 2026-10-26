@@ -503,19 +503,21 @@ def state_dir() -> Path:
 
 def previous_klippy_session() -> str:
     """The end of the Klipper log of the session before the current one (before Klipper starts this boot,
-    that is the previous boot's). klippy.log starts every session with "Start printer at"."""
+    that is the previous boot's). klippy.log starts every session with "Start printer at". Klipper also rotates
+    the log at midnight, so klippy.log can begin in the middle of a session: its end still decides, and an older
+    file is only read when klippy.log is empty."""
     logs = list_data_dir(LOGS)
     got = read_data_file(LOGS, "klippy.log", MAX_LOG_BYTES)
     text = got[0].decode("utf-8", "replace") if got else ""
-    if "Start printer at" in text:
-        return text[text.rindex("Start printer at"):]
+    if text.strip():
+        return text[text.rindex("Start printer at"):] if "Start printer at" in text else text
     older = sorted((n for n in logs if n.startswith("klippy.log.") and not n.endswith((".gz", ".tar"))), reverse=True)
     if older:
         got = read_data_file(LOGS, older[0], MAX_OLD_LOG_BYTES)
         if got:
             old = got[0].decode("utf-8", "replace")
             return old[old.rindex("Start printer at"):] if "Start printer at" in old else old
-    return text
+    return ""
 
 
 def heaters_on(session: str) -> list[str]:
