@@ -1,0 +1,27 @@
+From: Thomas <155702229+MakerViking@users.noreply.github.com>
+Subject: [PATCH] mfd: rk8xx: arm the SLEEP pin power-down only on power-off
+
+rk8xx_shutdown() runs for every system shutdown, reboot included, and
+programs the RK805/RK809/RK817 SLEEP pin to power the PMIC down. On the
+QIDI X-Plus 4 (RK3328 + RK805) every warm reboot leaves the board dark
+until mains is cut, also when the SoC is reset directly through the CRU.
+Only power-off needs the pin armed; leave it alone on a restart.
+
+---
+--- a/drivers/mfd/rk8xx-core.c	2026-10-26 03:45:54.568554328 +0100
++++ b/drivers/mfd/rk8xx-core.c	2026-10-26 03:45:54.581540715 +0100
+@@ -670,6 +670,14 @@
+ 	struct rk808 *rk808 = dev_get_drvdata(dev);
+ 	int ret;
+ 
++	/*
++	 * The SLEEP pin's power-down function belongs to a power-off only. Armed
++	 * on a reboot too, it can switch the PMIC off when the SoC reset changes
++	 * the pin, and the board then stays dark until its supply is cut.
++	 */
++	if (system_state != SYSTEM_POWER_OFF)
++		return;
++
+ 	switch (rk808->variant) {
+ 	case RK805_ID:
+ 		ret = regmap_update_bits(rk808->regmap,
