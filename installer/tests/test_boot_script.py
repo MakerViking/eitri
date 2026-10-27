@@ -34,6 +34,15 @@ def test_first_boot_spends_an_attempt_before_starting_the_kernel(tmp_path):
     assert "booting the stock system" in out  # the shimmed booti returns, as a failed boot would
 
 
+def test_every_run_of_the_script_is_counted_in_runs_env_without_changing_the_boot(tmp_path):
+    sim = BootSim(tmp_path, env())
+    for expected in ("x", "xx", "xxx"):
+        out, after = sim.boot()
+        runs = sim._run("mtype", "-i", sim.img + "@@%d" % ubootsim.FAT_OFFSET, "::/eitri/runs.env").stdout.decode()
+        assert ubootsim.parse_env(runs) == {"eitri_runs": expected}
+        assert "BOOTI bootargs=[root=PARTUUID=aaaa-02" in out
+
+
 def test_unset_fdtfile_falls_back_to_this_boards_device_tree(tmp_path):
     out, after = BootSim(tmp_path, env()).boot(fdtfile="")
     assert "BOOTI bootargs=[root=PARTUUID=aaaa-02" in out and after["eitri_tries"] == "2"
@@ -160,6 +169,8 @@ def test_boot_scr_imports_only_the_documented_variables():
     from eitri_update.bootenv import BOOT_SCR_STATE_KEYS, LAYOUT_KEYS
     text = open(os.path.join(ubootsim.BOOT_DIR, "boot.cmd")).read()
     imports = _imports(text)
+    assert imports[0] == ["eitri_runs"], "the diagnostics counter imports only itself, from its own file"
+    imports = imports[1:]
     assert len(imports) == 3 and all(imports), "every env import names its variables"
     assert all(len(line.split()) <= 16 for line in text.splitlines() if line.strip().startswith("env "))  # CONFIG_SYS_MAXARGS
     assert set(imports[0] + imports[1]) == set(LAYOUT_KEYS) and len(imports[0] + imports[1]) == len(LAYOUT_KEYS)

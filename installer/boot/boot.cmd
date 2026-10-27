@@ -50,6 +50,15 @@ setenv eitri_mode stock
 setenv eitri_keys "eitri_mode eitri_slot eitri_tries eitri_state_A eitri_state_B eitri_s2_tries"
 setenv eitri_save 'env export -t ${eitri_buf} ${eitri_keys} && fatwrite ${eitri_dev} ${eitri_buf} /eitri/boot.env ${filesize}'
 
+# Diagnostics only: /eitri/runs.env gains one "x" every time this script runs. Read from Linux after a boot that never
+# reached Linux (a hung warm reboot), it tells whether that boot still got as far as this script. Nothing reads it here.
+setenv eitri_runs
+if load ${eitri_dev} ${eitri_buf} /eitri/runs.env; then
+    env import -t ${eitri_buf} ${filesize} eitri_runs
+fi
+setenv eitri_runs "${eitri_runs}x"
+env export -t ${eitri_buf} eitri_runs && fatwrite ${eitri_dev} ${eitri_buf} /eitri/runs.env ${filesize}
+
 # Only layout.env may switch the eMMC hiding on.
 setenv eitri_hide_emmc
 # Two imports for layout.env so that no command line exceeds 16 arguments.
